@@ -13,6 +13,7 @@
 
 ## Core Behavior Rules
 
+- 用户沟通和 commit 信息用中文（遵循 `~/.claude/CLAUDE.md` 全局指令）。
 - 任务执行默认按 chunk 执行，执行完后给出测试建议让用户 review 后，再让用户确认执行下一步，除非用户特殊指定一次完成全部任务。
 
 ## Code Standards
