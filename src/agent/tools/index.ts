@@ -8,7 +8,7 @@ export function buildBuiltinTools(ctx: ToolContext, deps: { memoryStore: MemoryS
   return {
     bash: bashTool(ctx),
     edit_file: editFileTool(ctx),
-    save_memory: saveMemoryTool({ memoryStore: deps.memoryStore }),
+    save_memory: saveMemoryTool(ctx, { memoryStore: deps.memoryStore }),
   }
 }
 

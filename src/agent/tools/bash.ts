@@ -11,6 +11,8 @@ export interface ToolContext {
     error(m: string, meta?: unknown): void
     withTag(t: string): ToolContext['logger']
   }
+  /** 当前用户（per-handle 由 Orchestrator 注入）；组件 wiring 时缺失。 */
+  currentUser?: { userName: string; userId: string }
 }
 
 const MAX_BYTES = 30_000
