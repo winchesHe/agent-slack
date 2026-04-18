@@ -24,7 +24,7 @@ kagura/                   # 参考仓库（gitignored；不要提交，不要直
 ## Storage Conventions (file-based, no DB)
 
 - Session：`<cwd>/.agent-slack/sessions/slack/<channelName>.<channelId>.<threadTs>/{meta.json,messages.jsonl}`
-- Memory：`<cwd>/.agent-slack/memory/<slug>.md`（frontmatter + markdown，扁平；分类走 frontmatter `category` 字段）
+- Memory：`<cwd>/.agent-slack/memory/<userName>-<userId>.md`（按用户单文件，frontmatter 仅 `updatedAt` + markdown 正文；`save_memory(content)` 覆盖写，userName/userId 由 Orchestrator 注入 ToolContext）
 - `messages.jsonl`：append-only，每行一个 AI SDK `ModelMessage`。
 - 同 session 必须经 `SessionRunQueue` 串行写；不同 session 并行。
 - 聚合查询走 scan + 内存处理；不加索引层，除非二期显式引入只读 SQLite。

@@ -102,6 +102,30 @@ interface ConversationOrchestrator {
   handle(input: InboundMessage, sink: EventSink): Promise<void>
 }
 
+// 3.1 InboundMessage 携带 userName（IM adapter 解析）
+interface InboundMessage {
+  // ...原有字段
+  userId: string
+  userName: string    // Slack users.info → real_name ?? name，回退 userId
+}
+
+// 3.2 ToolContext（per-handle 注入）
+interface ToolContext {
+  cwd: string
+  logger: Logger
+  currentUser?: { userName: string; userId: string }
+}
+
+// 3.3 Orchestrator 依赖（tools 改为 per-handle 动态构建）
+interface ConversationOrchestratorDeps {
+  toolsBuilder: (ctx: ToolContext) => ToolSet    // 替代成品 tools
+  executorFactory: (tools: ToolSet) => AgentExecutor  // per-handle 新建
+  sessionStore: SessionStore
+  memoryStore: MemoryStore
+  systemPrompt: string
+  logger: Logger
+}
+
 // 4. 事件 sink（IM adapter 提供给 orchestrator）
 interface EventSink {
   emit(event: AgentExecutionEvent): void
@@ -155,7 +179,7 @@ interface Skill {
         meta.json                      # { imUserId, agentName, status, usage 累计, ... }
         messages.jsonl                 # append-only，每行一个 AI SDK ModelMessage
   memory/
-    <slug>.md                          # frontmatter + markdown（扁平，分类走 frontmatter）
+    <userName>-<userId>.md             # 按用户单文件，frontmatter(updatedAt) + markdown
   skills/
     <skill-name>/
       SKILL.md                         # frontmatter + markdown
@@ -203,11 +227,21 @@ im:
 
 **结论**：对本项目场景（单进程单 workspace、session 数量合理、重点是 agent/用户友好度），全 Files 完胜。未来若需要聚合统计，再引入只读 SQLite 索引。
 
-### 3.6 Memory 读写策略
+### 3.6 Memory 读写策略（按用户单文件）
 
-- **写入用专用 tool**：`save_memory(category, content)` → 保证文件命名/frontmatter 结构一致
-- **读取用通用 tool**：agent 直接用内置的 `read_file` / `grep` / `glob` 访问 `memory/` 目录
-- `system.md` 中声明 memory 位置：告诉 agent "你的记忆在 `.agent-slack/memory/`"
+> 详见 `2026-04-18-memory-per-user-design.md`
+
+- **存储方式**：一人一文件，`memory/<sanitize(userName)>-<userId>.md`
+  - sanitize 规则：`[\/\\:*?"<>|\s]` → `_`（保留中文与可读字符）
+  - 文件带 frontmatter（仅 `updatedAt`），正文为任意 markdown
+- **写入用专用 tool**：`save_memory(content)` — 参数仅 `content`，`userName` / `userId` 由 Orchestrator 从 `InboundMessage` 注入 `ToolContext.currentUser`，agent 无需关心
+  - 覆盖写（overwrite）语义；合并由主 agent 自行负责（先 `bash cat` 读 → 合并 → 整体 `save_memory` 覆盖写）
+- **读取用通用 tool**：agent 直接用内置 `bash cat` / `read_file` / `grep` / `glob` 访问 `memory/` 目录
+- **Orchestrator 注入 memory 提示**：
+  - 文件已存在 → systemPrompt 追加 `[你关于该用户的长期记忆在 \`<relPath>\`，需要时用 bash 读]`
+  - 文件不存在 → 不注入提示；agent 首次 `save_memory` 自动创建
+- **tools 每次 handle 动态构建**：Orchestrator 注入 `toolsBuilder: (ctx: ToolContext) => ToolSet`，闭包持有当前 user，per-handle 新建 executor
+- **userName 来源**：Slack `users.info(userId)` → `real_name ?? name`，回退 `userId`；加 `userNameCache: Map<userId, userName>` 缓存
 
 ---
 
