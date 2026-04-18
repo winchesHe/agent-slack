@@ -46,17 +46,26 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
   })
 
   const modelName = process.env.AGENT_MODEL ?? ctx.config.agent.model
-  const executor = createAiSdkExecutor({
-    model: provider.chatModel(modelName),
-    modelName,
-    tools: buildBuiltinTools({ cwd: ctx.cwd, logger }, { memoryStore }),
-    maxSteps: ctx.config.agent.maxSteps,
-    logger,
-  })
+  const model = provider.chatModel(modelName)
+
+  // tools per-handle 构造，将 currentUser 闭包注入
+  const toolsBuilder = (currentUser: { userName: string; userId: string }) =>
+    buildBuiltinTools({ cwd: ctx.cwd, logger, currentUser }, { memoryStore })
+
+  const executorFactory = (tools: ReturnType<typeof toolsBuilder>) =>
+    createAiSdkExecutor({
+      model,
+      modelName,
+      tools,
+      maxSteps: ctx.config.agent.maxSteps,
+      logger,
+    })
 
   const orchestrator = createConversationOrchestrator({
-    executor,
+    toolsBuilder,
+    executorFactory,
     sessionStore,
+    memoryStore,
     systemPrompt: ctx.systemPrompt,
     logger,
   })
