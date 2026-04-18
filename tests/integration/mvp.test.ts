@@ -6,6 +6,7 @@ import { MockLanguageModelV1, simulateReadableStream } from 'ai/test'
 import type { LanguageModel } from 'ai'
 import type { WebClient } from '@slack/web-api'
 import { createSessionStore } from '@/store/SessionStore.ts'
+import { createMemoryStore } from '@/store/MemoryStore.ts'
 import { resolveWorkspacePaths } from '@/workspace/paths.ts'
 import { createAiSdkExecutor } from '@/agent/AiSdkExecutor.ts'
 import { createConversationOrchestrator } from '@/orchestrator/ConversationOrchestrator.ts'
@@ -54,6 +55,7 @@ describe('MVP 集成：mock Slack + mock LLM 跑完整链路', () => {
         rawCall: { rawPrompt: null, rawSettings: {} },
       }),
     })
+    const memoryStore = createMemoryStore(paths)
     const executor = createAiSdkExecutor({
       model: model as unknown as LanguageModel,
       tools: {},
@@ -62,8 +64,10 @@ describe('MVP 集成：mock Slack + mock LLM 跑完整链路', () => {
       modelName: 'mock',
     })
     const orchestrator = createConversationOrchestrator({
-      executor,
+      toolsBuilder: () => ({}),
+      executorFactory: () => executor,
       sessionStore: store,
+      memoryStore,
       systemPrompt: '',
       logger: stubLogger(),
     })
@@ -96,6 +100,7 @@ describe('MVP 集成：mock Slack + mock LLM 跑完整链路', () => {
         channelName: 'general',
         threadTs: 't1',
         userId: 'U1',
+        userName: 'alice',
         text: '你好',
         messageTs: 'm1',
       },
