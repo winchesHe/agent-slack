@@ -1,13 +1,45 @@
 {
   "name": "agent-slack",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "packageManager": "pnpm@10.32.1",
+  "engines": {
+    "node": ">=22"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "packageManager": "pnpm@10.32.1"
+  "bin": {
+    "agent-slack": "./bin/agent-slack.js"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsdown",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint . && prettier --check .",
+    "format": "prettier --write .",
+    "typecheck": "tsc --noEmit",
+    "smoke": "tsx scripts/smoke.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/openai-compatible": "^0.1.0",
+    "@slack/bolt": "^4.0.0",
+    "ai": "^4.0.0",
+    "consola": "^3.2.0",
+    "dotenv": "^16.4.0",
+    "gray-matter": "^4.0.3",
+    "markdown-to-slack-blocks": "^1.0.0",
+    "yaml": "^2.5.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^9.0.0",
+    "prettier": "^3.3.0",
+    "tsdown": "^0.8.0",
+    "tsx": "^4.16.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.0.0"
+  }
 }
