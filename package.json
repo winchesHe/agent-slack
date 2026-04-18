@@ -23,6 +23,7 @@
   "dependencies": {
     "@ai-sdk/openai-compatible": "^0.1.0",
     "@slack/bolt": "^4.0.0",
+    "@slack/web-api": "^7.15.1",
     "ai": "^4.0.0",
     "consola": "^3.2.0",
     "dotenv": "^16.4.0",
