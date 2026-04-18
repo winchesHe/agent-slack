@@ -45,9 +45,10 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
     name: 'litellm',
   })
 
+  const modelName = process.env.AGENT_MODEL ?? ctx.config.agent.model
   const executor = createAiSdkExecutor({
-    model: provider.chatModel(ctx.config.agent.model),
-    modelName: ctx.config.agent.model,
+    model: provider.chatModel(modelName),
+    modelName,
     tools: buildBuiltinTools({ cwd: ctx.cwd, logger }, { memoryStore }),
     maxSteps: ctx.config.agent.maxSteps,
     logger,

@@ -13,3 +13,4 @@ kagura/
 pnpm-debug.log*
 coverage/
 .vitest/
+.agent-slack/

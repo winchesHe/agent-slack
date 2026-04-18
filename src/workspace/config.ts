@@ -4,7 +4,7 @@ export const ConfigSchema = z.object({
   agent: z
     .object({
       name: z.string().default('default'),
-      model: z.string().default('claude-sonnet-4-6'),
+      model: z.string().default('gpt5.4'),
       provider: z.literal('litellm').default('litellm'),
       maxSteps: z.number().int().positive().default(20),
     })

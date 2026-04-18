@@ -10,7 +10,7 @@ import { createRedactor } from '@/logger/redactor.ts'
 async function main(): Promise<void> {
   const baseURL = process.env.LITELLM_BASE_URL
   const apiKey = process.env.LITELLM_API_KEY
-  const model = process.env.SMOKE_MODEL ?? 'claude-sonnet-4-6'
+  const model = process.env.SMOKE_MODEL ?? process.env.AGENT_MODEL ?? 'gpt5.4'
   if (!baseURL || !apiKey) throw new Error('需要 LITELLM_BASE_URL 和 LITELLM_API_KEY')
 
   const logger = createLogger({ level: 'debug', redactor: createRedactor([apiKey]) })
