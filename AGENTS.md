@@ -41,5 +41,5 @@
 
 - [ ] 相关 `*.test.ts` 全部通过
 - [ ] `pnpm lint` 无错误
-- [ ] 任务完成已同步更新 design doc
+- [ ] 任务完成已同步更新进度和 design doc
 - [ ] 架构级变更已同步更新 design doc
