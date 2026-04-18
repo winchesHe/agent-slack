@@ -1,0 +1,7 @@
+node_modules/
+dist/
+coverage/
+kagura/
+pnpm-lock.yaml
+*.md
+.agent-slack/
