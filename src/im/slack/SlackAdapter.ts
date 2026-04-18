@@ -16,6 +16,7 @@ export interface SlackAdapterDeps {
 export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
   const log = deps.logger.withTag('slack')
   const channelNameCache = new Map<string, string>()
+  const userNameCache = new Map<string, string>()
 
   const app = new App({
     token: deps.botToken,
@@ -46,6 +47,22 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
         client.reactions.add({ channel: channelId, timestamp: messageTs, name: 'eyes' }),
         log,
       )
+
+      // 解析 userName（优先 real_name，回落 name，再回落 userId）
+      const userId = event.user ?? 'unknown'
+      let userName = userNameCache.get(userId) ?? ''
+      if (!userName && userId !== 'unknown') {
+        try {
+          const uinfo = await client.users.info({ user: userId })
+          userName = uinfo.user?.real_name ?? uinfo.user?.name ?? userId
+          userNameCache.set(userId, userName)
+        } catch (err) {
+          log.warn('users.info failed, falling back to userId', err)
+          userName = userId
+        }
+      }
+      if (!userName) userName = userId
+
       const placeholder = await client.chat.postMessage({
         channel: channelId,
         thread_ts: threadTs,
@@ -69,7 +86,8 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
           channelId,
           channelName,
           threadTs,
-          userId: event.user ?? 'unknown',
+          userId,
+          userName,
           text: cleanText,
           messageTs,
         },
