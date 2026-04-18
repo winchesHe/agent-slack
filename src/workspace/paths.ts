@@ -33,12 +33,21 @@ export function resolveWorkspacePaths(cwd: string): WorkspacePaths {
   }
 }
 
+/**
+ * 将一个字段安全地用于文件名 / 目录名片段。
+ * 仅替换 OS / 路径不合法字符与空白；中文 / 数字 / 其他可读字符保留。
+ */
+const FS_SEGMENT_SANITIZE_RE = /[\/\\:*?"<>|\s]/g
+export function sanitizeFsSegment(input: string): string {
+  return input.replace(FS_SEGMENT_SANITIZE_RE, '_')
+}
+
 export function slackSessionDir(
   paths: WorkspacePaths,
   channelName: string,
   channelId: string,
   threadTs: string,
 ): string {
-  const safe = channelName.replace(/[^\w.-]/g, '_')
+  const safe = sanitizeFsSegment(channelName)
   return path.join(paths.sessionsDir, 'slack', `${safe}.${channelId}.${threadTs}`)
 }
