@@ -64,9 +64,9 @@ interface AgentExecutor {
 type AgentExecutionEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'reasoning_delta'; text: string }
-  | { type: 'tool_input_delta'; toolName: string; partial: string }
-  | { type: 'tool_call_start'; toolName: string; input: unknown }
-  | { type: 'tool_call_end'; toolName: string; output: unknown; isError: boolean }
+  | { type: 'tool_input_delta'; toolCallId: string; toolName: string; partial: string }
+  | { type: 'tool_call_start'; toolCallId: string; toolName: string; input: unknown }
+  | { type: 'tool_call_end'; toolCallId: string; toolName: string; output: unknown; isError: boolean }
   | { type: 'step_start' }
   | { type: 'step_finish'; usage?: StepUsage }
   | { type: 'done'; finalText: string; totalUsage: TotalUsage }
@@ -255,9 +255,9 @@ im:
 └──────┬──────┘
        ▼
  (1) SlackAdapter.onMention
-     ├─ 立即加 👀 reaction（ack）
+     ├─ 立即加 👀 reaction（ack）到用户原消息（sourceMessageTs）
      ├─ 构造 InboundMessage
-     └─ 创建 SlackEventSink（包装 WebClient）
+     └─ 创建 SlackEventSink（包装 WebClient，持有 sourceMessageTs）
        ▼
  (2) ConversationOrchestrator.handle(inbound, sink)
      │
@@ -297,8 +297,8 @@ im:
      ├─ tool_call_start  → "🔧 read_file" 加入 toolHistory
      ├─ tool_call_end    → count 更新，长参数折叠
      ├─ step_start/end   → 内部累加 usage
-     ├─ done             → 终版消息 + cost context block + ✅ reaction
-     └─ error            → 错误块（脱敏）+ ❌ reaction
+     ├─ done             → 终版消息 + cost context block + ✅ reaction（加在 sourceMessageTs）
+     └─ error            → 错误块（脱敏）+ ❌ reaction（加在 sourceMessageTs）
 ```
 
 ### 4.1 Cost 路径
