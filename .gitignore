@@ -10,3 +10,6 @@ slack-live-e2e
 .worktrees/
 *.tsbuildinfo
 kagura/
+pnpm-debug.log*
+coverage/
+.vitest/
