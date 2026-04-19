@@ -1,10 +1,6 @@
 import { streamText, type LanguageModel, type ToolSet } from 'ai'
 import type { AgentExecutor, AgentExecutionRequest } from './AgentExecutor.ts'
-import type {
-  ActivityState,
-  AgentExecutionEvent,
-  SessionUsageInfo,
-} from '@/core/events.ts'
+import type { ActivityState, AgentExecutionEvent, SessionUsageInfo } from '@/core/events.ts'
 import { STATUS, TOOL_PHRASE, getShuffledLoadingMessages } from '@/im/slack/thinking-messages.ts'
 import type { Logger } from '@/logger/logger.ts'
 import { extractCostFromMetadata } from './litellm-cost.ts'
@@ -76,9 +72,10 @@ const CD_PREFIX_RE = /^cd\s+\S+\s*(?:&&|;)\s*/
 function toolDisplayLabel(toolName: string, args?: Record<string, unknown>): string {
   if (toolName === 'bash' && args && typeof args.cmd === 'string') {
     const stripped = args.cmd.replace(CD_PREFIX_RE, '')
-    const cmd = stripped.length > TOOL_LABEL_CMD_MAX_LEN
-      ? `${stripped.slice(0, TOOL_LABEL_CMD_MAX_LEN)}…`
-      : stripped
+    const cmd =
+      stripped.length > TOOL_LABEL_CMD_MAX_LEN
+        ? `${stripped.slice(0, TOOL_LABEL_CMD_MAX_LEN)}…`
+        : stripped
 
     return `bash(${cmd})`
   }
@@ -124,7 +121,10 @@ function* emitActivity(
   const nextKey = makeActivityKey(state)
 
   // key diff 只忽略 newToolCalls；同一状态若带了新工具调用，仍要强制透传给 sink 做次数累加。
-  if (nextKey === agg.lastEmittedActivityKey && (!('newToolCalls' in state) || !state.newToolCalls?.length)) {
+  if (
+    nextKey === agg.lastEmittedActivityKey &&
+    (!('newToolCalls' in state) || !state.newToolCalls?.length)
+  ) {
     return
   }
 
@@ -159,7 +159,10 @@ function getActiveToolStatus(agg: AggregatorState): ActivityState | undefined {
 
   return {
     status: TOOL_PHRASE.running(activeTool.toolName),
-    activities: [TOOL_PHRASE.running(activeTool.toolName), ...agg.defaultLoadingMessages.slice(0, 4)],
+    activities: [
+      TOOL_PHRASE.running(activeTool.toolName),
+      ...agg.defaultLoadingMessages.slice(0, 4),
+    ],
   }
 }
 
@@ -195,7 +198,10 @@ function buildUsageInfo(agg: AggregatorState): SessionUsageInfo {
 
   return {
     durationMs: Date.now() - agg.turnStartedAt,
-    totalCostUSD: Array.from(agg.modelUsage.values()).reduce((sum, usage) => sum + usage.costUSD, 0),
+    totalCostUSD: Array.from(agg.modelUsage.values()).reduce(
+      (sum, usage) => sum + usage.costUSD,
+      0,
+    ),
     modelUsage,
   }
 }
@@ -314,7 +320,10 @@ export function createAiSdkExecutor(deps: AiSdkExecutorDeps): AgentExecutor {
 
               yield* emitActivity(agg, {
                 status: TOOL_PHRASE.running(part.toolName),
-                activities: [TOOL_PHRASE.input(part.toolName), ...agg.defaultLoadingMessages.slice(0, 4)],
+                activities: [
+                  TOOL_PHRASE.input(part.toolName),
+                  ...agg.defaultLoadingMessages.slice(0, 4),
+                ],
                 // newToolCalls 延迟到 tool-call 时发出，此时才有完整 args 可构建 display label
               })
               break
@@ -326,7 +335,10 @@ export function createAiSdkExecutor(deps: AiSdkExecutorDeps): AgentExecutor {
               const label = toolDisplayLabel(part.toolName, part.args)
               yield* emitActivity(agg, {
                 status: TOOL_PHRASE.running(part.toolName),
-                activities: [TOOL_PHRASE.running(part.toolName), ...agg.defaultLoadingMessages.slice(0, 4)],
+                activities: [
+                  TOOL_PHRASE.running(part.toolName),
+                  ...agg.defaultLoadingMessages.slice(0, 4),
+                ],
                 // 始终携带 newToolCalls，让 sink 能累加工具计数。
                 // display label 对 bash 工具会包含具体命令，如 bash(cat config.yaml)。
                 newToolCalls: [label],

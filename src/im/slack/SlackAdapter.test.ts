@@ -60,7 +60,9 @@ describe('SlackAdapter', () => {
     createSlackAdapter({
       orchestrator,
       logger: stubLogger(),
-      botToken: 'xoxb', appToken: 'xapp', signingSecret: 'ss',
+      botToken: 'xoxb',
+      appToken: 'xapp',
+      signingSecret: 'ss',
     })
   })
 
@@ -69,7 +71,9 @@ describe('SlackAdapter', () => {
       orchestrator,
       renderer: stubRenderer(),
       logger: stubLogger(),
-      botToken: 'xoxb', appToken: 'xapp', signingSecret: 'ss',
+      botToken: 'xoxb',
+      appToken: 'xapp',
+      signingSecret: 'ss',
       workspaceLabel: 'my-workspace',
     })
     expect(adapter.id).toBe('slack')

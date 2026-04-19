@@ -83,7 +83,10 @@ function extractBaseToolName(label: string): string {
 }
 
 // 将 base name 的 toolHistory 转为 display label 版本，供渲染层直接使用。
-function toDisplayToolHistory(toolHistory: Map<string, number>, toolLatestLabel: Map<string, string>): Map<string, number> {
+function toDisplayToolHistory(
+  toolHistory: Map<string, number>,
+  toolLatestLabel: Map<string, string>,
+): Map<string, number> {
   const display = new Map<string, number>()
 
   for (const [base, count] of toolHistory) {
@@ -94,7 +97,11 @@ function toDisplayToolHistory(toolHistory: Map<string, number>, toolLatestLabel:
   return display
 }
 
-function toProgressUiState(state: Exclude<ActivityState, { clear: true }>, toolHistory: Map<string, number>, toolLatestLabel: Map<string, string>) {
+function toProgressUiState(
+  state: Exclude<ActivityState, { clear: true }>,
+  toolHistory: Map<string, number>,
+  toolLatestLabel: Map<string, string>,
+) {
   return {
     status: state.status,
     activities: state.activities,
@@ -206,13 +213,7 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
         ? { workspaceLabel: deps.workspaceLabel }
         : undefined
 
-    await deps.renderer.postThreadReply(
-      deps.web,
-      deps.channelId,
-      deps.threadTs,
-      text,
-      replyOptions,
-    )
+    await deps.renderer.postThreadReply(deps.web, deps.channelId, deps.threadTs, text, replyOptions)
     local.hasSentToolbarInTurn = true
 
     if (local.progressMessageTs) {

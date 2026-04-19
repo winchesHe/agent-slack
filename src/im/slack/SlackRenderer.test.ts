@@ -105,9 +105,11 @@ describe('SlackRenderer reactions', () => {
     await renderer.addError(web, 'C1', 'src-ts')
     await renderer.addStopped(web, 'C1', 'src-ts')
 
-    expect(
-      calls.map((call) => (call.args as { name: string }).name),
-    ).toEqual(['white_check_mark', 'x', 'black_square_for_stop'])
+    expect(calls.map((call) => (call.args as { name: string }).name)).toEqual([
+      'white_check_mark',
+      'x',
+      'black_square_for_stop',
+    ])
   })
 
   it('safeRender：api 抛错时吞掉并 warn，不向上抛', async () => {
@@ -313,7 +315,9 @@ describe('SlackRenderer postThreadReply', () => {
   it('短 markdown 单次 postMessage', async () => {
     const { web, calls } = mockWeb()
     const renderer = createSlackRenderer({ logger: stubLogger() })
-    const renderedBlocks = [{ type: 'rich_text', block_id: 'single-chunk', elements: [] }] as never[]
+    const renderedBlocks = [
+      { type: 'rich_text', block_id: 'single-chunk', elements: [] },
+    ] as never[]
 
     vi.mocked(markdownToBlocks).mockReturnValueOnce(renderedBlocks)
     vi.mocked(splitBlocksWithText).mockReturnValueOnce([

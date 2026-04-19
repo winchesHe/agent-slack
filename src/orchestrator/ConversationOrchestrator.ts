@@ -79,7 +79,10 @@ export function createConversationOrchestrator(
               // costUSD 单次 accumulateCost，防多模型循环放大。
               const totalInput = event.usage.modelUsage.reduce((s, u) => s + u.inputTokens, 0)
               const totalOutput = event.usage.modelUsage.reduce((s, u) => s + u.outputTokens, 0)
-              const totalCached = event.usage.modelUsage.reduce((s, u) => s + u.cachedInputTokens, 0)
+              const totalCached = event.usage.modelUsage.reduce(
+                (s, u) => s + u.cachedInputTokens,
+                0,
+              )
               await deps.sessionStore.accumulateUsage(session.id, {
                 inputTokens: totalInput,
                 outputTokens: totalOutput,

@@ -91,10 +91,7 @@ function makeSink(renderer = mockRenderer()) {
   }
 }
 
-function getMethodCalls(
-  renderer: ReturnType<typeof mockRenderer>,
-  method: string,
-): RecordedCall[] {
+function getMethodCalls(renderer: ReturnType<typeof mockRenderer>, method: string): RecordedCall[] {
   return renderer.calls.filter((call) => call.method === method)
 }
 
@@ -128,7 +125,11 @@ describe('SlackEventSink', () => {
     await sink.onEvent({ type: 'lifecycle', phase: 'started' })
     await sink.onEvent({
       type: 'activity-state',
-      state: { status: '正在 read_file…', activities: ['正在 read_file…'], newToolCalls: ['read_file'] },
+      state: {
+        status: '正在 read_file…',
+        activities: ['正在 read_file…'],
+        newToolCalls: ['read_file'],
+      },
     })
     await sink.onEvent({ type: 'activity-state', state: { clear: true } })
 

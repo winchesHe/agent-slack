@@ -58,7 +58,10 @@ function createToolSet(): ToolSet {
   }
 }
 
-function createExecutor(model: LanguageModel, tools: ToolSet = {}): ReturnType<typeof createAiSdkExecutor> {
+function createExecutor(
+  model: LanguageModel,
+  tools: ToolSet = {},
+): ReturnType<typeof createAiSdkExecutor> {
   return createAiSdkExecutor({
     model,
     modelName: 'mock-model',
@@ -587,7 +590,9 @@ describe('AiSdkExecutor 粗事件映射', () => {
       phase: 'failed',
       error: { message: 'provider blocked' },
     })
-    expect(events.slice(failedIndex + 1).find((event) => event.type === 'usage-info')).toBeUndefined()
+    expect(
+      events.slice(failedIndex + 1).find((event) => event.type === 'usage-info'),
+    ).toBeUndefined()
     expect(
       events
         .slice(failedIndex + 1)
@@ -653,32 +658,33 @@ describe('AiSdkExecutor 粗事件映射', () => {
   it('AbortError → lifecycle(stopped, reason=user) + activity-state{clear}', async () => {
     const controller = new AbortController()
     const model = new MockLanguageModelV1({
-      doStream: async ({ abortSignal }) => ({
-        stream: new ReadableStream<MockStreamChunk>({
-          start(streamController) {
-            streamController.enqueue({
-              type: 'response-metadata',
-              id: 'resp_abort',
-              modelId: 'mock-model',
-            })
-            streamController.enqueue({ type: 'text-delta', textDelta: 'first chunk' })
+      doStream: async ({ abortSignal }) =>
+        ({
+          stream: new ReadableStream<MockStreamChunk>({
+            start(streamController) {
+              streamController.enqueue({
+                type: 'response-metadata',
+                id: 'resp_abort',
+                modelId: 'mock-model',
+              })
+              streamController.enqueue({ type: 'text-delta', textDelta: 'first chunk' })
 
-            const stop = () => {
-              const error = new Error('aborted')
-              error.name = 'AbortError'
-              streamController.error(error)
-            }
+              const stop = () => {
+                const error = new Error('aborted')
+                error.name = 'AbortError'
+                streamController.error(error)
+              }
 
-            if (abortSignal?.aborted) {
-              stop()
-              return
-            }
+              if (abortSignal?.aborted) {
+                stop()
+                return
+              }
 
-            abortSignal?.addEventListener('abort', stop, { once: true })
-          },
-        }),
-        rawCall: { rawPrompt: null, rawSettings: {} },
-      } as never),
+              abortSignal?.addEventListener('abort', stop, { once: true })
+            },
+          }),
+          rawCall: { rawPrompt: null, rawSettings: {} },
+        }) as never,
     })
 
     const executor = createExecutor(model as unknown as LanguageModel)

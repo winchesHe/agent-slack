@@ -68,9 +68,7 @@ describe('events types', () => {
   })
 
   it('LifecyclePhase 与 StopReason 仅允许计划中的字面量', () => {
-    expectTypeOf<LifecyclePhase>().toEqualTypeOf<
-      'started' | 'completed' | 'stopped' | 'failed'
-    >()
+    expectTypeOf<LifecyclePhase>().toEqualTypeOf<'started' | 'completed' | 'stopped' | 'failed'>()
     expectTypeOf<StopReason>().toEqualTypeOf<'user' | 'superseded' | 'shutdown'>()
   })
 
@@ -81,7 +79,7 @@ describe('events types', () => {
     >
 
     expectTypeOf<CompletedEvent['finalMessages']>().toEqualTypeOf<
-      Array<((CoreAssistantMessage | CoreToolMessage) & { id: string })>
+      Array<(CoreAssistantMessage | CoreToolMessage) & { id: string }>
     >()
   })
 
@@ -125,7 +123,7 @@ describe('events types', () => {
       phase: 'failed',
     }
     // @ts-expect-error started 不能携带额外载荷
-    ;({ type: 'lifecycle', phase: 'started', reason: 'user' } satisfies AgentExecutionEvent)
+    ;({ type: 'lifecycle', phase: 'started', reason: 'user' }) satisfies AgentExecutionEvent
     ;({
       type: 'lifecycle',
       phase: 'completed',
@@ -133,7 +131,7 @@ describe('events types', () => {
         // @ts-expect-error finalMessages 不接受 user message
         { id: 'msg_2', role: 'user', content: '不合法' },
       ],
-    } satisfies AgentExecutionEvent)
+    }) satisfies AgentExecutionEvent
     ;({
       type: 'lifecycle',
       phase: 'completed',
@@ -141,7 +139,7 @@ describe('events types', () => {
         // @ts-expect-error finalMessages 中的消息必须带 id
         { role: 'assistant', content: '缺少 id' },
       ],
-    } satisfies AgentExecutionEvent)
+    }) satisfies AgentExecutionEvent
 
     expectTypeOf(invalidActivityState).toMatchTypeOf<ActivityState>()
     expectTypeOf(invalidCompleted).toMatchTypeOf<AgentExecutionEvent>()

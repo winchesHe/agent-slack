@@ -76,7 +76,11 @@ describe('SessionStore', () => {
       cachedInputTokens: 4,
       costUSD: 0.01,
     })
-    await store.accumulateUsage(session.id, { inputTokens: 3, outputTokens: 2, cachedInputTokens: 1 })
+    await store.accumulateUsage(session.id, {
+      inputTokens: 3,
+      outputTokens: 2,
+      cachedInputTokens: 1,
+    })
     const reloaded = await store.getOrCreate({
       imProvider: 'slack',
       channelId: 'C1',

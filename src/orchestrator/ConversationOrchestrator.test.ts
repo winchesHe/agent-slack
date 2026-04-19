@@ -41,7 +41,13 @@ function mockSink() {
       return terminalPhase
     },
   }
-  return { sink, events, get terminalPhase() { return terminalPhase } }
+  return {
+    sink,
+    events,
+    get terminalPhase() {
+      return terminalPhase
+    },
+  }
 }
 
 function makeInput(overrides: Partial<InboundMessage> = {}): InboundMessage {
@@ -90,9 +96,15 @@ describe('ConversationOrchestrator 粗事件消费', () => {
         usage: {
           durationMs: 10,
           totalCostUSD: 0,
-          modelUsage: [{
-            model: 'm', inputTokens: 3, outputTokens: 2, cachedInputTokens: 0, cacheHitRate: 0,
-          }],
+          modelUsage: [
+            {
+              model: 'm',
+              inputTokens: 3,
+              outputTokens: 2,
+              cachedInputTokens: 0,
+              cacheHitRate: 0,
+            },
+          ],
         },
       },
       { type: 'lifecycle', phase: 'completed', finalMessages },
@@ -229,11 +241,11 @@ describe('ConversationOrchestrator 粗事件消费', () => {
     await orch.handle(makeInput(), sink)
 
     // sink 应该收到 synthetic failed 事件
-    const failed = events.find(
-      (e) => e.type === 'lifecycle' && e.phase === 'failed',
-    )
+    const failed = events.find((e) => e.type === 'lifecycle' && e.phase === 'failed')
     expect(failed).toBeDefined()
-    expect((failed as { error?: { message: string } }).error?.message).toContain('sink persistence crashed')
+    expect((failed as { error?: { message: string } }).error?.message).toContain(
+      'sink persistence crashed',
+    )
 
     // finalize 记录被调
     expect(sink.finalize).toHaveBeenCalledTimes(1)

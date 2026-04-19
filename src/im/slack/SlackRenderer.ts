@@ -189,7 +189,9 @@ export function createSlackRenderer(deps: SlackRendererDeps): SlackRenderer {
           : {}),
       } as Parameters<WebClient['assistant']['threads']['setStatus']>[0]
 
-      await safeRender('assistant.threads.setStatus', () => client.assistant.threads.setStatus(args))
+      await safeRender('assistant.threads.setStatus', () =>
+        client.assistant.threads.setStatus(args),
+      )
     },
     async clearStatus(client, channelId, threadTs) {
       const args = {
@@ -216,13 +218,13 @@ export function createSlackRenderer(deps: SlackRendererDeps): SlackRenderer {
           } as Parameters<WebClient['chat']['update']>[0]),
         )
 
-      return result === undefined ? undefined : prevTs
-    }
+        return result === undefined ? undefined : prevTs
+      }
 
-    // 首次激活 progress 时创建 thread reply，并把 ts 交给 sink 保存。
-    const result = await safeRender('chat.postMessage(progress)', () =>
-      client.chat.postMessage({
-        channel: channelId,
+      // 首次激活 progress 时创建 thread reply，并把 ts 交给 sink 保存。
+      const result = await safeRender('chat.postMessage(progress)', () =>
+        client.chat.postMessage({
+          channel: channelId,
           thread_ts: threadTs,
           text,
           blocks,
