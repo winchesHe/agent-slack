@@ -2,6 +2,7 @@
 
 **日期**：2026-04-17
 **状态**：已确认，待 spec review
+**局部替换**：§2.2 `AgentExecutionEvent` / `EventSink` 定义、§2.3 节流策略、§4 数据流 SlackEventSink → SlackRenderer 段、§4.1 Cost 路径、§4.2 Abort 路径、§6.2 Agent Errors 行、§7.1 M2 里程碑描述 均被 [`2026-04-19-slack-render-flow-redesign.md`](./2026-04-19-slack-render-flow-redesign.md) 覆盖；本文件保留为**历史基线**，以新 spec 为准
 
 ## 1. 项目目标
 
@@ -61,34 +62,23 @@ interface AgentExecutor {
   drain(): Promise<void>
 }
 
-type AgentExecutionEvent =
+// ⚠️ 已被 2026-04-19 spec 替换为粗粒度 4 类事件。
+// 当前权威定义见 [`2026-04-19-slack-render-flow-redesign.md`](./2026-04-19-slack-render-flow-redesign.md) §2。
+// 摘要：AgentExecutionEvent = activity-state | assistant-message | usage-info | lifecycle。
+// 下列旧定义**仅作历史参考**，实装不再遵循。
+type AgentExecutionEvent_LEGACY =
   | { type: 'text_delta'; text: string }
   | { type: 'reasoning_delta'; text: string }
   | { type: 'tool_input_delta'; toolCallId: string; toolName: string; partial: string }
   | { type: 'tool_call_start'; toolCallId: string; toolName: string; input: unknown }
   | { type: 'tool_call_end'; toolCallId: string; toolName: string; output: unknown; isError: boolean }
   | { type: 'step_start' }
-  | { type: 'step_finish'; usage?: StepUsage }
-  | { type: 'done'; finalText: string; totalUsage: TotalUsage }
+  | { type: 'step_finish'; usage?: StepUsage_LEGACY }
+  | { type: 'done'; finalText: string; totalUsage: TotalUsage_LEGACY }
   | { type: 'error'; error: Error }
 
-interface StepUsage {
-  inputTokens: number
-  outputTokens: number
-  cachedInputTokens?: number
-  reasoningTokens?: number
-  costUSD?: number
-}
-
-interface TotalUsage {
-  model: string
-  durationMs: number
-  inputTokens: number
-  outputTokens: number
-  cachedInputTokens: number
-  cacheHitRate?: number
-  totalCostUSD?: number
-}
+interface StepUsage_LEGACY { /* 被 SessionUsageInfo 替换，见新 spec §2 */ }
+interface TotalUsage_LEGACY { /* 被 SessionUsageInfo 替换，见新 spec §2 */ }
 
 // 2. IM 适配器
 interface IMAdapter {
@@ -127,11 +117,14 @@ interface ConversationOrchestratorDeps {
 }
 
 // 4. 事件 sink（IM adapter 提供给 orchestrator）
-interface EventSink {
-  emit(event: AgentExecutionEvent): void
-  done(): Promise<void>
-  fail(err: Error): Promise<void>
-}
+// ⚠️ 已被 2026-04-19 spec 替换为无独立 fail() 的粗粒度接口，
+// 当前权威定义见新 spec §5（SlackEventSink）。摘要：
+//   interface SlackEventSink {
+//     onEvent(event: AgentExecutionEvent): Promise<void>
+//     finalize(): Promise<void>
+//     readonly terminalPhase: 'completed' | 'stopped' | 'failed' | undefined
+//   }
+// orchestrator 兜底异常走新 spec §8.3 的 emitSyntheticFailed helper。
 
 // 5. Workspace 上下文（启动时一次性构建，只读传递）
 interface WorkspaceContext {
@@ -156,7 +149,7 @@ interface Skill {
 - **Agent 和 IM 抽象从第 1 天就有**，但一期只实现 `AiSdkExecutor` 和 `SlackAdapter` 各一份。
 - **所有依赖通过 `createApplication()` 注入**，禁止全局单例。
 - **`AgentExecutionEvent` 是 IM 无关的抽象事件**，IM adapter 负责翻译成各自的 UI 更新。
-- **`EventSink` 的节流/批处理在 IM 侧**（Slack ≥ 2.5s debounce；终端 adapter 可零延迟），Orchestrator 同步 emit 不限速。
+- ~~**`EventSink` 的节流/批处理在 IM 侧**（Slack ≥ 2.5s debounce）~~ → 改为**基于 `ActivityState` 快照的 key diff 幂等去重**，不再用时间窗 debounce；详见新 spec §2.1 / §6.3。
 - **持久化在 Orchestrator 层**——IM 只管协议，Executor 只管执行，落盘是编排职责。
 
 ---
@@ -291,31 +284,30 @@ im:
         .fullStream → yield AgentExecutionEvent
        ▼
  (4) SlackEventSink → SlackRenderer
-     ├─ text_delta       → buffer，debounce ≥2.5s edit 消息
-     ├─ reasoning_delta  → 折叠块 "🤔 thinking: ..."
-     ├─ tool_input_delta → "⚙️ 准备 read_file(path=..."
-     ├─ tool_call_start  → "🔧 read_file" 加入 toolHistory
-     ├─ tool_call_end    → count 更新，长参数折叠
-     ├─ step_start/end   → 内部累加 usage
-     ├─ done             → 终版消息 + cost context block + ✅ reaction（加在 sourceMessageTs）
-     └─ error            → 错误块（脱敏）+ ❌ reaction（加在 sourceMessageTs）
+     ⚠️ 已被 2026-04-19 spec 重写（三载体模型：状态条 + progress message + reply messages）。
+     新流程权威定义见新 spec §3（架构分层）/ §4（SlackRenderer）/ §5（Sink 状态机）/ §6（AiSdkExecutor 聚合）。
+     摘要：
+       lifecycle:started     → addAck(👀) + setStatus('思考中…', loading pool)
+       activity-state        → key diff 去重 → upsert progress message（有意义态激活）
+       assistant-message     → 独立 postThreadReply（markdown 自动分块）+ 删 progress
+       usage-info            → 暂存，completed 时独立 postSessionUsage
+       lifecycle:completed   → finalize progress（✅ 完成 · toolHistory）+ addDone(✅)
+       lifecycle:stopped     → finalize（已被用户中止）+ addStopped(⏹️)
+       lifecycle:failed      → finalize（⚠️ 出错）+ addError(❌)
 ```
 
 ### 4.1 Cost 路径
 
-- AI SDK `streamText({ onFinish })` 回调里从 `providerMetadata.litellm.cost` 读 cost
-- 从 `usage { inputTokens, outputTokens, cachedInputTokens }` 读 token 数
-- Executor yield `step_finish`/`done` 事件
-- Orchestrator 透传给 sink，**同时**累加到 `meta.json`
-- SlackRenderer 在 `done` 后追加 context block：
-  `11.2s · $0.0676 · claude-sonnet-4-6: 424 tokens (62% cache hit)`
+⚠️ 已被 2026-04-19 spec 重写，以新 spec §6.4（`extractCostFromMetadata`）+ §7（持久化映射）为准。摘要：
+- 在 AI SDK v4 `fullStream` 的 `step-finish` part 中从 `providerMetadata` 读 cost（非 `onFinish`）
+- Executor 聚合成 `usage-info` 事件（粗粒度），在 `finish` 顶层 part 发一次
+- Orchestrator 订阅 `usage-info` 累加到 `meta.json`；Renderer 在 completed 后独立 `postSessionUsage`
 
 ### 4.2 Abort 路径
 
-- Orchestrator 每次 `handle` 通过 `AbortRegistry.create(messageTs)` 分配 AbortController
-- SlackAdapter 监听 reaction：用户对 thread 中任意消息加 🛑 → `registry.abort(messageTs)`
-- AI SDK `streamText({ abortSignal })` 原生支持立即中止
-- Orchestrator 在 `finally` 里 `registry.delete(messageTs)`，并追加 `{ role: 'assistant', content: '[stopped]' }` 到 jsonl
+⚠️ 已被 2026-04-19 spec 细化，以新 spec §8.1 为准。关键增强：
+- AI SDK 抛 `AbortError` 后 executor 尝试 `await result.response.catch(...).messages`（best-effort）携带已完成 step 的 `finalMessages` 进入 `lifecycle { stopped }`
+- Orchestrator 收到 `stopped` 事件：若 `finalMessages` 非空 → 整批 append 到 jsonl；随后追加 `[stopped]` 标记，保证中断后记忆完整
 
 ### 4.3 Channel name 获取策略
 
@@ -405,7 +397,7 @@ agent-slack --help
 | 层级 | 场景 | 处理 |
 |---|---|---|
 | **Fatal**（启动期） | 缺凭证、config 解析失败、目录权限 | 日志输出原因 + 修复建议 → 退出码 1；`start` 主动引导 `onboard` |
-| **Agent Errors**（运行期语义） | AI SDK 失败、模型拒答、tool 执行抛错 | Executor yield `error` 事件 → Orchestrator 持久化错误消息 + 更新 meta.status = `'error'` → sink.fail() → IM 侧错误块（脱敏）+ ❌ reaction |
+| **Agent Errors**（运行期语义） | AI SDK 失败、模型拒答、tool 执行抛错 | ⚠️ 已被 2026-04-19 spec §8.3 的四层错误归属替换：fullStream 内部 `error` part / 外层 throw 均经 executor emit `lifecycle { failed, error }`；orchestrator 代码级异常走 `emitSyntheticFailed(sink, message)`；sink 不再有独立 `fail()`。UI 仍为"⚠️ 出错 + ❌ reaction" |
 | **Recoverable**（运行期瞬态） | Slack API 429 / 超时 / 网络抖动 | `safeRender` 包装所有 Slack API：`logger.warn` 记录，不传播到 orchestrator；AI SDK 内置 retry |
 
 ### 6.3 Graceful shutdown
@@ -459,7 +451,7 @@ SIGINT / SIGTERM
 ### 7.1 关键里程碑
 
 - 🎯 **M1（阶段 3 末）**：`@mention` 能收到回复，消息历史正确持久化——**最关键的跨越**（litellm + AI SDK + slack 三方同时碰头，越早发现兼容性问题越好）。
-- 🎯 **M2（阶段 4 末）**：丰富度 UX 达成（thinking、tool-use、cost）
+- 🎯 **M2（阶段 4 末）**：丰富度 UX 达成（thinking、tool-use、cost）。⚠️ M2 原 plan `plans/2026-04-18-M2-renderer.md` 已作废；当前权威 plan 见 [`plans/2026-04-19-M2-renderer.md`](../plans/2026-04-19-M2-renderer.md)，设计源自 [`specs/2026-04-19-slack-render-flow-redesign.md`](./2026-04-19-slack-render-flow-redesign.md)
 - 🎯 **M3（阶段 5 末）**：skills / 并发 / cancel 完整，功能闭环
 - 🎯 **M4（阶段 6 末）**：脱离 `pnpm dev`，bin 可分发，进入二期准备
 
