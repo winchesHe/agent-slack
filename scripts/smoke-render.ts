@@ -1,7 +1,17 @@
 import type { WebClient } from '@slack/web-api'
+import { tool, type LanguageModel, type ToolSet } from 'ai'
+import { MockLanguageModelV1, simulateReadableStream } from 'ai/test'
+import { z } from 'zod'
+import { createAiSdkExecutor } from '@/agent/AiSdkExecutor.ts'
+import type { AgentExecutionEvent } from '@/core/events.ts'
 import type { Logger } from '@/logger/logger.ts'
 import { createSlackRenderer } from '@/im/slack/SlackRenderer.ts'
 import { STATUS, getShuffledLoadingMessages } from '@/im/slack/thinking-messages.ts'
+
+type MockStreamChunk = {
+  type: string
+  [key: string]: unknown
+}
 
 // 统一写 stdout，方便 smoke 输出保持一行一个事件。
 function writeLine(line: string): void {
@@ -10,6 +20,10 @@ function writeLine(line: string): void {
 
 // 截断过长 payload，避免观测输出被大段 blocks 淹没。
 function formatValue(value: unknown): string {
+  if (value instanceof Error) {
+    return value.stack ?? value.message
+  }
+
   const json = JSON.stringify(value)
   return json.length > 220 ? `${json.slice(0, 220)}...` : json
 }
@@ -55,6 +69,53 @@ function createMockWebClient(): WebClient {
       },
     },
   } as unknown as WebClient
+}
+
+function createChunk3Model(stepChunks: MockStreamChunk[][]): LanguageModel {
+  const responses = [...stepChunks]
+
+  return new MockLanguageModelV1({
+    doStream: async () => {
+      const chunks = responses.shift()
+      if (!chunks) {
+        throw new Error('chunk 3 smoke 缺少后续 mock 响应')
+      }
+
+      return {
+        stream: simulateReadableStream({ chunks }) as unknown as ReadableStream<never>,
+        rawCall: { rawPrompt: null, rawSettings: {} },
+      } as never
+    },
+  }) as unknown as LanguageModel
+}
+
+function createChunk3Tools(): ToolSet {
+  return {
+    read_file: tool({
+      description: '读取文件内容',
+      parameters: z.object({ path: z.string() }),
+      execute: async ({ path }) => `content:${path}`,
+    }),
+  }
+}
+
+function summarizeChunk3Event(event: AgentExecutionEvent | undefined): string {
+  if (!event) {
+    return 'event=undefined'
+  }
+
+  switch (event.type) {
+    case 'activity-state':
+      return event.state.clear
+        ? 'clear=true'
+        : `status=${event.state.status} composing=${!!event.state.composing} newTools=${(event.state.newToolCalls ?? []).join(',')} reasoning=${event.state.reasoningTail ?? ''}`
+    case 'assistant-message':
+      return `text=${JSON.stringify(event.text)}`
+    case 'usage-info':
+      return `durationMs=${event.usage.durationMs} cost=${event.usage.totalCostUSD.toFixed(4)} models=${event.usage.modelUsage.length}`
+    case 'lifecycle':
+      return `phase=${event.phase} finalMessages=${'finalMessages' in event ? (event.finalMessages?.length ?? 0) : 0}`
+  }
 }
 
 async function runChunk2Smoke(): Promise<void> {
@@ -167,7 +228,100 @@ async function runChunk2Smoke(): Promise<void> {
   }
 }
 
-runChunk2Smoke().catch((error: unknown) => {
+async function runChunk3Smoke(): Promise<void> {
+  writeLine('\n====== [CHUNK 3] AiSdkExecutor smoke ======')
+
+  const scenarios: Array<{
+    label: string
+    stepChunks: MockStreamChunk[][]
+    tools?: ToolSet
+  }> = [
+    {
+      label: 'text-only',
+      stepChunks: [
+        [
+          { type: 'response-metadata', id: 'resp_1', modelId: 'mock-model' },
+          { type: 'reasoning', textDelta: '先分析上下文，再组织答案。' },
+          { type: 'text-delta', textDelta: 'hello ' },
+          { type: 'text-delta', textDelta: 'world' },
+          {
+            type: 'finish',
+            finishReason: 'stop',
+            usage: { promptTokens: 10, completionTokens: 5 },
+            providerMetadata: { litellm: { cost: 0.12 } },
+          },
+        ],
+      ],
+    },
+    {
+      label: 'tool-loop',
+      tools: createChunk3Tools(),
+      stepChunks: [
+        [
+          { type: 'response-metadata', id: 'resp_2', modelId: 'mock-model' },
+          // 注意：ai/test 不能直接喂 tool-call-streaming-start；这里用 delta 让 AI SDK 自己合成该阶段。
+          {
+            type: 'tool-call-delta',
+            toolCallType: 'function',
+            toolCallId: 'call_1',
+            toolName: 'read_file',
+            argsTextDelta: '{"path":"a.ts"}',
+          },
+          {
+            type: 'tool-call',
+            toolCallType: 'function',
+            toolCallId: 'call_1',
+            toolName: 'read_file',
+            args: '{"path":"a.ts"}',
+          },
+          {
+            type: 'finish',
+            finishReason: 'tool-calls',
+            usage: { promptTokens: 3, completionTokens: 0 },
+            providerMetadata: { litellm: { response_cost: 0.01 } },
+          },
+        ],
+        [
+          { type: 'response-metadata', id: 'resp_3', modelId: 'mock-model' },
+          { type: 'text-delta', textDelta: 'done' },
+          {
+            type: 'finish',
+            finishReason: 'stop',
+            usage: { promptTokens: 2, completionTokens: 1 },
+            providerMetadata: { openaiCompat: { cost: 0.02 } },
+          },
+        ],
+      ],
+    },
+  ]
+
+  for (const scenario of scenarios) {
+    writeLine(`[CHUNK 3] scenario = ${scenario.label}`)
+
+    const executor = createAiSdkExecutor({
+      model: createChunk3Model(scenario.stepChunks),
+      modelName: 'mock-model',
+      tools: scenario.tools ?? {},
+      maxSteps: 3,
+      logger: createSmokeLogger('chunk3'),
+    })
+
+    for await (const event of executor.execute({
+      systemPrompt: 'system',
+      messages: [{ role: 'user', content: 'hi' }],
+      abortSignal: new AbortController().signal,
+    })) {
+      writeLine(`event[${event.type}] ${summarizeChunk3Event(event)}`)
+    }
+  }
+}
+
+async function main(): Promise<void> {
+  await runChunk2Smoke()
+  await runChunk3Smoke()
+}
+
+main().catch((error: unknown) => {
   process.stderr.write(String(error) + '\n')
   process.exitCode = 1
 })
