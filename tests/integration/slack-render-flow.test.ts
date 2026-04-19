@@ -55,6 +55,10 @@ function createMockWebClient(): { web: WebClient; calls: ApiCall[] } {
         calls.push({ method: 'reactions.add', args })
         return { ok: true }
       }),
+      remove: vi.fn(async (args: unknown) => {
+        calls.push({ method: 'reactions.remove', args })
+        return { ok: true }
+      }),
     },
     chat: {
       postMessage: vi.fn(async (args: unknown) => {

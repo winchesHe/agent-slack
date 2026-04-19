@@ -29,6 +29,7 @@ function stubRenderer(): SlackRenderer {
   const noop = async () => {}
   return {
     addAck: noop,
+    removeAck: noop,
     addDone: noop,
     addError: noop,
     addStopped: noop,

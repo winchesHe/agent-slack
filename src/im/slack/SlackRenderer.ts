@@ -20,6 +20,7 @@ export interface ProgressUiState {
 
 export interface SlackRenderer {
   addAck(client: WebClient, channelId: string, messageTs: string): Promise<void>
+  removeAck(client: WebClient, channelId: string, messageTs: string): Promise<void>
   addDone(client: WebClient, channelId: string, messageTs: string): Promise<void>
   addError(client: WebClient, channelId: string, messageTs: string): Promise<void>
   addStopped(client: WebClient, channelId: string, messageTs: string): Promise<void>
@@ -172,8 +173,22 @@ export function createSlackRenderer(deps: SlackRendererDeps): SlackRenderer {
     )
   }
 
+  // 移除 reaction，用于终态时清除 ack 的 👀。
+  async function removeReaction(
+    client: WebClient,
+    channelId: string,
+    messageTs: string,
+    name: string,
+  ): Promise<void> {
+    await safeRender(`reactions.remove(${name})`, () =>
+      client.reactions.remove({ channel: channelId, timestamp: messageTs, name }),
+    )
+  }
+
   return {
     addAck: (client, channelId, messageTs) => addReaction(client, channelId, messageTs, 'eyes'),
+    removeAck: (client, channelId, messageTs) =>
+      removeReaction(client, channelId, messageTs, 'eyes'),
     addDone: (client, channelId, messageTs) =>
       addReaction(client, channelId, messageTs, 'white_check_mark'),
     addError: (client, channelId, messageTs) => addReaction(client, channelId, messageTs, 'x'),
@@ -300,7 +315,8 @@ export function createSlackRenderer(deps: SlackRendererDeps): SlackRenderer {
             ? [buildContextBlock(options.workspaceLabel), ...chunk.blocks]
             : chunk.blocks
 
-        await safeRender('chat.postMessage(reply)', () =>
+        // 先尝试带 blocks 发送；若 Slack 返回 invalid_blocks，则降级为纯文本重发。
+        const result = await safeRender('chat.postMessage(reply)', () =>
           client.chat.postMessage({
             channel: channelId,
             thread_ts: threadTs,
@@ -308,6 +324,20 @@ export function createSlackRenderer(deps: SlackRendererDeps): SlackRenderer {
             blocks: messageBlocks,
           } as Parameters<WebClient['chat']['postMessage']>[0]),
         )
+
+        if (result === undefined) {
+          log.warn('blocks 被 Slack 拒绝，降级为纯文本重发', {
+            textPreview: chunk.text.slice(0, 200),
+            blocksCount: messageBlocks.length,
+          })
+          await safeRender('chat.postMessage(reply-fallback)', () =>
+            client.chat.postMessage({
+              channel: channelId,
+              thread_ts: threadTs,
+              text: chunk.text,
+            } as Parameters<WebClient['chat']['postMessage']>[0]),
+          )
+        }
       }
     },
     async postSessionUsage(client, channelId, threadTs, usage) {

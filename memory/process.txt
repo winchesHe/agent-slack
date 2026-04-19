@@ -118,3 +118,17 @@ plan 中的测试用例用 read_file 作为 mock toolName，不反映真实 tool
 - pnpm lint: 0 错误
 - spec 状态已更新为「已实装」
 - M2 Slack Render Flow 重设计全部落地
+
+---
+
+[2026-04-20 00:00] 真实 Slack 测试反馈修复
+
+## 问题 1: invalid_blocks 错误
+- `markdownToBlocks` 生成的 blocks 被 Slack API 拒绝
+- 加了 fallback 逻辑：blocks 发送失败时降级为纯文本重发
+
+## 问题 2: 终态时 👀 reaction 未移除
+- 完成时只加 ✅ 但不移除 👀，导致原消息同时有两个 reaction
+- SlackRenderer 新增 `removeAck` 方法（调 `reactions.remove`）
+- SlackEventSink finalize 流程：先 `removeAck` 再加终态 reaction（✅/❌/⏹）
+- 所有 mock renderer 和集成测试已同步更新

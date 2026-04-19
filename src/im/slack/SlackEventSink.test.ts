@@ -32,6 +32,9 @@ function mockRenderer(): SlackRenderer & { calls: RecordedCall[] } {
     async addAck(...args) {
       calls.push({ method: 'addAck', args })
     },
+    async removeAck(...args) {
+      calls.push({ method: 'removeAck', args })
+    },
     async addDone(...args) {
       calls.push({ method: 'addDone', args })
     },

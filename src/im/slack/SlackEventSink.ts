@@ -363,6 +363,9 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
           )
         }
 
+        // 终态 reaction：先移除 👀，再加终态 emoji。
+        await deps.renderer.removeAck(deps.web, deps.channelId, deps.sourceMessageTs)
+
         if (local.terminalPhase === 'completed') {
           await deps.renderer.addDone(deps.web, deps.channelId, deps.sourceMessageTs)
         } else if (local.terminalPhase === 'stopped') {
