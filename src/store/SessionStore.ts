@@ -4,7 +4,15 @@ import path from 'node:path'
 import type { CoreMessage } from 'ai'
 import type { WorkspacePaths } from '@/workspace/paths.ts'
 import { slackSessionDir } from '@/workspace/paths.ts'
-import type { StepUsage } from '@/core/usage.ts'
+
+// 原 core/usage.ts 的 StepUsage 已内联至此，作为 accumulateUsage 的参数类型。
+export interface StepUsage {
+  inputTokens: number
+  outputTokens: number
+  cachedInputTokens?: number
+  reasoningTokens?: number
+  costUSD?: number
+}
 
 export interface SessionMeta {
   schemaVersion: 1
