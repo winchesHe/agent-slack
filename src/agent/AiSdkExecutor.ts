@@ -54,7 +54,7 @@ type ExecutorStreamPart =
   | { type: 'file' }
   | { type: 'tool-call-streaming-start'; toolCallId: string; toolName: string }
   | { type: 'tool-call-delta' }
-  | { type: 'tool-call'; toolCallId: string; toolName: string }
+  | { type: 'tool-call'; toolCallId: string; toolName: string; args: Record<string, unknown> }
   | { type: 'tool-result'; toolCallId: string }
   | {
       type: 'step-finish'
@@ -64,6 +64,27 @@ type ExecutorStreamPart =
     }
   | { type: 'finish' }
   | { type: 'error'; error: unknown }
+
+const TOOL_LABEL_CMD_MAX_LEN = 40
+
+// 模型经常以 `cd <path> && <real_cmd>` 或 `cd <path>; <real_cmd>` 开头，
+// 前缀 cd 会占满截断长度导致看不到真正的命令，这里剥掉它。
+const CD_PREFIX_RE = /^cd\s+\S+\s*(?:&&|;)\s*/
+
+// bash 工具的 progress 显示友好名，让用户直观看到正在执行的命令。
+// 其他工具保持原名。
+function toolDisplayLabel(toolName: string, args?: Record<string, unknown>): string {
+  if (toolName === 'bash' && args && typeof args.cmd === 'string') {
+    const stripped = args.cmd.replace(CD_PREFIX_RE, '')
+    const cmd = stripped.length > TOOL_LABEL_CMD_MAX_LEN
+      ? `${stripped.slice(0, TOOL_LABEL_CMD_MAX_LEN)}…`
+      : stripped
+
+    return `bash(${cmd})`
+  }
+
+  return toolName
+}
 
 const ERROR_REDACTION_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
   // Bearer / token / key 这类敏感片段不应该透传到 Slack 或持久化层。
@@ -294,21 +315,21 @@ export function createAiSdkExecutor(deps: AiSdkExecutorDeps): AgentExecutor {
               yield* emitActivity(agg, {
                 status: TOOL_PHRASE.running(part.toolName),
                 activities: [TOOL_PHRASE.input(part.toolName), ...agg.defaultLoadingMessages.slice(0, 4)],
-                newToolCalls: [part.toolName],
+                // newToolCalls 延迟到 tool-call 时发出，此时才有完整 args 可构建 display label
               })
               break
             }
 
             case 'tool-call': {
               clearReasoning(agg)
-              const previous = agg.activeTools.get(part.toolCallId)
               agg.activeTools.set(part.toolCallId, { toolName: part.toolName, status: 'running' })
+              const label = toolDisplayLabel(part.toolName, part.args)
               yield* emitActivity(agg, {
                 status: TOOL_PHRASE.running(part.toolName),
                 activities: [TOOL_PHRASE.running(part.toolName), ...agg.defaultLoadingMessages.slice(0, 4)],
-                // 某些 provider 可能直接给完整 tool-call，不先发 streaming-start。
-                // 这里在首次见到该 callId 时补发 newToolCalls，避免 sink 漏记工具次数。
-                ...(previous ? {} : { newToolCalls: [part.toolName] }),
+                // 始终携带 newToolCalls，让 sink 能累加工具计数。
+                // display label 对 bash 工具会包含具体命令，如 bash(cat config.yaml)。
+                newToolCalls: [label],
               })
               break
             }

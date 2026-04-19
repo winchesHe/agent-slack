@@ -57,7 +57,7 @@ export interface ActivityState {
   activities: string[]             // Slack loading_messages 池（客户端轮换）
   composing?: boolean              // 是否进入"出文本"阶段
   clear?: boolean                  // 清空状态条 / 删除 progress message
-  newToolCalls?: string[]          // 累计 toolHistory 用（不参与 key diff）
+  newToolCalls?: string[]          // 累计 toolHistory 用（不参与 key diff）。值为 display label（bash 工具带命令：`bash(cat config.yaml)`；其他工具保持原名）
   reasoningTail?: string           // 当前 reasoning 末尾摘要，≤80 char
 }
 
@@ -83,6 +83,7 @@ export interface SessionUsageInfo {
 - **`error` 事件已删除**：所有错误经 `lifecycle { failed, error: { message } }`。
 - **流式 token 不对外**：不做"文本逐字浮现"，过程感由 progress message 承担。
 - **Reasoning 一期就做**：但经 `reasoningTail` 字段表达，不单独加事件类型；无显式 reasoning 结束事件，由后续 `text-delta` / `tool-call-streaming-start` / `step-finish` 隐式结束（见 §6.2）。
+- **`toolDisplayLabel` 与 Sink 聚合**：Executor 的 `toolDisplayLabel(toolName, args)` 为 bash 工具生成 `bash(cmd_truncated)` 格式 label（自动剥去 `cd <path> && ` 前缀，截断 40 字符），其他工具原名不变。Sink 侧 `toolHistory` 按 base name 聚合计数（`extractBaseToolName()` 从 display label 提取 base name），`toolLatestLabel` 记录每个 base name 的最新 display label。渲染时 `toDisplayToolHistory()` 将 base name 计数转为 display label 版本，最终呈现如 `🔧 bash(cat config.yaml) x3 · edit_file x1`。
 - **`clear` emit 时机**：executor 不在流正常完成时 emit `{ clear: true }`（让 sink 的 `finalize()` 统一管理 progress 消息终态）；仅在 abort 时 emit（让 sink 停止所有状态显示后再由 orchestrator 触发 finalize）。
 
 ---
@@ -203,7 +204,7 @@ export function createSlackRenderer(deps: SlackRendererDeps): SlackRenderer
 - **`postThreadReply` 内部分块**：`markdownToBlocks(normalizeUnderscoreEmphasis(text), { preferSectionBlocks: false })` → `splitBlocksWithText(blocks)` → 多次 `chat.postMessage(thread_ts)`。`workspaceLabel` 作为第一段 blocks 的前缀 context block（仅一期可不用）。
 - **`upsertProgressMessage` 渲染顺序**：
   ```
-  [context] 🔧 toolHistory 行（如 "🔧 read_file x2 · bash x1"），空则跳过
+  [context] 🔧 toolHistory 行（如 "🔧 bash(cat config.yaml) x2 · edit_file x1"），空则跳过
   [context] 🤔 reasoningTail 行，缺则跳过
   [context] 最新 activity 行（取 activities 最后一条去重）
   ```
@@ -233,7 +234,8 @@ export interface SlackEventSinkDeps {
 interface SinkLocalState {
   progressMessageTs?: string
   progressActive: boolean
-  toolHistory: Map<string, number>
+  toolHistory: Map<string, number>      // key = base tool name（如 "bash"），按 base name 累加计数
+  toolLatestLabel: Map<string, string>  // key = base tool name，value = 最新一次的 display label（如 "bash(cat config.yaml)"）
   lastStateKey?: string
   hasSentToolbarInTurn: boolean
   terminalPhase?: 'completed' | 'stopped' | 'failed'
@@ -363,9 +365,9 @@ interface AggregatorState {
 | `reasoning` { textDelta } | `currentReasoning += textDelta`；节流：累计自上次 emit ≥ 30 chars 或距上次 ≥ 800ms → emit `activity-state { status: '推理中…', activities: defaultLoadingMessages, reasoningTail: currentReasoning.replace(/\s+/g,' ').trim().slice(-80) }` |
 | `reasoning-signature` / `redacted-reasoning` | 忽略 |
 | `source` / `file` | 一期忽略（非 codex 场景不涉及） |
-| `tool-call-streaming-start` { toolCallId, toolName } | `activeTools.set(callId, { toolName, status: 'input' })`；**始终** emit `newToolCalls: [toolName]`（每次调用都累加 `toolHistory`，同名重复即 count++）；reasoning 也视为结束（`currentReasoning = ''`）；emit `activity-state { status: '正在 ' + toolName + '…', activities: ['准备调用 ' + toolName + '…', ...defaultLoadingMessages.slice(0, 4)], newToolCalls: [toolName] }` |
+| `tool-call-streaming-start` { toolCallId, toolName } | `activeTools.set(callId, { toolName, status: 'input' })`；reasoning 视为结束（`currentReasoning = ''`）；emit `activity-state { status: '正在 ' + toolName + '…', activities: ['准备调用 ' + toolName + '…', ...defaultLoadingMessages.slice(0, 4)] }`。**注意：`newToolCalls` 延迟到 `tool-call` 事件发出**（此时尚无 args，无法构建 display label） |
 | `tool-call-delta` | 不 emit（内部 partial 累计不需要外化） |
-| `tool-call` { toolCallId, toolName, args } | `activeTools.set(callId, { toolName, status: 'running' })`；emit `activity-state { status: '正在 ' + toolName + '…', activities: ['正在 ' + toolName + '…', ...defaultLoadingMessages.slice(0, 4)] }` |
+| `tool-call` { toolCallId, toolName, args } | `activeTools.set(callId, { toolName, status: 'running' })`；通过 `toolDisplayLabel(toolName, args)` 生成 display label（bash 工具 → `bash(cmd_truncated)`，自动剥去 `cd <path> &&` 前缀；其他工具原名）；emit `activity-state { status: '正在 ' + toolName + '…', activities: ['正在 ' + toolName + '…', ...defaultLoadingMessages.slice(0, 4)], newToolCalls: [displayLabel] }` |
 | `tool-result` { toolCallId, toolName, result } | `activeTools.delete(callId)`；若 `activeTools` 空 → emit `activity-state { status: '思考中…', activities: defaultLoadingMessages }`；否则按剩余 activeTools 的第一个构造 activities 文案 |
 | `step-finish` { usage, providerMetadata, finishReason } | 累加 `modelUsage`（`costUSD = extractCostFromMetadata(providerMetadata)`）；若 `stepTextBuffer.trim()` 非空 → emit `assistant-message { text: stepTextBuffer.trim() }`；reset stepTextBuffer；`composing = false` |
 | `error` { error } | emit `lifecycle { phase: 'failed', error: { message: redact(String(error)) } }`；从 fullStream 循环 break；**不再处理后续 part**；**不再 emit 其它事件** |

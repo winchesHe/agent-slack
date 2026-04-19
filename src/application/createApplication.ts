@@ -9,6 +9,7 @@ import { createAiSdkExecutor } from '@/agent/AiSdkExecutor.ts'
 import { buildBuiltinTools } from '@/agent/tools/index.ts'
 import { createConversationOrchestrator } from '@/orchestrator/ConversationOrchestrator.ts'
 import { createSlackAdapter } from '@/im/slack/SlackAdapter.ts'
+import { createSlackRenderer } from '@/im/slack/SlackRenderer.ts'
 import { ConfigError } from '@/core/errors.ts'
 import type { Application } from './types.ts'
 
@@ -70,8 +71,11 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
     logger,
   })
 
+  const renderer = createSlackRenderer({ logger })
+
   const slack = createSlackAdapter({
     orchestrator,
+    renderer,
     logger,
     botToken: env.slackBotToken,
     appToken: env.slackAppToken,

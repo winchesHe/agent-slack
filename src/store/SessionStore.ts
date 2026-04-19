@@ -16,7 +16,7 @@ export interface SessionMeta {
   agentName: string
   createdAt: string
   updatedAt: string
-  status: 'idle' | 'running' | 'error'
+  status: 'idle' | 'running' | 'stopped' | 'error'
   usage: {
     inputTokens: number
     outputTokens: number
@@ -43,9 +43,11 @@ export interface GetOrCreateArgs {
 
 export interface SessionStore {
   getOrCreate(args: GetOrCreateArgs): Promise<Session>
+  getMeta(id: string): Promise<SessionMeta | undefined>
   loadMessages(id: string): Promise<CoreMessage[]>
   appendMessage(id: string, msg: CoreMessage): Promise<void>
   accumulateUsage(id: string, step: StepUsage): Promise<void>
+  accumulateCost(id: string, usd: number): Promise<void>
   setStatus(id: string, status: SessionMeta['status']): Promise<void>
 }
 
@@ -67,6 +69,12 @@ export function createSessionStore(paths: WorkspacePaths): SessionStore {
   }
 
   return {
+    async getMeta(id) {
+      const d = dirs.get(id)
+      if (!d) return undefined
+      return readMeta(d)
+    },
+
     async getOrCreate(args) {
       const id = `${args.imProvider}:${args.channelId}:${args.threadTs}`
       const existingDir = dirs.get(id)
@@ -122,8 +130,15 @@ export function createSessionStore(paths: WorkspacePaths): SessionStore {
       meta.usage.inputTokens += step.inputTokens
       meta.usage.outputTokens += step.outputTokens
       meta.usage.cachedInputTokens += step.cachedInputTokens ?? 0
-      meta.usage.totalCostUSD += step.costUSD ?? 0
       meta.usage.stepCount += 1
+      await writeMeta(dir, meta)
+    },
+
+    async accumulateCost(id, usd) {
+      const dir = resolveDir(id)
+      const meta = await readMeta(dir)
+      // 成本改为事件级单独累加，避免按 modelUsage 循环时重复计费。
+      meta.usage.totalCostUSD += usd
       await writeMeta(dir, meta)
     },
 

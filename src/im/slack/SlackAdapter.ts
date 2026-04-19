@@ -3,14 +3,17 @@ import type { WebClient } from '@slack/web-api'
 import type { IMAdapter } from '@/im/IMAdapter.ts'
 import type { ConversationOrchestrator } from '@/orchestrator/ConversationOrchestrator.ts'
 import type { Logger } from '@/logger/logger.ts'
+import type { SlackRenderer } from './SlackRenderer.ts'
 import { createSlackEventSink } from './SlackEventSink.ts'
 
 export interface SlackAdapterDeps {
   orchestrator: ConversationOrchestrator
+  renderer: SlackRenderer
   logger: Logger
   botToken: string
   appToken: string
   signingSecret: string
+  workspaceLabel?: string
 }
 
 export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
@@ -43,11 +46,6 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
         }
       }
 
-      await swallow(
-        client.reactions.add({ channel: channelId, timestamp: messageTs, name: 'eyes' }),
-        log,
-      )
-
       // 解析 userName（优先 real_name，回落 name，再回落 userId）
       const userId = event.user ?? 'unknown'
       let userName = userNameCache.get(userId) ?? ''
@@ -63,18 +61,13 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
       }
       if (!userName) userName = userId
 
-      const placeholder = await client.chat.postMessage({
-        channel: channelId,
-        thread_ts: threadTs,
-        text: '⏳ thinking…',
-      })
-      if (!placeholder.ts) throw new Error('placeholder ts missing')
-
       const sink = createSlackEventSink({
         web: client as unknown as WebClient,
         channelId,
         threadTs,
-        placeholderTs: placeholder.ts,
+        sourceMessageTs: messageTs,
+        ...(deps.workspaceLabel ? { workspaceLabel: deps.workspaceLabel } : {}),
+        renderer: deps.renderer,
         logger: deps.logger,
       })
 
@@ -108,13 +101,5 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
       await app.stop()
       log.info('slack adapter stopped')
     },
-  }
-}
-
-async function swallow(p: Promise<unknown>, log: Logger): Promise<void> {
-  try {
-    await p
-  } catch (err) {
-    log.warn('slack api failed (swallowed)', err)
   }
 }

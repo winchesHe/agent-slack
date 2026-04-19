@@ -30,6 +30,8 @@ interface SinkLocalState {
   // `foo?: string` 不等价于“允许后续赋值 undefined”。
   progressMessageTs: string | undefined
   toolHistory: Map<string, number>
+  // 每个 base tool name 的最新 display label（如 bash → bash(cat config.yaml)）。
+  toolLatestLabel: Map<string, string>
   lastStateKey: string | undefined
   hasSentToolbarInTurn: boolean
   terminalPhase: 'completed' | 'stopped' | 'failed' | undefined
@@ -73,12 +75,30 @@ function isMeaningful(state: ActivityState): boolean {
   return false
 }
 
-function toProgressUiState(state: Exclude<ActivityState, { clear: true }>, toolHistory: Map<string, number>) {
+// 从 display label 中提取 base tool name：bash(cat config.yaml) → bash，edit_file → edit_file。
+function extractBaseToolName(label: string): string {
+  const parenIdx = label.indexOf('(')
+
+  return parenIdx >= 0 ? label.slice(0, parenIdx) : label
+}
+
+// 将 base name 的 toolHistory 转为 display label 版本，供渲染层直接使用。
+function toDisplayToolHistory(toolHistory: Map<string, number>, toolLatestLabel: Map<string, string>): Map<string, number> {
+  const display = new Map<string, number>()
+
+  for (const [base, count] of toolHistory) {
+    const label = toolLatestLabel.get(base) ?? base
+    display.set(label, count)
+  }
+
+  return display
+}
+
+function toProgressUiState(state: Exclude<ActivityState, { clear: true }>, toolHistory: Map<string, number>, toolLatestLabel: Map<string, string>) {
   return {
     status: state.status,
     activities: state.activities,
-    // 每次渲染都传快照，避免后续累计把历史 payload 一起“改写”。
-    toolHistory: new Map(toolHistory),
+    toolHistory: toDisplayToolHistory(toolHistory, toolLatestLabel),
     ...(state.composing ? { composing: true } : {}),
     ...(state.reasoningTail ? { reasoningTail: state.reasoningTail } : {}),
   }
@@ -89,6 +109,7 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
   const local: SinkLocalState = {
     progressMessageTs: undefined,
     toolHistory: new Map<string, number>(),
+    toolLatestLabel: new Map<string, string>(),
     lastStateKey: undefined,
     hasSentToolbarInTurn: false,
     terminalPhase: undefined,
@@ -101,8 +122,10 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
     // 工具历史是按事件次数累加的，而不是按“是否首次见到该工具”去重。
     // 这样 progress/finalize 才能精确显示 `read_file x3` 之类的累计信息。
     if (state.newToolCalls && state.newToolCalls.length > 0) {
-      for (const toolName of state.newToolCalls) {
-        local.toolHistory.set(toolName, (local.toolHistory.get(toolName) ?? 0) + 1)
+      for (const label of state.newToolCalls) {
+        const base = extractBaseToolName(label)
+        local.toolHistory.set(base, (local.toolHistory.get(base) ?? 0) + 1)
+        local.toolLatestLabel.set(base, label)
       }
     }
 
@@ -141,7 +164,7 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
         deps.web,
         deps.channelId,
         deps.threadTs,
-        toProgressUiState(state, local.toolHistory),
+        toProgressUiState(state, local.toolHistory, local.toolLatestLabel),
         local.progressMessageTs,
       )
 
@@ -159,7 +182,7 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
         deps.web,
         deps.channelId,
         deps.threadTs,
-        toProgressUiState(state, local.toolHistory),
+        toProgressUiState(state, local.toolHistory, local.toolLatestLabel),
       )
 
       if (nextProgressTs) {
@@ -289,7 +312,7 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
               deps.channelId,
               deps.threadTs,
               previousProgressTs,
-              local.toolHistory,
+              toDisplayToolHistory(local.toolHistory, local.toolLatestLabel),
             )
           } else if (local.terminalPhase === 'stopped') {
             if (local.terminalStopReason === 'superseded') {
