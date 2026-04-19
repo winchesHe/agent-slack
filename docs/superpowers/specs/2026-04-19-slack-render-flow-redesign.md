@@ -30,7 +30,7 @@
 
 ### 1.3 本次设计的 3 条核心决策
 
-1. **UI 三载体模型**（对齐 kagura）：状态条 + progress message + reply messages 分工；若 Slack 未开 Assistant feature，状态条自动降级为 no-op，仅用后两载体。
+1. **UI 三载体模型**（对齐 kagura）：状态条 + progress message + reply messages 分工；本项目运行环境已确认启用 Slack Assistant feature，状态条直接使用 `assistant.threads.setStatus`，不保留降级开关。
 2. **聚合层下沉到 Executor**：对外事件改为粗粒度 4 类（`activity-state` / `assistant-message` / `lifecycle` / `usage-info`），AI SDK 细粒度流只在 `AiSdkExecutor` 内部处理。
 3. **Renderer 无状态、Sink 有状态**：`SlackRenderer` 是纯 I/O 门面；`SlackEventSink` 持有该 turn 本地状态（progress ts、toolHistory、lastStateKey 等），消费事件并编排 renderer 调用。
 
@@ -112,7 +112,7 @@ export interface SessionUsageInfo {
 │  AiSdkExecutor                                      │
 │    消费 streamText().fullStream 细粒度事件          │
 │    内部 AggregatorState：stepTextBuffer /           │
-│      activeTools / toolNamesSeenInTurn /            │
+│      activeTools /                                  │
 │      modelUsage / currentReasoning / composing      │
 │    yield 4 类粗粒度事件                             │
 └─────────────────────────────────────────────────────┘
@@ -129,7 +129,7 @@ export interface SessionUsageInfo {
 ┌─────────────────────────────────────────────────────┐
 │  SlackRenderer（无状态门面）                        │
 │    所有方法 = 一次 Slack API 调用，内置 safeRender  │
-│    assistant status bar 内置 graceful degrade       │
+│    瞬态错误（429/网络）吞掉 + warn；无 feature flag │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -146,11 +146,9 @@ import type { SessionUsageInfo } from '@/core/events.ts'
 
 export interface SlackRendererDeps {
   logger: Logger
-  // 可选：外部持有的 assistant feature 可用性开关（进程级）；
-  // renderer 调 assistant.threads.setStatus 失败（missing_scope / feature_not_enabled）
-  // 时会调 setter 置 false，后续 setStatus/clearStatus 直接 no-op。
-  assistantFeatureAvailable?: () => boolean
-  setAssistantFeatureAvailable?: (v: boolean) => void
+  // Note: Slack Assistant feature 在本项目部署环境已确认启用（assistant:write scope + Assistant 已开启），
+  // 不再保留 feature flag / 首次失败自动降级逻辑。setStatus/clearStatus 单次失败仅 logger.warn 吞掉，
+  // 由 safeRender 统一兜底，不触发进程级开关。
 }
 
 export interface ProgressUiState {
@@ -168,7 +166,7 @@ export interface SlackRenderer {
   addError(client: WebClient, channelId: string, messageTs: string): Promise<void>     // ❌
   addStopped(client: WebClient, channelId: string, messageTs: string): Promise<void>   // ⏹️
 
-  // ── 状态条 (Slack Assistant，自动 graceful degrade) ──
+  // ── 状态条 (Slack Assistant，直接调用；瞬态失败由 safeRender 吞掉) ──
   setStatus(client: WebClient, channelId: string, threadTs: string,
             status: string, loadingMessages?: string[]): Promise<void>
   clearStatus(client: WebClient, channelId: string, threadTs: string): Promise<void>
@@ -201,7 +199,7 @@ export function createSlackRenderer(deps: SlackRendererDeps): SlackRenderer
 ### 4.1 Renderer 内部设计要点
 
 - **每个方法一个 `safeRender(label, fn)` 包装**：catch 所有 Slack API 错误 → `logger.warn` → return undefined。调用方零 try/catch 负担。
-- **`setStatus` 首次失败自动降级**：catch Slack 返回的 `missing_scope` / `not_allowed_token_type` / `feature_not_enabled` 等错误码 → 调 `setAssistantFeatureAvailable(false)` → 本进程后续 `setStatus` / `clearStatus` 直接 return。其他错误（429 / 网络）仅 warn，不关开关。
+- **`setStatus` / `clearStatus` 直接调用**：Slack Assistant feature 在本项目环境确认启用（`assistant:write` scope + Assistant 已装配），单次失败由 `safeRender` 吞掉并 warn，不触发任何进程级降级或开关。
 - **`postThreadReply` 内部分块**：`markdownToBlocks(normalizeUnderscoreEmphasis(text), { preferSectionBlocks: false })` → `splitBlocksWithText(blocks)` → 多次 `chat.postMessage(thread_ts)`。`workspaceLabel` 作为第一段 blocks 的前缀 context block（仅一期可不用）。
 - **`upsertProgressMessage` 渲染顺序**：
   ```
@@ -339,7 +337,6 @@ interface AggregatorState {
   }>
   lastEmittedActivityKey?: string
   defaultLoadingMessages: string[]       // shuffle 取 8 条
-  toolNamesSeenInTurn: Set<string>
 
   // per-step
   stepTextBuffer: string
@@ -366,7 +363,7 @@ interface AggregatorState {
 | `reasoning` { textDelta } | `currentReasoning += textDelta`；节流：累计自上次 emit ≥ 30 chars 或距上次 ≥ 800ms → emit `activity-state { status: '推理中…', activities: defaultLoadingMessages, reasoningTail: currentReasoning.replace(/\s+/g,' ').trim().slice(-80) }` |
 | `reasoning-signature` / `redacted-reasoning` | 忽略 |
 | `source` / `file` | 一期忽略（非 codex 场景不涉及） |
-| `tool-call-streaming-start` { toolCallId, toolName } | `activeTools.set(callId, { toolName, status: 'input' })`；若 `!toolNamesSeenInTurn.has(toolName)` → `newToolCalls = [toolName]`，`toolNamesSeenInTurn.add(toolName)`；reasoning 也视为结束（`currentReasoning = ''`）；emit `activity-state { status: '正在 ' + toolName + '…', activities: ['准备调用 ' + toolName + '…', ...defaultLoadingMessages.slice(0, 4)], newToolCalls }` |
+| `tool-call-streaming-start` { toolCallId, toolName } | `activeTools.set(callId, { toolName, status: 'input' })`；**始终** emit `newToolCalls: [toolName]`（每次调用都累加 `toolHistory`，同名重复即 count++）；reasoning 也视为结束（`currentReasoning = ''`）；emit `activity-state { status: '正在 ' + toolName + '…', activities: ['准备调用 ' + toolName + '…', ...defaultLoadingMessages.slice(0, 4)], newToolCalls: [toolName] }` |
 | `tool-call-delta` | 不 emit（内部 partial 累计不需要外化） |
 | `tool-call` { toolCallId, toolName, args } | `activeTools.set(callId, { toolName, status: 'running' })`；emit `activity-state { status: '正在 ' + toolName + '…', activities: ['正在 ' + toolName + '…', ...defaultLoadingMessages.slice(0, 4)] }` |
 | `tool-result` { toolCallId, toolName, result } | `activeTools.delete(callId)`；若 `activeTools` 空 → emit `activity-state { status: '思考中…', activities: defaultLoadingMessages }`；否则按剩余 activeTools 的第一个构造 activities 文案 |
@@ -508,7 +505,7 @@ yield { type: 'lifecycle', phase: 'completed', finalMessages }
 | Agent Errors — fullStream 内部 error | 模型拒答、内容审查错误 | **AiSdkExecutor**：fullStream for-await 循环中见到 `error` part | emit `lifecycle { failed, error: { message: redact(String(part.error)) } }`，break loop，不读 finalMessages |
 | Agent Errors — streamText async throw | 网络失败、鉴权过期、tool invocation 抛错、abortSignal AbortError | **AiSdkExecutor**：包住整个 for-await 的外层 try/catch | AbortError → `lifecycle { stopped, reason: 'user', finalMessages? }`；其他 → `lifecycle { failed, error: { message: redact(...) } }` |
 | Agent Errors — Orchestrator 级别异常 | sink 本身抛错、持久化写盘失败、Orchestrator 代码 bug | **ConversationOrchestrator**：`handle()` 外层 try/catch | 调 helper `emitSyntheticFailed(sink, message)`（sink 合成一个 `lifecycle { failed }` 经标准路径进入 sink）；不再让 sink 暴露独立的 `fail()` 方法，保证 finalize 路径唯一 |
-| Slack API 瞬态 | 429 / 网络抖动 / 权限变化 | **SlackRenderer** 内置 `safeRender` | 吞掉 + `logger.warn`；不冒泡；assistant feature 错误额外调 `setAssistantFeatureAvailable(false)` |
+| Slack API 瞬态 | 429 / 网络抖动 / 权限变化 | **SlackRenderer** 内置 `safeRender` | 吞掉 + `logger.warn`；不冒泡。Assistant feature 已确认启用，不再有 feature flag / 进程级降级分支 |
 
 **`emitSyntheticFailed` helper**（确保 orchestrator 发出的 failed 事件 shape 与 executor 自发的一致）：
 
@@ -525,32 +522,16 @@ export async function emitSyntheticFailed(sink: SlackEventSink, message: string)
 
 ---
 
-## 9. Slack Assistant 状态条 graceful degrade
+## 9. Slack Assistant 状态条（无降级）
 
-### 9.1 首次调用尝试
+本项目运行环境已确认满足 Slack Assistant feature 的全部前置条件：
+- App Manifest 声明 `assistant` scopes（含 `assistant:write`）
+- Workspace App 已启用 Assistant feature
+- 所有入站 thread 均非 "new Assistant" 边界情况
 
-- 进程启动时 `assistantFeatureAvailable = true`（乐观）
-- `renderer.setStatus(...)` 内部：
-  ```
-  if (!deps.assistantFeatureAvailable()) return
-  try {
-    await client.assistant.threads.setStatus({ ... })
-  } catch (err) {
-    if (isAssistantFeatureError(err)) {
-      deps.setAssistantFeatureAvailable(false)
-      logger.warn('slack assistant feature 不可用，后续状态条降级为 no-op', err)
-    } else {
-      logger.warn('assistant.threads.setStatus 失败', err)
-    }
-  }
-  ```
-- `isAssistantFeatureError`：识别 `missing_scope` / `not_allowed_token_type` / `feature_not_enabled` / `invalid_assistant_thread` 几个错误码
+因此 `renderer.setStatus(...)` / `renderer.clearStatus(...)` 直接调用 `client.assistant.threads.setStatus(...)`，不保留进程级 feature flag、不识别错误码、不关闭开关。瞬态失败（429 / 网络）由 `safeRender` 统一 `logger.warn` 吞掉，不影响 progress / reply 主路径。
 
-### 9.2 降级后行为
-
-- `setStatus` / `clearStatus` 直接 return
-- Sink 照常工作：progress message 承担全部过程态显示，视觉与 kagura 两载体版接近
-- Doctor 命令可给一条 info：`"Slack Assistant feature 未启用，状态条降级。参考 docs/... 开启。"`
+> **若未来需要容忍未开启 Assistant 的新环境**：再引入进程级开关，参照 git 历史恢复本节曾设计的 `assistantFeatureAvailable` + `isAssistantFeatureError` 模式。一期不做。
 
 ---
 
@@ -567,7 +548,7 @@ export async function emitSyntheticFailed(sink: SlackEventSink, message: string)
 | `src/im/slack/thinking-messages.ts` | **新建** | 中文文案池 + helper |
 | `src/im/slack/SlackAdapter.ts` | **小改** | 构建 sink 时注入 renderer；原来调 `client.reactions.add({name:'eyes'})` 由 `renderer.addAck` 接管；其余逻辑保留 |
 | `src/orchestrator/ConversationOrchestrator.ts` | **改** | 消费新事件类型；按 §7.1 写 jsonl；`await sink.finalize()` 在 finally；兜底异常调用 §8.3 的 `emitSyntheticFailed(sink, message)`（向 sink 注入一条合成 `lifecycle { failed }` 后再 `finalize`），sink 不暴露独立的 `fail()` 方法 |
-| `src/application/createApplication.ts` | **小改** | 装配 `createSlackRenderer`、`assistantFeatureAvailable` 开关（进程级单值） |
+| `src/application/createApplication.ts` | **小改** | 装配 `createSlackRenderer`（Assistant feature 已确认启用，不装 feature flag） |
 
 ### 10.2 可复用
 
@@ -598,7 +579,7 @@ export async function emitSyntheticFailed(sink: SlackEventSink, message: string)
     4. `assistant-message` 来时删 progress + post reply
     5. `lifecycle {stopped}` → finalize 走 stopped 分支 + addStopped reaction
     6. `lifecycle {failed}` → finalize 走 error 分支 + addError reaction
-    7. assistant feature 失败 → 后续 setStatus no-op
+    7. `assistant.threads.setStatus` 单次失败（mock 注入） → `safeRender` warn 吞掉，不影响后续 progress/reply 路径（无开关关闭）
 - `AiSdkExecutor.test.ts`：用 AI SDK 的 `MockLanguageModel` 喂入 stream parts 序列，断言 yield 出的粗粒度事件序列 + finalMessages 完整
 
 ### 11.2 Integration tests
@@ -607,7 +588,7 @@ export async function emitSyntheticFailed(sink: SlackEventSink, message: string)
 
 ### 11.3 E2E（二期）
 
-- 真 slack + 真 litellm 跑完整对话；覆盖 assistant feature 已开 / 未开两种环境
+- 真 slack + 真 litellm 跑完整对话（Assistant feature 已确认启用；不覆盖未开场景）
 
 ---
 
@@ -615,7 +596,7 @@ export async function emitSyntheticFailed(sink: SlackEventSink, message: string)
 
 1. ~~**AI SDK fullStream part 名称**~~ ✅ 已核实：当前 `ai@4.3.19`，part 名按 §6.2 表内列出（v4 风格），实装直接按此表对齐
 2. **LiteLLM cost 读取路径**：实测 `providerMetadata.litellm` 真实 shape，`extractCostFromMetadata` 确定后写进注释 + 简单 unit test；一期实装前先用 `streamText` 打印一次 `providerMetadata` 落实路径
-3. **Slack `assistant.threads.setStatus` 错误码列表**：抓几个常见错误实测入 `isAssistantFeatureError`，一期初版识别 `missing_scope` / `not_allowed_token_type` / `feature_not_enabled` / `invalid_assistant_thread` 四个
+3. ~~**Slack `assistant.threads.setStatus` 错误码列表**~~ ❌ 本期不做：Assistant feature 已确认启用，不需要识别 feature 相关错误码，瞬态错误由 `safeRender` 统一 warn 吞掉
 4. **workspace_label 一期要不要启用**：设计里保留接口，默认 undefined；若一期要"每条 reply 显示 workspace 目录名"可开启
 5. ~~**`markdown-to-slack-blocks` 的 `splitBlocksWithText` 是否默认 export**~~ ✅ 已核实：`markdown-to-slack-blocks@1.5.0` 从 `./splitter` re-export `splitBlocksWithText`，可直接 `import { markdownToBlocks, splitBlocksWithText } from 'markdown-to-slack-blocks'`
 6. **`AgentExecutor.drain()` 接口是否保留**：原 spec 定义但 M1 未用，本次设计删除
@@ -635,7 +616,6 @@ export async function emitSyntheticFailed(sink: SlackEventSink, message: string)
 
 **本文件新增**的内容（原 spec 未覆盖）：
 
-- Slack Assistant feature graceful degrade
 - Reasoning 活动摘要
 - ActivityState 快照 + key diff 去重
 - finalMessages 随 lifecycle 完成态携带给 orchestrator
