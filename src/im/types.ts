@@ -13,7 +13,7 @@ export interface InboundMessage {
 }
 
 export interface EventSink {
-  emit(event: AgentExecutionEvent): void
-  done(): Promise<void>
-  fail(err: Error): Promise<void>
+  onEvent(event: AgentExecutionEvent): Promise<void>
+  finalize(): Promise<void>
+  readonly terminalPhase: 'completed' | 'stopped' | 'failed' | undefined
 }

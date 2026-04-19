@@ -5,6 +5,7 @@ import { z } from 'zod'
 import { createAiSdkExecutor } from '@/agent/AiSdkExecutor.ts'
 import type { AgentExecutionEvent } from '@/core/events.ts'
 import type { Logger } from '@/logger/logger.ts'
+import { createSlackEventSink } from '@/im/slack/SlackEventSink.ts'
 import { createSlackRenderer } from '@/im/slack/SlackRenderer.ts'
 import { STATUS, getShuffledLoadingMessages } from '@/im/slack/thinking-messages.ts'
 
@@ -316,9 +317,66 @@ async function runChunk3Smoke(): Promise<void> {
   }
 }
 
+async function runChunk4Smoke(): Promise<void> {
+  writeLine('\n====== [CHUNK 4] Sink drives Renderer ======')
+
+  const renderer = createSlackRenderer({ logger: createSmokeLogger('chunk4-renderer') })
+  const web = createMockWebClient()
+  const sink = createSlackEventSink({
+    web,
+    channelId: 'C1',
+    threadTs: 't1',
+    sourceMessageTs: 'src-ts',
+    renderer,
+    logger: createSmokeLogger('chunk4-sink'),
+  })
+
+  await sink.onEvent({ type: 'lifecycle', phase: 'started' })
+  await sink.onEvent({
+    type: 'activity-state',
+    state: { status: '思考中…', activities: ['梳理中…', '继续思考…'] },
+  })
+  await sink.onEvent({
+    type: 'activity-state',
+    state: {
+      status: '正在 read_file…',
+      activities: ['正在 read_file…'],
+      newToolCalls: ['read_file'],
+    },
+  })
+  await sink.onEvent({
+    type: 'activity-state',
+    state: {
+      status: '正在 read_file…',
+      activities: ['正在 read_file…'],
+      newToolCalls: ['read_file'],
+    },
+  })
+  await sink.onEvent({ type: 'assistant-message', text: '**查到了** 你的 `config.yaml` 存在。' })
+  await sink.onEvent({
+    type: 'usage-info',
+    usage: {
+      durationMs: 8_300,
+      totalCostUSD: 0.0123,
+      modelUsage: [
+        {
+          model: 'sonnet-4-6',
+          inputTokens: 800,
+          outputTokens: 120,
+          cachedInputTokens: 500,
+          cacheHitRate: 0.625,
+        },
+      ],
+    },
+  })
+  await sink.onEvent({ type: 'lifecycle', phase: 'completed', finalMessages: [] })
+  await sink.finalize()
+}
+
 async function main(): Promise<void> {
   await runChunk2Smoke()
   await runChunk3Smoke()
+  await runChunk4Smoke()
 }
 
 main().catch((error: unknown) => {
