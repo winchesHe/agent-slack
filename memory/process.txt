@@ -88,3 +88,33 @@ plan 中的测试用例用 read_file 作为 mock toolName，不反映真实 tool
 ## 待验收
 - [ ] 用户编译 + 真 Slack 测试
 - [ ] 确认后移除两处 [DEBUG] 诊断 log（AiSdkExecutor.ts + SlackEventSink.ts）
+
+---
+
+[2026-04-19 23:30] Chunk 6 开始
+
+## Task 6.1: 清理 src/core/usage.ts ✅
+- 删除 src/core/usage.ts
+- StepUsage 类型内联至 SessionStore.ts
+- 唯一引用方 SessionStore.ts import 改为本地定义
+- 已提交
+
+## Task 6.2: slack-render-flow 集成测试 ✅
+- 创建 tests/integration/slack-render-flow.test.ts
+- 两个用例：完整 turn 流程 + safeRender 吞瞬态错误
+- 使用真实 SlackRenderer + mock WebClient + MockLanguageModelV1
+
+## Task 6.3: 完成清单 ✅
+- pnpm lint 无错误
+- 全部 *.test.ts 通过
+- spec 状态更新为已实装
+
+---
+
+[2026-04-19 23:35] Chunk 6 完成
+
+## 验收结果
+- pnpm vitest run: 18 test files, 114 tests, 全部通过
+- pnpm lint: 0 错误
+- spec 状态已更新为「已实装」
+- M2 Slack Render Flow 重设计全部落地

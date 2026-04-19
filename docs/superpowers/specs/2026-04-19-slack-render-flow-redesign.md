@@ -1,7 +1,7 @@
 # Slack Render Flow 重设计
 
 **日期**：2026-04-19
-**状态**：已确认，待 spec review
+**状态**：已实装
 **替代**：`docs/superpowers/specs/2026-04-17-agent-slack-architecture-design.md` §2.2 / §4 中 `EventSink` / `AgentExecutionEvent` / SlackRenderer 相关段落；作废 `docs/superpowers/plans/2026-04-18-M2-renderer.md`
 
 ---
