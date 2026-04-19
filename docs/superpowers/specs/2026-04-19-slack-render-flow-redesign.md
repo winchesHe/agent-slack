@@ -166,6 +166,7 @@ export interface SlackRenderer {
   addDone(client: WebClient, channelId: string, messageTs: string): Promise<void>      // ✅
   addError(client: WebClient, channelId: string, messageTs: string): Promise<void>     // ❌
   addStopped(client: WebClient, channelId: string, messageTs: string): Promise<void>   // ⏹️
+  removeAck(client: WebClient, channelId: string, messageTs: string): Promise<void>   // 移除 👀（finalize 时先调用，再加终态 reaction）
 
   // ── 状态条 (Slack Assistant，直接调用；瞬态失败由 safeRender 吞掉) ──
   setStatus(client: WebClient, channelId: string, threadTs: string,
@@ -201,7 +202,7 @@ export function createSlackRenderer(deps: SlackRendererDeps): SlackRenderer
 
 - **每个方法一个 `safeRender(label, fn)` 包装**：catch 所有 Slack API 错误 → `logger.warn` → return undefined。调用方零 try/catch 负担。
 - **`setStatus` / `clearStatus` 直接调用**：Slack Assistant feature 在本项目环境确认启用（`assistant:write` scope + Assistant 已装配），单次失败由 `safeRender` 吞掉并 warn，不触发任何进程级降级或开关。
-- **`postThreadReply` 内部分块**：`markdownToBlocks(normalizeUnderscoreEmphasis(text), { preferSectionBlocks: false })` → `splitBlocksWithText(blocks)` → 多次 `chat.postMessage(thread_ts)`。`workspaceLabel` 作为第一段 blocks 的前缀 context block（仅一期可不用）。
+- **`postThreadReply` 内部分块**：`markdownToBlocks(normalizeUnderscoreEmphasis(text), { preferSectionBlocks: false })` → `splitBlocksWithText(blocks)` → 多次 `chat.postMessage(thread_ts)`。`workspaceLabel` 作为第一段 blocks 的前缀 context block（仅一期可不用）。**Fallback**：若 blocks 发送遇到 `invalid_blocks` 错误，降级为纯文本重发并 warn 记录。
 - **`upsertProgressMessage` 渲染顺序**：
   ```
   [context] 🔧 toolHistory 行（如 "🔧 bash(cat config.yaml) x2 · edit_file x1"），空则跳过
@@ -209,10 +210,12 @@ export function createSlackRenderer(deps: SlackRendererDeps): SlackRenderer
   [context] 最新 activity 行（取 activities 最后一条去重）
   ```
 - **`finalizeProgressMessage*` 三个变体**：done → `✅ 完成 · <toolHistory>`；stopped → `已被用户中止`；error → `⚠️ 出错：<msg>`。保留 ts 不删，用户可回看。
-- **`postSessionUsage` 格式**（沿用 kagura）：
-  `11.2s · $0.0676 · sonnet-4-6: 424 non-cached in+out (62% cache)`
+- **`postSessionUsage` 格式**：
+  `11.2s · $0.0676 · sonnet-4-6: 11.7k tokens (62% cache)`
+  - token 数 ≥1000 时用 k 后缀（如 11657 → `11.7k tokens`），<1000 显示原始数字（如 `424 tokens`）
   - 无 cost → 跳过 `$X.XXXX` 段
-  - 无 cacheHit → 跳过 `(62% cache)` 段
+  - 无 cacheHit（cacheHitRate = 0）→ 跳过 `(62% cache)` 段
+  - `@ai-sdk/openai-compatible` 不解析 `cached_tokens`，cache 信息目前不可用
 
 ---
 
@@ -281,6 +284,8 @@ if progressMessageTs:
 
 if terminalPhase == 'completed' && pendingUsage:
   postSessionUsage(pendingUsage)
+
+removeAck(sourceMessageTs)    // 先移除 👀，再加终态 reaction
 
 switch terminalPhase:
   'completed' → addDone(sourceMessageTs)       // ✅
@@ -369,7 +374,7 @@ interface AggregatorState {
 | `tool-call-delta` | 不 emit（内部 partial 累计不需要外化） |
 | `tool-call` { toolCallId, toolName, args } | `activeTools.set(callId, { toolName, status: 'running' })`；通过 `toolDisplayLabel(toolName, args)` 生成 display label（bash 工具 → `bash(cmd_truncated)`，自动剥去 `cd <path> &&` 前缀；其他工具原名）；emit `activity-state { status: '正在 ' + toolName + '…', activities: ['正在 ' + toolName + '…', ...defaultLoadingMessages.slice(0, 4)], newToolCalls: [displayLabel] }` |
 | `tool-result` { toolCallId, toolName, result } | `activeTools.delete(callId)`；若 `activeTools` 空 → emit `activity-state { status: '思考中…', activities: defaultLoadingMessages }`；否则按剩余 activeTools 的第一个构造 activities 文案 |
-| `step-finish` { usage, providerMetadata, finishReason } | 累加 `modelUsage`（`costUSD = extractCostFromMetadata(providerMetadata)`）；若 `stepTextBuffer.trim()` 非空 → emit `assistant-message { text: stepTextBuffer.trim() }`；reset stepTextBuffer；`composing = false` |
+| `step-finish` { usage, providerMetadata, finishReason } | 累加 `modelUsage`（`costUSD = extractCostFromMetadata(providerMetadata)`）；usage 各 token 字段经 `toSafeInt()` 防御性转换（`@ai-sdk/openai-compatible` 流式模式在无 usage 数据时默认 NaN，`toSafeInt` 将 NaN → 0）；若 `stepTextBuffer.trim()` 非空 → emit `assistant-message { text: stepTextBuffer.trim() }`；reset stepTextBuffer；`composing = false` |
 | `error` { error } | emit `lifecycle { phase: 'failed', error: { message: redact(String(error)) } }`；从 fullStream 循环 break；**不再处理后续 part**；**不再 emit 其它事件** |
 | `finish`（stream 顶层终止，整个 streamText 结束时仅发一次） | **不 emit** `activity-state { clear: true }`；构建 `SessionUsageInfo` → emit `usage-info`；读 `await result.response` 的 `messages`（AI SDK v4 的 `result.response` 是 Promise），emit `lifecycle { phase: 'completed', finalMessages }` |
 | `AbortError`（包住整个 `for await` 的 try/catch 捕获） | emit `activity-state { clear: true }`；best-effort 读 `await result.response.catch(() => undefined)`.messages → emit `lifecycle { phase: 'stopped', reason: 'user', finalMessages? }`；不 emit `usage-info` |
@@ -471,13 +476,21 @@ export const TOOL_PHRASE = {
 
 ```ts
 // AiSdkExecutor 内部
-const result = streamText({ ... })
+const result = streamText({
+  // ...model, messages, tools, abortSignal...
+  // 注入 providerOptions 以确保流式响应包含 usage 数据：
+  providerOptions: {
+    [providerName]: { stream_options: { include_usage: true } }
+  },
+})
 for await (const part of result.fullStream) { /* yield 粗粒度事件 */ }
 // 流结束后：
 const finalMessages = (await result.response).messages
 // 此时 emit：
 yield { type: 'lifecycle', phase: 'completed', finalMessages }
 ```
+
+> **`providerName` 来源**：`AiSdkExecutorDeps.providerName`，从环境变量 `PROVIDER_NAME` 读取，默认 `'litellm'`。必须与 `createOpenAICompatible({ name })` 的 name 一致，否则 providerOptions 无法被 provider 识别。
 
 ---
 

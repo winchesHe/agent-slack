@@ -27,6 +27,7 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
     litellmBaseUrl: requireEnv('LITELLM_BASE_URL'),
     litellmApiKey: requireEnv('LITELLM_API_KEY'),
     logLevel: (process.env.LOG_LEVEL ?? 'info') as 'debug' | 'info' | 'warn' | 'error',
+    providerName: process.env.PROVIDER_NAME ?? 'litellm',
   }
 
   const redactor = createRedactor([
@@ -43,7 +44,7 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
   const provider = createOpenAICompatible({
     baseURL: env.litellmBaseUrl,
     apiKey: env.litellmApiKey,
-    name: 'litellm',
+    name: env.providerName,
   })
 
   const modelName = process.env.AGENT_MODEL ?? ctx.config.agent.model
@@ -60,6 +61,7 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
       tools,
       maxSteps: ctx.config.agent.maxSteps,
       logger,
+      providerName: env.providerName,
     })
 
   const orchestrator = createConversationOrchestrator({

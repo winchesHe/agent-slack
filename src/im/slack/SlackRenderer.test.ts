@@ -453,7 +453,7 @@ describe('SlackRenderer postSessionUsage', () => {
     expect(post?.args.text).toContain('11.2s')
     expect(post?.args.text).toContain('$0.0676')
     expect(post?.args.text).toContain('claude-sonnet-4-6')
-    expect(post?.args.text).toContain('580 non-cached in+out')
+    expect(post?.args.text).toContain('1.2k tokens')
     expect(post?.args.text).toContain('62% cache')
   })
 

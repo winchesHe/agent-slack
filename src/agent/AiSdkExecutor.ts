@@ -11,6 +11,8 @@ export interface AiSdkExecutorDeps {
   maxSteps: number
   logger: Logger
   modelName?: string
+  // provider 名称（如 'litellm'），用于构建 providerOptions 请求流式 usage。
+  providerName?: string
 }
 
 type LifecycleFinalMessages = Extract<
@@ -166,6 +168,12 @@ function getActiveToolStatus(agg: AggregatorState): ActivityState | undefined {
   }
 }
 
+// AI SDK / LiteLLM 有时返回 null 或 NaN 的 token 计数，统一兜底为 0。
+function toSafeInt(v: unknown): number {
+  const n = Number(v)
+  return Number.isFinite(n) ? n : 0
+}
+
 function updateUsage(
   agg: AggregatorState,
   modelName: string,
@@ -180,9 +188,9 @@ function updateUsage(
   }
 
   agg.modelUsage.set(modelName, {
-    inputTokens: current.inputTokens + Number(usage.promptTokens ?? usage.inputTokens ?? 0),
-    outputTokens: current.outputTokens + Number(usage.completionTokens ?? usage.outputTokens ?? 0),
-    cachedInputTokens: current.cachedInputTokens + Number(usage.cachedInputTokens ?? 0),
+    inputTokens: current.inputTokens + toSafeInt(usage.promptTokens ?? usage.inputTokens),
+    outputTokens: current.outputTokens + toSafeInt(usage.completionTokens ?? usage.outputTokens),
+    cachedInputTokens: current.cachedInputTokens + toSafeInt(usage.cachedInputTokens),
     costUSD: current.costUSD + (extractCostFromMetadata(providerMetadata) ?? 0),
   })
 }
@@ -255,6 +263,12 @@ export function createAiSdkExecutor(deps: AiSdkExecutorDeps): AgentExecutor {
       let result: ReturnType<typeof streamText> | undefined
 
       try {
+        // providerOptions 用于向 OpenAI-compatible 层注入 stream_options，
+        // 否则流式响应不含 usage，token 计数全部为 NaN。
+        const providerOpts = deps.providerName
+          ? { [deps.providerName]: { stream_options: { include_usage: true } } }
+          : undefined
+
         result = streamText({
           model: deps.model,
           ...(req.systemPrompt ? { system: req.systemPrompt } : {}),
@@ -263,6 +277,7 @@ export function createAiSdkExecutor(deps: AiSdkExecutorDeps): AgentExecutor {
           maxSteps: deps.maxSteps,
           toolCallStreaming: true,
           abortSignal: req.abortSignal,
+          ...(providerOpts ? { providerOptions: providerOpts } : {}),
         })
 
         for await (const part of result.fullStream as AsyncIterable<ExecutorStreamPart>) {

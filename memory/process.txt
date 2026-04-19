@@ -132,3 +132,38 @@ plan 中的测试用例用 read_file 作为 mock toolName，不反映真实 tool
 - SlackRenderer 新增 `removeAck` 方法（调 `reactions.remove`）
 - SlackEventSink finalize 流程：先 `removeAck` 再加终态 reaction（✅/❌/⏹）
 - 所有 mock renderer 和集成测试已同步更新
+
+## 问题 3: usage 显示 NaN
+- AI SDK `@ai-sdk/openai-compatible` 流式模式不含 `stream_options: { include_usage: true }`
+- LiteLLM 不返回流式 usage → provider 默认 NaN → 传播到 formatUsageLine
+- 修复 1: `toSafeInt()` 防御性转换，NaN → 0
+- 修复 2: streamText 添加 `providerOptions.litellm.stream_options.include_usage = true`
+- AiSdkExecutorDeps 新增 `providerName?: string` 字段
+- createApplication.ts 传入 `providerName: 'litellm'`
+
+## 问题 4: usage 显示格式优化
+- 原格式：`11657 non-cached in+out` → 新格式：`11.7k tokens`
+- 新增 `formatTokenCount()` 函数：≥1000 时使用 k 后缀（如 11657 → 11.7k）
+- cache 信息仅 cacheHitRate > 0 时才显示
+- 已更新 SlackRenderer.test.ts 断言
+
+## 问题 5: providerName 改为环境变量配置
+- `createApplication.ts` 从 `process.env.PROVIDER_NAME ?? 'litellm'` 读取
+- 同时用于 `createOpenAICompatible({ name })` 和 executor 的 `providerName`
+- `.env.example` / `.env` 新增 `# PROVIDER_NAME=litellm` 注释
+
+---
+
+[当前状态] 所有修复已应用但未提交
+
+### 待提交变更清单
+1. SlackRenderer: removeAck / removeReaction 方法
+2. SlackRenderer: postThreadReply invalid_blocks fallback
+3. SlackRenderer: formatUsageLine / formatTokenCount 格式优化
+4. SlackEventSink: finalize 先 removeAck 再加终态 reaction
+5. AiSdkExecutor: toSafeInt + providerOptions stream_options
+6. AiSdkExecutor: providerName 从 deps 读取
+7. createApplication: PROVIDER_NAME 环境变量
+8. .env.example / .env: PROVIDER_NAME 注释
+9. 4 个测试文件: removeAck mock + reactions.remove mock 同步
+10. SlackRenderer.test.ts: usage 格式断言更新

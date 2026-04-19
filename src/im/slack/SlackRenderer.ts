@@ -125,7 +125,7 @@ function fallbackText(state: ProgressUiState): string {
   return state.status || state.activities.at(-1) || '…'
 }
 
-// usage 行保持 kagura 风格，便于后续在真实 Slack 对照观察。
+// usage 行简洁展示：耗时 · 成本 · 模型 token 统计。
 function formatUsageLine(usage: SessionUsageInfo): string {
   const parts = [`${(usage.durationMs / 1000).toFixed(1)}s`]
 
@@ -134,9 +134,8 @@ function formatUsageLine(usage: SessionUsageInfo): string {
   }
 
   for (const model of usage.modelUsage) {
-    const nonCachedInputTokens = Math.max(0, model.inputTokens - model.cachedInputTokens)
-    const tokens = nonCachedInputTokens + model.outputTokens
-    let segment = `${model.model}: ${tokens} non-cached in+out`
+    const total = model.inputTokens + model.outputTokens
+    let segment = `${model.model}: ${formatTokenCount(total)} tokens`
 
     if (model.cacheHitRate > 0) {
       segment += ` (${Math.round(model.cacheHitRate * 100)}% cache)`
@@ -146,6 +145,14 @@ function formatUsageLine(usage: SessionUsageInfo): string {
   }
 
   return parts.join(' · ')
+}
+
+// token 数量超千用 k 后缀，保持紧凑。
+function formatTokenCount(n: number): string {
+  if (n >= 1000) {
+    return `${(n / 1000).toFixed(1)}k`
+  }
+  return String(n)
 }
 
 export function createSlackRenderer(deps: SlackRendererDeps): SlackRenderer {
