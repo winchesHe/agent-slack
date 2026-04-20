@@ -229,16 +229,10 @@ describe('slack-render-flow 集成：真实 SlackRenderer + mock WebClient', () 
     const postCalls = calls.filter((c) => c.method === 'chat.postMessage')
     expect(postCalls.length).toBeGreaterThanOrEqual(2)
 
-    // 5. completed 会把 progress 原地 finalize，而不是在 reply cutover 时删除
+    // 5. reply 后 progress 被删除（避免后续更新中间消息导致布局抖动），
+    //    因此会有 chat.delete 调用；finalize 时 progress 已不在，不需要原地 finalize。
     const deleteCalls = calls.filter((c) => c.method === 'chat.delete')
-    expect(deleteCalls).toHaveLength(0)
-    const progressFinalizeUpdates = calls.filter(
-      (c) =>
-        c.method === 'chat.update' &&
-        typeof (c.args as { text?: string }).text === 'string' &&
-        ((c.args as { text?: string }).text ?? '').includes('✅ 完成'),
-    )
-    expect(progressFinalizeUpdates.length).toBeGreaterThanOrEqual(1)
+    expect(deleteCalls).toHaveLength(1)
 
     // 6. 最后一条 chat.postMessage 的 text 包含时长格式 (N.Ns)
     const lastPost = postCalls[postCalls.length - 1]!.args as { text: string }

@@ -241,6 +241,24 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
       threadTs: deps.threadTs,
     })
 
+    // 先删除 progress 再发 reply，避免"reply 已出现但 progress 还在中间挂着"的视觉抖动。
+    // 如果反过来（先 reply 再 delete），chat.delete 可能耗时 1s+，
+    // 导致用户看到 reply 和旧 progress 同时存在，然后 progress 突然消失 → 布局跳动。
+    if (local.progressMessageTs) {
+      debugCutover('assistant-message deleting progress before reply', {
+        channelId: deps.channelId,
+        progressMessageTs: local.progressMessageTs,
+        threadTs: deps.threadTs,
+      })
+      await deps.renderer.deleteProgressMessage(
+        deps.web,
+        deps.channelId,
+        deps.threadTs,
+        local.progressMessageTs,
+      )
+      local.progressMessageTs = undefined
+    }
+
     const replyOptions =
       !local.hasSentToolbarInTurn && deps.workspaceLabel
         ? { workspaceLabel: deps.workspaceLabel }
@@ -251,12 +269,12 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
 
     debugCutover('assistant-message reply posted', {
       channelId: deps.channelId,
-      progressMessageTs: local.progressMessageTs,
       threadTs: deps.threadTs,
     })
 
-    // 回复一旦发出，就允许下一轮 activity 从头判断是否需要再次激活/更新 progress。
-    // 这里不删除已有 progress，让 completed 在 finalize() 里原地收束，避免线程内容抖动。
+    // 重置 state key，让下一轮 activity 从头判断是否需要再次激活 progress。
+    // 注意：toolHistory / toolLatestLabel 不清空，保留整个 turn 的累计工具信息，
+    // 使 finalize 时仍能显示完整的 "✅ 完成 · bash x3 · read_file x2" 摘要。
     local.lastStateKey = undefined
 
     debugCutover('assistant-message clearing status', {
@@ -429,9 +447,8 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
           )
         }
 
-        // 终态 reaction：先移除 👀，再加终态 emoji。
-        await deps.renderer.removeAck(deps.web, deps.channelId, deps.sourceMessageTs)
-
+        // 终态 reaction：先加终态 emoji，再移除 👀。
+        // 如果先移除 👀 再加终态，会有短暂的"无 reaction"空窗期导致抖动。
         if (local.terminalPhase === 'completed') {
           await deps.renderer.addDone(deps.web, deps.channelId, deps.sourceMessageTs)
         } else if (local.terminalPhase === 'stopped') {
@@ -439,6 +456,8 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
         } else if (local.terminalPhase === 'failed') {
           await deps.renderer.addError(deps.web, deps.channelId, deps.sourceMessageTs)
         }
+
+        await deps.renderer.removeAck(deps.web, deps.channelId, deps.sourceMessageTs)
 
         debugCutover('finalize end', {
           channelId: deps.channelId,

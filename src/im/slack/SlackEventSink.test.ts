@@ -209,7 +209,7 @@ describe('SlackEventSink', () => {
     expect(getMethodCalls(renderer, 'upsertProgressMessage')).toHaveLength(1)
   })
 
-  it('assistant-message 调 postThreadReply，保留 progress，并清空状态条', async () => {
+  it('assistant-message 调 postThreadReply，删除 progress，并清空状态条', async () => {
     const { sink, renderer } = makeSink()
 
     await sink.onEvent({ type: 'lifecycle', phase: 'started' })
@@ -220,7 +220,8 @@ describe('SlackEventSink', () => {
     await sink.onEvent({ type: 'assistant-message', text: 'hello' })
 
     expect(getMethodCalls(renderer, 'postThreadReply')).toHaveLength(1)
-    expect(getMethodCalls(renderer, 'deleteProgressMessage')).toHaveLength(0)
+    // 回复后删除旧 progress，避免后续 tool 更新线程中间消息导致布局抖动
+    expect(getMethodCalls(renderer, 'deleteProgressMessage')).toHaveLength(1)
     expect(renderer.calls.at(-1)?.method).toBe('clearStatus')
   })
 
