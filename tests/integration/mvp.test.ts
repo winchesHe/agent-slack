@@ -16,6 +16,7 @@ import type { Logger } from '@/logger/logger.ts'
 
 function stubLogger(): Logger {
   const l: Logger = {
+    trace: () => {},
     debug: () => {},
     info: () => {},
     warn: () => {},

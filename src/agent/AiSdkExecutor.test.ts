@@ -13,6 +13,7 @@ type MockStreamChunk = {
 
 function stubLogger(): Logger {
   const l: Logger = {
+    trace: () => {},
     debug: () => {},
     info: () => {},
     warn: () => {},

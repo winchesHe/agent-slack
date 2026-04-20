@@ -29,6 +29,7 @@ type MockStreamChunk = { type: string; [key: string]: unknown }
 /** 静默 logger，不输出任何内容。 */
 function stubLogger(): Logger {
   const l: Logger = {
+    trace: () => {},
     debug: () => {},
     info: () => {},
     warn: () => {},

@@ -61,6 +61,7 @@ export function createConversationOrchestrator(
           ? `\n\n[用户长期记忆]\n该用户（${currentUser.userName} / ${currentUser.userId}）的长期记忆在：${memoryPath}\n需要时用 bash cat 读取；要更新时先读旧内容再合并为整体，传给 save_memory（它覆盖写入）。`
           : `\n\n[用户长期记忆]\n目前没有关于该用户（${currentUser.userName} / ${currentUser.userId}）的长期记忆。值得记住的信息用 save_memory 保存。`
         const systemPromptWithMemory = `${deps.systemPrompt}${memoryHint}`
+        log.trace(`最终 system prompt 正文：\n${systemPromptWithMemory}`)
 
         // 每次 handle 新建 tools + executor，闭包安全持有 currentUser
         const tools = deps.toolsBuilder(currentUser)

@@ -389,7 +389,9 @@ agent-slack --help
 
 - 技术：`consola` + redactor（脱敏 `SLACK_BOT_TOKEN`、`SLACK_APP_TOKEN`、`LITELLM_API_KEY`）
 - 双写：终端（pretty 彩色，dev/CLI 前台）+ 文件（`logs/YYYY-MM-DD.log`，JSON lines）
-- 级别：dev 默认 `debug`，生产默认 `info`
+- 级别：`trace` / `debug` / `info` / `warn` / `error`；dev 默认 `debug`，生产默认 `info`
+- `LOG_LEVEL=trace` 时，`orchestrator` 会额外记录最终发给模型的完整 `systemPromptWithMemory`，用于排查 memory 注入和 system prompt 拼装问题
+- 取舍：`trace` 噪音最高，且会把最终 system prompt 正文写入日志；虽然仍经过 redactor 脱敏，但建议只在定位 prompt 相关问题时临时开启
 - Tag 分组：`slack` / `slack:render` / `orchestrator` / `agent` / `agent:tool` / `agent:reasoning` / `agent:usage` / `store:session` / `store:memory`
 
 ### 6.2 错误三层

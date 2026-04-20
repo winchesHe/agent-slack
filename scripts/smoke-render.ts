@@ -32,6 +32,8 @@ function formatValue(value: unknown): string {
 // smoke logger 直接把 warn/info 打到终端，便于观察 safeRender 行为。
 function createSmokeLogger(tag = 'smoke'): Logger {
   return {
+    trace: (message, meta) =>
+      writeLine(`[trace] [${tag}] ${message}${meta ? ` ${formatValue(meta)}` : ''}`),
     debug: (message, meta) =>
       writeLine(`[debug] [${tag}] ${message}${meta ? ` ${formatValue(meta)}` : ''}`),
     info: (message, meta) =>

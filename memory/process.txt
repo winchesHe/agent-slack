@@ -3,3 +3,548 @@
 ---
 
 [2026-04-20] （从此处继续记录）
+
+[2026-04-20 11:46+08:00] round-1 调度初始化
+- 已读取：
+  - `memory/process.txt`
+  - `docs/superpowers/plans/2026-04-18-M3-interactive.md`
+  - `AGENTS.md`
+  - `docs/superpowers/specs/2026-04-17-agent-slack-architecture-design.md`
+- 目标重述：
+  - 将 `2026-04-18-M3-interactive.md` 的每个 chunk 补上“Slack 上可验证的观测性任务”
+  - 后续执行必须按 chunk 串行推进；每个 chunk 完成后等待人工 review / Slack 验证通过，再进入下一块
+  - 主 agent 仅负责拆解、调度、记录、重试策略；具体分析/实施优先交给子 agent
+- 当前识别的 chunk：
+  - chunk-1: Skills 加载（Task 1.1 / 1.2）
+  - chunk-2: SessionRunQueue + AbortRegistry（Task 2.1 / 2.2）
+  - chunk-3: Orchestrator 集成 + SlackAdapter abort / queued（Task 3.1 / 3.2）
+  - chunk-4: tool 持久化 + graceful shutdown（Task 4.1 / 4.2）
+  - chunk-5: 真 Slack 验收（Task 5.1 ~ 5.4）
+- 当前判断：
+  - chunk-1 ~ chunk-4 是“实现块”，需要为每块新增一项独立的 Slack 观测性任务
+  - chunk-5 已是人工 Slack 验收块，但仍需和前四块的观测性定义保持口径一致
+- 待确认设计点：
+  - “Slack 上可验证的观测性任务”优先做哪种口径：
+    1. 只要求 Slack UI 可见（reaction / 文案 / 顺序）
+    2. Slack UI + 日志 / session 文件可追溯
+    3. Slack UI + 统一 debug 事件 / 结构化观测点
+- 下一步调度：
+  - 先派子 agent 做“当前代码实现差距扫描 + 与 chunk 对应关系整理”
+  - 主 agent 根据扫描结果更新本文件与 session plan，再用 `cunzhi` 向用户确认观测性验收口径
+- round 状态：planning
+
+[2026-04-20 11:52+08:00] round-2 子 agent 扫描结果写回
+- 子 agent：`m3-status-scan`（只读）
+- 结果摘要：
+  - chunk-1 `not-started`
+    - `SkillLoader.ts` / `SkillLoader.test.ts` 均不存在
+    - `WorkspaceContext.skills` 仍为空实现
+  - chunk-2 `not-started`
+    - `AbortRegistry.ts` / `SessionRunQueue.ts` 及测试均不存在
+  - chunk-3 `partial`
+    - Orchestrator 已有基础 abort / lifecycle 处理
+    - SlackAdapter 还没有 `reaction_added` / `⏳ queued` 路径
+  - chunk-4 `mostly-done`
+    - tool message 持久化与 shutdown 已有骨架
+    - 仍缺 `abortRegistry` / `runQueue` 暴露与真正 drain / abortAll 收尾
+  - chunk-5 `not-started`
+- 现有观测面：
+  - SlackAdapter / Orchestrator / index 已有 logger 信号
+  - `meta.json` status / usage 与 `messages.jsonl` 已可作为追溯面
+  - 计划中的 Slack reaction 观测点（⏳ / 🛑）尚未落地
+- 调度结论：
+  - 推荐首个执行块仍为 `chunk-1`，依赖最少、改动面最小、适合作为“实现 + 观测性任务 + 人工 review gate”模板
+- 当前阻塞：
+  - 需要用户确认“Slack 可验证观测性任务”的统一验收口径，之后才能正式改 plan 并生成 chunk-1 子任务
+- round 状态：waiting-user-decision
+
+[2026-04-20 11:58+08:00] round-3 plan 文档已更新
+- 用户确认：统一采用 `Slack UI 可见` 作为每个 chunk 观测性任务的主验收口径
+- 子 agent：`m3-plan-editor`
+- 已完成：
+  - 在 `docs/superpowers/plans/2026-04-18-M3-interactive.md` 开头新增执行 gate
+  - 为 chunk-1 ~ chunk-4 分别新增独立的 “Slack UI 可验证观测性任务” 小节
+  - 将 chunk-5 / 完成检查清单中的日志、jsonl、meta.json 调整为“补充排查信息”，不再作为主验收标准
+  - 文档已明确：每个 chunk 完成后必须等待人工 review / Slack 验证通过，才能继续下一块
+- 下一步：
+  - 读取 process 后启动 chunk-1 implementer 子 agent
+  - chunk-1 完成后依次执行 spec review / code quality review
+  - 若 chunk-1 全部通过，则停在人工 review gate，等待用户确认后再进入 chunk-2
+- round 状态：ready-for-chunk-1
+
+[2026-04-20 12:04+08:00] round-4 chunk-1 implementer 返回
+- 子 agent：`chunk1-implementer`
+- implementer 报告状态：`DONE`
+- implementer 声称：
+  - 新建 `src/workspace/SkillLoader.ts`
+  - 新建 `src/workspace/SkillLoader.test.ts`
+  - 修改 `src/workspace/WorkspaceContext.ts`
+  - 修改 `src/workspace/WorkspaceContext.test.ts`
+  - 修改 `src/application/createApplication.ts`
+  - 已补写 chunk-1 相关测试代码，但未运行测试、未编译、未启动服务、未提交 commit
+- controller 判断：
+  - 该报告不能直接视为完成，必须进入 spec compliance review
+  - implementer 提到 `cunzhi` 工具超时，但这不影响当前代码审查流程
+- 下一步：
+  - 读取 process 后派 spec reviewer 校验 chunk-1 是否严格符合计划
+- round 状态：awaiting-spec-review
+
+[2026-04-20 12:08+08:00] round-5 chunk-1 spec review 结果
+- 子 agent：`chunk1-spec-review`
+- 结果：`❌ Issues found`
+- 问题摘要：
+  1. `src/workspace/SkillLoader.ts` 的 `source` 字段未保证绝对路径，违反 chunk-1 spec
+  2. `src/workspace/SkillLoader.test.ts` 与 `src/workspace/WorkspaceContext.test.ts` 使用 `/tmp` / `tmpdir()`，需要改成非 `/tmp` 的测试目录策略
+- controller 决策：
+  - 问题属于局部修复，整体实现方向正确
+  - 按重试策略，继续复用 **同一个 implementer** 修复，不换新 agent
+- 下一步：
+  - 读取 process 后派回 `chunk1-implementer` 修复上述 2 项
+- round 状态：awaiting-implementer-fix
+
+[2026-04-20 12:12+08:00] round-6 chunk-1 implementer 定点修复返回
+- 子 agent：`chunk1-implementer`
+- 结果：`DONE`
+- 修复摘要：
+  1. `src/workspace/SkillLoader.ts` 的 `source` 已改为绝对路径
+  2. `src/workspace/SkillLoader.test.ts` / `src/workspace/WorkspaceContext.test.ts` 已移除 `/tmp` 依赖，改为项目 cwd 下的唯一测试目录并在 `afterEach` 清理
+- controller 判断：
+  - 修复范围与 spec review 问题完全对齐，可以直接重新发起 spec review
+- 下一步：
+  - 读取 process 后重跑 chunk-1 spec review
+- round 状态：awaiting-spec-rereview
+
+[2026-04-20 12:16+08:00] round-7 chunk-1 spec 二次复审通过
+- 子 agent：`chunk1-spec-review-r2`
+- 结果：`✅ Spec compliant`
+- 结论：
+  - `Skill.source` 绝对路径问题已修复
+  - 两个测试文件已移除 `/tmp` 依赖
+  - chunk-1 的实现、测试补写、WorkspaceContext 接线、createApplication logger 传递均满足计划要求
+- 下一步：
+  - 读取 process 后进入 code quality review
+- round 状态：awaiting-code-quality-review
+
+[2026-04-20 12:20+08:00] round-8 chunk-1 code quality review 结果
+- 子 agent：`chunk1-quality-review`
+- 结果：`Approved with one important note`
+- reviewer 关注点：
+  - 两个新测试把临时目录创建在 `process.cwd()` 根目录下，并手动 `rmSync` 清理
+  - 虽然不影响功能正确性，但会在测试基础设施上与现有代码风格形成分叉，并可能在异常时遗留目录
+- controller 决策：
+  - 这属于真实的可维护性问题，按流程不能直接跳过
+  - 继续让 implementer 只修补测试目录策略，不动 chunk-1 业务逻辑
+- 下一步：
+  - 读取 process 后派回 `chunk1-implementer` 修补测试目录策略
+  - 修补后只重跑 code quality review（无需再跑 spec review）
+- round 状态：awaiting-quality-fix
+
+[2026-04-20 12:24+08:00] round-9 chunk-1 质量修补返回
+- 子 agent：`chunk1-implementer`
+- 结果：`DONE`
+- 修补摘要：
+  - 两个测试文件的临时目录已统一迁移到 `memory/.test-tmp/`
+  - 额外新增 `.gitignore` 对 `memory/.test-tmp/` 的忽略规则
+- controller 判断：
+  - 需要让 code reviewer 判断 `.gitignore` 是否属于合理收尾，还是超出最小修补范围
+- 下一步：
+  - 读取 process 后重跑 code quality review
+- round 状态：awaiting-code-quality-rereview
+
+[2026-04-20 12:29+08:00] round-10 chunk-1 code quality 二次审查结果
+- 子 agent：`chunk1-quality-review-r2`
+- 结果：`Issues found`
+- 问题摘要：
+  1. `src/workspace/SkillLoader.ts` 中 `whenToUse?: string` 在 strict / exact optional types 下存在类型不兼容风险
+  2. 两个测试文件里存在若干未收窄的数组下标访问
+  3. repo-local 临时目录策略虽然比上一版更好，但仍与仓库其他测试形成双轨策略
+- controller 判断：
+  - 问题 1 / 2 必须修复，属于明确缺陷
+  - 问题 3 需要结合当前实现细节再决定：若可以通过同范围内小修收口，则继续修；若会扩散到全仓库测试策略，则需要用户拍板
+- 下一步：
+  - 读取 process 后查看当前实现细节
+  - 决定下一轮是继续派 implementer 定点修复，还是通过 `cunzhi` 询问用户
+- round 状态：investigating-quality-issues
+
+[2026-04-20 12:33+08:00] round-11 质量问题细查结论
+- 已查看：
+  - `src/workspace/SkillLoader.ts`
+  - `src/workspace/SkillLoader.test.ts`
+  - `src/workspace/WorkspaceContext.test.ts`
+  - `.gitignore`
+  - 仓库内其他 `tmpdir()/mkdtempSync()` 测试分布
+- 结论：
+  1. `whenToUse` 的 optional type 问题属明确代码缺陷，必须修
+  2. 两个测试文件的数组下标访问未收窄，属明确 type-safety 缺陷，必须修
+  3. `memory/.test-tmp/` + `.gitignore` 方案在当前 chunk 范围内是可行的，但会与仓库其他仍使用 `/tmp` 的测试形成双轨策略
+- 当前判断：
+  - 若继续保持 chunk-1 范围最小，可选择“只修类型问题，接受当前 repo-local 临时目录方案作为局部先例”
+  - 若要完全消除 reviewer 的一致性问题，需要扩大到全仓库测试临时目录策略，这已经超出 chunk-1 原计划
+- 下一步：
+  - 通过 `cunzhi` 请求用户在“保持 chunk-1 小范围收口”与“扩大范围统一测试策略”之间拍板
+- round 状态：awaiting-user-strategy
+
+[2026-04-20 12:37+08:00] round-12 `cunzhi` 询问未得到决策
+- 第 1 / 2 次 `cunzhi` 请求超时
+- 第 3 次请求返回：`用户取消了操作`
+- controller 决策：
+  - 不替用户决定“测试临时目录策略”的范围
+  - 先继续推进**无争议的明确缺陷**：`whenToUse` optional type 与测试中的数组下标访问
+  - repo-local 临时目录策略暂时保持现状，后续若仍成为 blocker，再重新通过 `cunzhi` 请求决策
+- 下一步：
+  - 读取 process 后派 implementer 修复类型安全问题
+- round 状态：proceeding-with-unambiguous-fixes
+
+[2026-04-20 12:40+08:00] round-13 类型安全修补返回
+- 子 agent：`chunk1-implementer`
+- 结果：`DONE`
+- 修复摘要：
+  - `src/workspace/SkillLoader.ts` 的 `whenToUse` 已改为条件写入
+  - `src/workspace/SkillLoader.test.ts` / `src/workspace/WorkspaceContext.test.ts` 的数组下标访问已做非空断言收窄
+- 额外备注：
+  - implementer 报告中提到执行了 `pnpm lint`
+  - controller 不把这视为当前任务的“完成验证”，仅记录事实；后续仍以 reviewer 结果为准
+- 下一步：
+  - 读取 process 后重跑 code quality review，观察是否只剩“临时目录策略范围”这一项
+- round 状态：awaiting-code-quality-rereview
+
+[2026-04-20 12:44+08:00] round-14 chunk-1 code quality 第三轮结果
+- 子 agent：`chunk1-quality-review-r3`
+- 结果：`Issues found`
+- blocker：
+  - `src/workspace/SkillLoader.test.ts` 仍残留 1 处 `skills[0].name` 未加非空断言，属于 type-safety 问题
+- advisory：
+  - `memory/.test-tmp/` 与全仓其他测试临时目录策略不一致，但 reviewer 明确判定 **不是 blocker**
+- controller 决策：
+  - 继续复用 implementer，做最后一个定点 type fix
+  - 修完后再次发起 code quality review；若通过，则 chunk-1 进入人工 review gate
+- 下一步：
+  - 读取 process 后派 implementer 修补最后 1 处非空断言
+- round 状态：awaiting-final-quality-fix
+
+[2026-04-20 12:47+08:00] round-15 chunk-1 最后 type fix 返回
+- 子 agent：`chunk1-implementer`
+- 结果：`DONE`
+- 修复摘要：
+  - `src/workspace/SkillLoader.test.ts` 中最后 1 处 `skills[0].name` 已改为 `skills[0]!.name`
+- 下一步：
+  - 读取 process 后发起最终 code quality re-review
+- round 状态：awaiting-final-quality-rereview
+
+[2026-04-20 12:50+08:00] round-16 chunk-1 自动 gate 全通过
+- 子 agent：`chunk1-quality-review-final`
+- 结果：`Approved`
+- chunk-1 当前状态：
+  - 实现已落地
+  - spec review 已通过
+  - code quality review 已通过
+  - 尚未进入 chunk-2，严格停在人工 review gate
+- chunk-1 相关文件：
+  - `src/workspace/SkillLoader.ts`
+  - `src/workspace/SkillLoader.test.ts`
+  - `src/workspace/WorkspaceContext.ts`
+  - `src/workspace/WorkspaceContext.test.ts`
+  - `src/application/createApplication.ts`
+  - `.gitignore`
+- 待人工 review / Slack 验证的观测点：
+  - 手工创建/更新 `<cwd>/.agent-slack/skills/tone/SKILL.md`
+  - 重启服务后，在同一 Slack thread 发送：`@bot 你好吗？请用两句话回答。`
+  - 主验收：Slack 中最终回复是否明显体现正式书面中文语气
+- 下一步：
+  - 通过 `cunzhi` 请求用户 review chunk-1
+  - 只有在用户明确通过后，才允许进入 chunk-2
+- round 状态：waiting-human-review
+
+[2026-04-20 23:16+08:00] round-17 chunk-1 验收期告警现场初查
+- 背景：
+  - 用户在 chunk-1 人工验收阶段反馈告警：
+    - `WARN SKILL.md 缺少必需字段 (name/description): <cwd>/.agent-slack/skills/tone/SKILL.md undefined`
+  - 用户要求继续采用“主 agent 调度 + 子 agent 执行 + memory/process.txt 持久化”的方式处理
+- 已读取：
+  - `memory/process.txt`
+  - `/Users/moego-winches/.codex/superpowers/skills/using-superpowers/SKILL.md`
+  - `/Users/moego-winches/.agents/skills/subagent-driven-development/SKILL.md`
+  - `/Users/moego-winches/.codex/superpowers/skills/systematic-debugging/SKILL.md`
+  - `src/workspace/SkillLoader.ts`
+  - `src/workspace/SkillLoader.test.ts`
+  - `src/workspace/WorkspaceContext.ts`
+  - `src/application/createApplication.ts`
+  - `.agent-slack/skills/tone/SKILL.md`
+  - `src/logger/logger.ts`
+  - `src/logger/redactor.ts`
+- 歧义判断：
+  - 合理解读 A：只调查是否需要额外 log 才能找到 root cause
+  - 合理解读 B：调查 root cause，并判断是否需要补日志增强后续诊断
+  - 合理解读 C：调查 root cause 后直接修复本次告警来源
+  - 由于用户用语是“研究下是否需要 log 来寻找 root case”，且当前处于 chunk-1 验收阶段，controller 先按 **B** 执行：先做根因调查与日志充分性判断，不越权直接进入大范围修复
+- 当前现场证据：
+  - `.agent-slack/skills/tone/SKILL.md` 每行前都有 1 个前导空格；`sed -n 'l'` 显示文件以 ` ---` 开头，而不是 `---`
+  - `gray-matter` 直接解析该文件时返回 `data = {}`，`content` 为整段原文，说明 frontmatter **未被识别**
+  - `SkillLoader.ts` 当前把“frontmatter 缺失/未识别”和“字段真实缺失”都统一记成 `SKILL.md 缺少必需字段`
+  - `src/logger/logger.ts` 在 `meta === undefined` 时仍调用 `inst.warn(msg, undefined)`，高度怀疑日志尾部 `undefined` 就来自这里
+- controller 初步判断：
+  - 本次 root cause 很可能 **不需要新增业务日志才能找到**
+  - 但现有日志语义不够精确，且存在额外 `undefined` 噪音，影响后续排障效率
+- 下一步调度：
+  - 派 1 个子 agent 做“根因确认 + 日志充分性评估”，要求只读，不改代码
+  - 子 agent 返回后，再决定是：
+    - 继续同 agent 给出最小修复建议
+    - 还是启动新的 implementer 处理数据文件 / logger 细修
+- round 状态：awaiting-root-cause-investigation
+
+[2026-04-20 23:21+08:00] round-18 chunk-1 告警根因调查结论回写
+- 子 agent：`chunk1-skill-warning-root-cause`
+- 结果：`READY_FOR_IMPLEMENTER`
+- 根因结论：
+  1. `.agent-slack/skills/tone/SKILL.md` 文件开头存在 leading space，首字符不是 `---`
+  2. `gray-matter` 因前导空格未识别 frontmatter，导致 `parsed.data = {}`
+  3. `SkillLoader` 因 `name/description` 取不到值而告警，但当前文案“缺少必需字段”会误导，因为更准确的情况是“frontmatter 未识别”
+  4. 日志末尾的 `undefined` 不是业务数据，而是 `src/logger/logger.ts` 在 `meta === undefined` 时仍把第二参数透传给 `consola` 产生的噪音
+- 对“是否需要新增 log 寻找 root cause”的判断：
+  - **不需要**
+  - 原因：当前已有证据已经形成完整闭环：
+    - 文件字节形态异常（frontmatter 前有空格）
+    - `gray-matter` 解析结果为空对象
+    - `SkillLoader` 告警分支命中
+    - logger wrapper 额外透传 `undefined`
+  - 新增日志不会提供新的判别维度，只会增加噪音
+- controller 决策：
+  - 本轮到此不直接进入代码修复，先向用户汇报调查结论
+  - 若用户允许进入修复轮，则按“同类问题局部修补”策略复用一个 implementer 处理以下最小动作：
+    1. 修正 `.agent-slack/skills/tone/SKILL.md` 的 frontmatter 起始格式
+    2. 修正 `src/logger/logger.ts`，避免 `meta === undefined` 时传入第二参数
+    3. 可选：增强 `src/workspace/SkillLoader.ts` 的告警文案或前置清洗逻辑，降低误导性
+- 风险判断：
+  - 动作 1 属于验收输入修正
+  - 动作 2 / 3 属于 chunk-1 范围内的小修，若执行，则应重新走最小 review gate
+- 下一步：
+  - 等待用户决定：仅接受调查结论，还是继续进入“chunk-1 告警修补”子任务
+- round 状态：waiting-user-decision
+
+[2026-04-20 23:34+08:00] round-19 trace 级别需求进入设计澄清
+- 用户新需求：
+  - 为当前日志系统新增 `trace` 级别，数值 level = 5
+  - 该级别主要用于观察 system prompt 注入结果
+- 已读取：
+  - `src/logger/logger.ts`
+  - `src/logger/redactor.ts`
+  - `src/logger/redactor.test.ts`
+  - `src/application/createApplication.ts`
+  - `docs/superpowers/specs/2026-04-17-agent-slack-architecture-design.md`（日志章节）
+- controller 范围确认（代码 → 测试文件 → 设计文档 → memory/）：
+  - 代码：
+    - `src/logger/logger.ts`
+    - `src/application/createApplication.ts`
+    - 可能新增 `src/logger/logger.test.ts`
+    - 可能在 `src/orchestrator/ConversationOrchestrator.ts` 或 `src/workspace/WorkspaceContext.ts` 加 trace 观测点
+  - 测试：
+    - logger 层级映射与 `undefined meta` 行为测试
+    - 观测点是否在 trace 级别输出的测试（若现有结构可测）
+  - 设计文档：
+    - `docs/superpowers/specs/2026-04-17-agent-slack-architecture-design.md` 的日志级别说明需要同步
+- 当前设计判断：
+  - 新增 `trace=5` 本身是小改
+  - 但“system prompt 怎么打到 trace”存在一个关键口径待确认：
+    1. 打完整 prompt 正文
+    2. 只打结构化摘要（skills 名称、长度、是否含 memoryHint）
+    3. 摘要 + 截断后的正文预览
+  - 该选择会影响日志噪音、潜在敏感信息暴露和后续排障效率
+- 下一步：
+  - 先向用户确认 trace 观测口径
+  - 用户确认后，再给出最小设计并进入子 agent 实施链路
+- round 状态：awaiting-trace-observability-decision
+
+[2026-04-20 23:40+08:00] round-20 trace 观测口径确认，进入实施调度
+- 用户决策：
+  - system prompt trace 观测采用 **完整正文**
+  - 不新建 design doc，直接更新原有文档后开始子 agent 实施
+- controller 设计收口：
+  - 改动作为一个独立小 chunk 执行
+  - 先更新 `docs/superpowers/specs/2026-04-17-agent-slack-architecture-design.md`
+  - 再改代码与测试
+  - 完成后仍需经过 spec review → code quality review → 人工 review gate
+- 本轮实现范围（代码 → 测试文件 → 设计文档 → memory/）：
+  - 代码：
+    - `src/logger/logger.ts`
+    - `src/application/createApplication.ts`
+    - `src/orchestrator/ConversationOrchestrator.ts`
+  - 测试：
+    - 可能新增 `src/logger/logger.test.ts`
+    - 可能修改 `src/orchestrator/ConversationOrchestrator.test.ts`
+  - 设计文档：
+    - `docs/superpowers/specs/2026-04-17-agent-slack-architecture-design.md`
+- 完成标准：
+  1. `LOG_LEVEL=trace` 可被接受，且数值映射为 5
+  2. logger 接口支持 `trace`
+  3. 最终发给模型的完整 `systemPromptWithMemory` 在 trace 级别下可观测
+  4. `meta === undefined` 时不再产生尾部 `undefined` 噪音
+  5. 相关测试补齐
+- 下一步：
+  - 派 implementer 子 agent 执行上述范围
+  - 实现返回后继续走 spec / quality review
+- round 状态：ready-for-trace-implementer
+
+[2026-04-20 23:47+08:00] round-21 trace implementer 首轮返回不完整
+- 子 agent：`trace-log-level-and-system-prompt-observability`
+- 当前返回形态：
+  - 返回内容像中间进度，不是最终交付摘要
+  - 但工作方向正确，没有偏航
+- controller 已检查到的实际改动：
+  - 已修改 `src/logger/logger.ts`
+  - 已修改 `src/application/createApplication.ts`
+  - 尚未看到：
+    - `docs/superpowers/specs/2026-04-17-agent-slack-architecture-design.md`
+    - `src/orchestrator/ConversationOrchestrator.ts`
+    - `src/orchestrator/ConversationOrchestrator.test.ts`
+    - `src/logger/logger.test.ts`
+- controller 决策：
+  - 按“局部报错但方向正确 → 继续同一个子 agent，保留上下文修复”的策略处理
+  - 不换新 agent，直接要求其完成剩余范围并提交最终状态、验证结果、修改文件清单
+- 下一步：
+  - 向同一 implementer 发送补充指令，要求完成剩余文件与测试
+- round 状态：awaiting-implementer-completion
+
+[2026-04-20 23:53+08:00] round-22 同类交付失败重复发生，切换新 implementer
+- 原子 agent：`trace-log-level-and-system-prompt-observability`
+- 第二次返回形态：
+  - 仍是中间进度描述，不是可审查的最终交付
+  - controller 检查工作区后确认：只落地了部分代码改动，仍缺 doc / orchestrator trace / 测试
+- 当前已落地的局部进展：
+  - `src/logger/logger.ts`
+  - `src/application/createApplication.ts`
+- 仍缺失：
+  - `docs/superpowers/specs/2026-04-17-agent-slack-architecture-design.md`
+  - `src/orchestrator/ConversationOrchestrator.ts`
+  - `src/orchestrator/ConversationOrchestrator.test.ts`
+  - `src/logger/logger.test.ts`
+- controller 决策：
+  - 这属于“同类问题多次失败”，不再继续对同一 agent 无限重试
+  - 记录失败模式：**交付不完整 / 无法进入 review**
+  - 启动新的 implementer 接管剩余范围，并要求兼容已存在的局部修改
+- 下一步：
+  - 关闭旧 implementer
+  - 启动新的 implementer 完成剩余实现与测试
+- round 状态：switching-implementer
+
+[2026-04-21 00:03+08:00] round-23 新 implementer 完成交付，进入 review
+- 子 agent：`trace-log-level-and-system-prompt-observability-r2`
+- 结果：`DONE_WITH_CONCERNS`
+- 已完成的实现摘要：
+  - `src/logger/logger.ts`：
+    - 新增 `trace(msg, meta?)`
+    - 级别映射新增 `trace=5`
+    - 单参日志不再透传 `undefined` 尾参
+  - `src/application/createApplication.ts`：
+    - `LOG_LEVEL` 解析改为显式 `parseLogLevel(...)`
+    - 接受 `trace/debug/info/warn/error`
+  - `src/orchestrator/ConversationOrchestrator.ts`：
+    - `systemPromptWithMemory` 拼装完成后立即 `log.trace(...)`
+    - 日志正文包含完整 system prompt
+  - `docs/superpowers/specs/2026-04-17-agent-slack-architecture-design.md`：
+    - 日志级别更新为五档
+    - 补充 `trace` 用途与噪音/安全取舍说明
+  - 测试：
+    - 新增 `src/logger/logger.test.ts`
+    - 更新 `src/orchestrator/ConversationOrchestrator.test.ts`
+- implementer 自报验证：
+  - `pnpm exec vitest run src/logger/logger.test.ts src/orchestrator/ConversationOrchestrator.test.ts` 通过
+  - `pnpm exec eslint ...` 通过
+  - `pnpm exec prettier --check ...` 通过
+  - 未跑全量 `pnpm test` / `pnpm typecheck`
+- controller 下一步：
+  - 先做 spec review：检查是否完全满足“trace=5 + 完整正文 + 原设计文档更新 + 不输出 undefined 噪音”
+  - 若 spec 通过，再做 code quality review
+- round 状态：awaiting-spec-review
+
+[2026-04-21 00:08+08:00] round-24 trace chunk spec review 通过
+- 子 agent：`trace-log-level-and-system-prompt-observability-spec-review`
+- 结果：`SPEC_OK`
+- spec reviewer 结论：
+  - `trace=5` 已满足
+  - `LOG_LEVEL=trace` 已被应用层显式接受
+  - trace 记录的是最终 `systemPromptWithMemory` 完整正文，不是摘要
+  - `meta === undefined` 时尾部 `undefined` 噪音已消除
+  - 原 design doc 已更新，且没有新建 spec 文档
+- 非 blocker 备注：
+  - 当前工作区仍有本轮范围之外的其他改动，spec review 只覆盖本轮 6 个目标文件
+- controller 下一步：
+  - 进入 code quality review
+  - 若 code quality review 无 blocker，则停在人工 review gate
+- round 状态：awaiting-code-quality-review
+
+[2026-04-21 00:16+08:00] round-25 trace chunk code quality review 发现 blocker
+- 子 agent：`trace-log-level-and-system-prompt-observability-quality-review`
+- 结果：`ISSUES_FOUND`
+- controller 本地复核：
+  - 已运行 `rtk pnpm typecheck`
+  - 确认新增/本轮相关问题至少包括：
+    1. `Logger.trace` 变为必填后，多处测试 stub / script logger 未同步补齐，出现 `TS2741`
+    2. `src/logger/logger.test.ts` 中 `redactor: (value) => value` 违反 `Redactor` 返回 `string` 的签名，出现 `TS2322`
+    3. `src/application/createApplication.ts` 的 `parseLogLevel()` 目前为严格失败策略，存在对历史大小写 / 旧值的启动兼容性回归风险
+- controller 判断：
+  - 问题 1 / 2 是明确 blocker，必须修
+  - 问题 3 属于真实回归风险，按最小风险原则应一起修，避免把新增 trace 变成启动兼容性变化
+  - `scripts/smoke.ts` 与 `src/orchestrator/ConversationOrchestrator.test.ts` 中另有本轮之前已存在的 typecheck 问题，不纳入这次 trace 修补范围；修完本轮新增问题后，仍需在汇报中明确剩余历史 blocker
+- 下一步：
+  - 继续复用当前 implementer，做定点质量修补
+  - 修补范围扩展到所有缺失 `trace` 的 test/script logger stub，以及 `parseLogLevel()` 的兼容性策略
+- round 状态：awaiting-quality-fix
+
+[2026-04-21 00:25+08:00] round-26 trace chunk 质量修补完成，待复审
+- 子 agent：`trace-log-level-and-system-prompt-observability-r2`
+- 结果：`DONE`
+- 修补摘要：
+  - 已补齐受 `Logger.trace` 必填影响的 test/script logger stub
+  - 已修正 `src/logger/logger.test.ts` 中 `Redactor` 签名
+  - 已将 `parseLogLevel()` 改为兼容性策略：`trim() + toLowerCase()`，支持 `warning -> warn`，未知值回退 `info`
+  - implementer 额外顺手修正了 `src/orchestrator/ConversationOrchestrator.test.ts` 与 `scripts/smoke.ts` 的类型问题，并报告全量 `typecheck` 已通过
+- controller 本地验证：
+  - `rtk pnpm typecheck`：通过
+  - `pnpm exec vitest run src/logger/logger.test.ts src/orchestrator/ConversationOrchestrator.test.ts src/agent/AiSdkExecutor.test.ts src/im/slack/SlackAdapter.test.ts src/im/slack/SlackEventSink.test.ts src/im/slack/SlackRenderer.test.ts src/workspace/SkillLoader.test.ts src/workspace/WorkspaceContext.test.ts tests/integration/mvp.test.ts tests/integration/slack-render-flow.test.ts`：通过（10 files / 80 tests）
+  - `pnpm exec eslint ...`（覆盖本轮改动与相关修补文件）：通过
+- controller 下一步：
+  - 发起 code quality re-review
+  - 若复审通过，则本轮停在人工 review gate
+- round 状态：awaiting-code-quality-rereview
+
+[2026-04-21 00:31+08:00] round-27 trace chunk code quality 复审通过
+- 子 agent：`trace-log-level-and-system-prompt-observability-quality-review`
+- 结果：`APPROVED`
+- 复审结论：
+  - 上轮 3 个问题均已消除：
+    1. `Logger.trace` 必填引起的 stub / script 类型回归已清理
+    2. `src/logger/logger.test.ts` 的 `Redactor` 签名问题已修复
+    3. `parseLogLevel()` 的启动兼容性回归风险已解除
+  - 未发现新的 blocker 或重要风险
+  - 非 blocker 残余项：
+    - `parseLogLevel()` 兼容行为目前缺独立单测，后续若继续演进日志配置可补 1 条轻量测试
+- controller 当前结论：
+  - 本轮 trace logger + 完整 system prompt 观测点实现已通过 spec / quality 双 gate
+  - 按项目规则，停在人工 review gate，不提交 commit，不进入下一块
+- 本地验证汇总：
+  - `rtk pnpm typecheck`：通过
+  - 相关测试：10 files / 80 tests 通过
+  - 相关 eslint：通过
+- 下一步：
+  - 等待用户人工 review
+  - 若用户确认通过，再决定是否提交当前代码或继续下一步任务
+- round 状态：waiting-human-review
+
+[2026-04-21 15:24+08:00] round-28 用户确认当前 chunk 通过，进入提交与 chunk-2
+- 用户决策：
+  - 当前已完成块（chunk-1 + trace prompt 观测修补）可以提交
+  - 提交后继续开始 `docs/superpowers/plans/2026-04-18-M3-interactive.md` 的 chunk-2
+- controller 对歧义的自主判断：
+  - 用户消息里的 “M1 chunk1” 结合上下文更合理地指向当前已通过人工 review 的 **M3 chunk-1 及其后续 trace 观测修补**
+  - 因用户紧接着明确说“开始做 chunk 2”，controller 按 M3 plan 的 chunk-2 执行
+- 提交前本地验证（fresh）：
+  - `rtk pnpm test`：通过（20 files / 126 tests）
+  - `rtk pnpm typecheck`：通过
+  - `rtk pnpm lint`：通过
+- 提交策略：
+  - 只 stage 本轮相关文件
+  - 不包含当前 worktree 中未确认来源的 `.env.example`
+- 下一步：
+  - stage + commit 当前已通过 review 的相关文件
+  - 读取 M3 plan chunk-2，并派 implementer 子 agent 开始实现
+- round 状态：ready-to-commit-and-start-chunk-2

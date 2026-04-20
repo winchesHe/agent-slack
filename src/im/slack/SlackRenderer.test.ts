@@ -18,6 +18,7 @@ vi.mock('markdown-to-slack-blocks', () => markdownBlocksMock)
 
 function stubLogger(overrides: Partial<Logger> = {}): Logger {
   const logger: Logger = {
+    trace: () => {},
     debug: () => {},
     info: () => {},
     warn: () => {},

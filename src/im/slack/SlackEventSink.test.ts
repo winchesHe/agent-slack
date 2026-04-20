@@ -7,6 +7,7 @@ import type { SlackRenderer } from './SlackRenderer.ts'
 
 function stubLogger(sink?: { warns: Array<{ message: string; meta: unknown }> }): Logger {
   const logger: Logger = {
+    trace: () => {},
     debug: () => {},
     info: () => {},
     warn: (message, meta) => {

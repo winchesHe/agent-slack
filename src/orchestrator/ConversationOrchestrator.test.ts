@@ -2,7 +2,6 @@ import { describe, expect, it, beforeEach, vi } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import type { CoreMessage } from 'ai'
 import { createSessionStore } from '@/store/SessionStore.ts'
 import { createMemoryStore } from '@/store/MemoryStore.ts'
 import { resolveWorkspacePaths } from '@/workspace/paths.ts'
@@ -12,13 +11,15 @@ import type { AgentExecutionEvent } from '@/core/events.ts'
 import type { EventSink, InboundMessage } from '@/im/types.ts'
 import type { Logger } from '@/logger/logger.ts'
 
-function stubLogger(): Logger {
+function stubLogger(overrides: Partial<Logger> = {}): Logger {
   const l: Logger = {
+    trace: () => {},
     debug: () => {},
     info: () => {},
     warn: () => {},
     error: () => {},
-    withTag: () => stubLogger(),
+    withTag: () => stubLogger(overrides),
+    ...overrides,
   }
   return l
 }
@@ -82,9 +83,12 @@ describe('ConversationOrchestrator 粗事件消费', () => {
     const paths = resolveWorkspacePaths(cwd)
     const store = createSessionStore(paths)
     const memoryStore = createMemoryStore(paths)
-    const finalMessages: CoreMessage[] = [
-      { role: 'assistant', content: 'hello' },
-      { role: 'assistant', content: 'world' },
+    const finalMessages: Extract<
+      AgentExecutionEvent,
+      { type: 'lifecycle'; phase: 'completed' }
+    >['finalMessages'] = [
+      { id: 'msg-1', role: 'assistant', content: 'hello' },
+      { id: 'msg-2', role: 'assistant', content: 'world' },
     ]
     const executor = makeExecutor([
       { type: 'lifecycle', phase: 'started' },
@@ -136,7 +140,9 @@ describe('ConversationOrchestrator 粗事件消费', () => {
     const paths = resolveWorkspacePaths(cwd)
     const store = createSessionStore(paths)
     const memoryStore = createMemoryStore(paths)
-    const finalMessages: CoreMessage[] = [{ role: 'assistant', content: 'partial' }]
+    const finalMessages: NonNullable<
+      Extract<AgentExecutionEvent, { type: 'lifecycle'; phase: 'stopped' }>['finalMessages']
+    > = [{ id: 'msg-partial', role: 'assistant', content: 'partial' }]
     const executor = makeExecutor([
       { type: 'lifecycle', phase: 'started' },
       { type: 'assistant-message', text: 'partial' },
@@ -287,5 +293,36 @@ describe('ConversationOrchestrator 粗事件消费', () => {
     expect(capturedSystem).toContain('你是助手')
     expect(capturedSystem).toContain('长期记忆')
     expect(capturedSystem).toContain('bob-U2.md')
+  })
+
+  it('记录 trace 日志时包含最终发给模型的完整 system prompt', async () => {
+    const paths = resolveWorkspacePaths(cwd)
+    const store = createSessionStore(paths)
+    const memoryStore = createMemoryStore(paths)
+    const trace = vi.fn()
+
+    let capturedSystem = ''
+    const executor: AgentExecutor = {
+      async *execute(req: AgentExecutionRequest) {
+        capturedSystem = req.systemPrompt
+        yield { type: 'lifecycle', phase: 'started' }
+        yield { type: 'lifecycle', phase: 'completed', finalMessages: [] }
+      },
+    }
+    const { sink } = mockSink()
+    const orch = createConversationOrchestrator({
+      toolsBuilder: () => ({}),
+      executorFactory: () => executor,
+      sessionStore: store,
+      memoryStore,
+      systemPrompt: '你是助手。',
+      logger: stubLogger({ trace }),
+    })
+
+    await orch.handle(makeInput(), sink)
+
+    expect(capturedSystem).toContain('你是助手。')
+    expect(capturedSystem).toContain('目前没有关于该用户（alice / U）的长期记忆')
+    expect(trace).toHaveBeenCalledWith(`最终 system prompt 正文：\n${capturedSystem}`)
   })
 })

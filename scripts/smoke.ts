@@ -37,12 +37,21 @@ async function main(): Promise<void> {
     ],
     abortSignal: ctrl.signal,
   })) {
-    if (e.type === 'text_delta') process.stdout.write(e.text)
-    else if (e.type === 'tool_call_start') logger.info(`tool_call: ${e.toolName}`, e.input)
-    else if (e.type === 'tool_call_end')
-      logger.info(`tool_end: ${e.toolName}`, { isError: e.isError })
-    else if (e.type === 'done') logger.info('\n--- done ---', e.totalUsage)
-    else if (e.type === 'error') logger.error('stream error', e.error)
+    if (e.type === 'assistant-message') process.stdout.write(e.text)
+    else if (e.type === 'activity-state') {
+      if (e.state.clear) continue
+      if (e.state.newToolCalls && e.state.newToolCalls.length > 0) {
+        logger.info('tool_calls', e.state.newToolCalls)
+      }
+      if (e.state.reasoningTail) {
+        logger.info('reasoning', e.state.reasoningTail)
+      }
+    } else if (e.type === 'usage-info') logger.info('\n--- usage ---', e.usage)
+    else if (e.type === 'lifecycle' && e.phase === 'completed') {
+      logger.info('\n--- done ---', { finalMessages: e.finalMessages.length })
+    } else if (e.type === 'lifecycle' && e.phase === 'failed') {
+      logger.error('stream error', e.error)
+    }
   }
 }
 

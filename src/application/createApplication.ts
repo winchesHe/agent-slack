@@ -13,20 +13,21 @@ import { createSlackRenderer } from '@/im/slack/SlackRenderer.ts'
 import { ConfigError } from '@/core/errors.ts'
 import type { Application } from './types.ts'
 
+type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error'
+
 export interface CreateApplicationArgs {
   workspaceDir: string
 }
 
 export async function createApplication(args: CreateApplicationArgs): Promise<Application> {
-  const ctx = await loadWorkspaceContext(args.workspaceDir)
-
+  // 需要先创建 logger 才能传给 loadWorkspaceContext
   const env = {
     slackBotToken: requireEnv('SLACK_BOT_TOKEN'),
     slackAppToken: requireEnv('SLACK_APP_TOKEN'),
     slackSigningSecret: requireEnv('SLACK_SIGNING_SECRET'),
     litellmBaseUrl: requireEnv('LITELLM_BASE_URL'),
     litellmApiKey: requireEnv('LITELLM_API_KEY'),
-    logLevel: (process.env.LOG_LEVEL ?? 'info') as 'debug' | 'info' | 'warn' | 'error',
+    logLevel: parseLogLevel(process.env.LOG_LEVEL),
     providerName: process.env.PROVIDER_NAME ?? 'litellm',
   }
 
@@ -37,6 +38,8 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
     env.litellmApiKey,
   ])
   const logger = createLogger({ level: env.logLevel, redactor })
+
+  const ctx = await loadWorkspaceContext(args.workspaceDir, logger)
 
   const sessionStore = createSessionStore(ctx.paths)
   const memoryStore = createMemoryStore(ctx.paths)
@@ -99,4 +102,22 @@ function requireEnv(key: string): string {
   const v = process.env[key]
   if (!v) throw new ConfigError(`缺少环境变量 ${key}`, `请确认 .env 或环境变量`)
   return v
+}
+
+function parseLogLevel(v: string | undefined): LogLevel {
+  const normalized = (v ?? 'info').trim().toLowerCase()
+
+  if (normalized === 'warning') return 'warn'
+  if (
+    normalized === 'trace' ||
+    normalized === 'debug' ||
+    normalized === 'info' ||
+    normalized === 'warn' ||
+    normalized === 'error'
+  ) {
+    return normalized
+  }
+
+  // 历史上这里是宽松回退；保留该兼容性，避免旧环境值导致启动失败。
+  return 'info'
 }
