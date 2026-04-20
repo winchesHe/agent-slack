@@ -1,6 +1,6 @@
 # M3 交互完善 实施计划（阶段 5）
 
-> **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 补齐"生产可用"所需交互：Skills 加载进 system prompt、同 session 消息串行（SessionRunQueue）、🛑 reaction 中断（AbortRegistry）、tool-call / tool-result 配对持久化到 messages.jsonl。
 
@@ -58,7 +58,7 @@ src/
 - 返回 `Skill[]`，source = 绝对路径
 - 任何 SKILL.md 解析失败只 warn 不 throw
 
-- [ ] **Step 1: 测试**
+- [x] **Step 1: 测试**
 
 ```ts
 import { describe, expect, it, beforeEach } from 'vitest'
@@ -112,7 +112,7 @@ function stubLogger(): any {
 }
 ```
 
-- [ ] **Step 2: 实现**
+- [x] **Step 2: 实现**
 
 ```ts
 import { readFile, readdir } from 'node:fs/promises'
@@ -158,7 +158,7 @@ export async function loadSkills(
 }
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add src/workspace/SkillLoader.ts src/workspace/SkillLoader.test.ts
@@ -172,7 +172,7 @@ git commit -m "阶段 5: SkillLoader"
 - Modify: `src/workspace/WorkspaceContext.test.ts`
 - Modify: `src/application/createApplication.ts`
 
-- [ ] **Step 1: 修改 WorkspaceContext**
+- [x] **Step 1: 修改 WorkspaceContext**
 
 ```ts
 // 追加 loadSkills 调用
@@ -207,16 +207,16 @@ function composeSystemPrompt(base: string, skills: Skill[]): string {
 }
 ```
 
-- [ ] **Step 2: 更新测试**：注入 stubLogger，并加一个"有 skill 的 workspace → systemPrompt 包含 'Available Skills'"的 case。
+- [x] **Step 2: 更新测试**：注入 stubLogger，并加一个"有 skill 的 workspace → systemPrompt 包含 'Available Skills'"的 case。
 
-- [ ] **Step 3: 修改 createApplication 传 logger**
+- [x] **Step 3: 修改 createApplication 传 logger**
 
 ```ts
 const logger = createLogger({ level: env.logLevel, redactor })
 const ctx = await loadWorkspaceContext(args.workspaceDir, logger)   // ← 第二个参数
 ```
 
-- [ ] **Step 4: Run tests → PASS，Commit**
+- [x] **Step 4: Run tests → PASS，Commit**
 
 ```bash
 git add src/workspace/WorkspaceContext.ts src/workspace/WorkspaceContext.test.ts src/application/createApplication.ts
@@ -246,7 +246,7 @@ git commit -m "阶段 5: Skills 拼接到 system prompt"
 - `abort(key, reason?)`：调用对应 controller.abort(reason)；key 不存在时静默 no-op（用户可能对历史消息加 🛑）
 - `delete(key)`：从 map 删除（orchestrator 在 finally 调用）
 
-- [ ] **Step 1: 测试**
+- [x] **Step 1: 测试**
 
 ```ts
 import { describe, expect, it } from 'vitest'
@@ -280,7 +280,7 @@ describe('AbortRegistry', () => {
 })
 ```
 
-- [ ] **Step 2: 实现**
+- [x] **Step 2: 实现**
 
 ```ts
 export class AbortRegistry {
@@ -303,7 +303,7 @@ export class AbortRegistry {
 }
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add src/orchestrator/AbortRegistry.ts src/orchestrator/AbortRegistry.test.ts
@@ -322,7 +322,7 @@ git commit -m "阶段 5: AbortRegistry"
 - 实现方式：每个 sessionId 一个"promise 链"——`chain = chain.then(runner).catch(swallow)`
 - 空闲队列自动 GC（链彻底完成后删除 key，避免 map 无限增长）
 
-- [ ] **Step 1: 测试**
+- [x] **Step 1: 测试**
 
 ```ts
 import { describe, expect, it } from 'vitest'
@@ -372,7 +372,7 @@ describe('SessionRunQueue', () => {
 })
 ```
 
-- [ ] **Step 2: 实现**
+- [x] **Step 2: 实现**
 
 ```ts
 export class SessionRunQueue {
@@ -409,7 +409,7 @@ export class SessionRunQueue {
 }
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add src/orchestrator/SessionRunQueue.ts src/orchestrator/SessionRunQueue.test.ts
@@ -441,13 +441,13 @@ git commit -m "阶段 5: SessionRunQueue"
 
 > 为避免 EventSink 接口扩容，一期简化为 `sink.fail(new Error('用户已停止'))`——Renderer 的 error 分支里判断 message 做特殊 UX（M2 已有 error 分支，M3 不改 Renderer，只是错误消息中文化）。
 
-- [ ] **Step 1: 更新测试**
+- [x] **Step 1: 更新测试**
 
 新增 case：
 - `handle` 通过 queue：连发两条同 session 消息，第二条必须等第一条 `done` 才开始（观察 `executor.execute` 被调用的时间戳）
 - abort：handle 期间 `abortRegistry.abort(messageTs)`，observe executor 收到 signal.aborted=true
 
-- [ ] **Step 2: 实现**
+- [x] **Step 2: 实现**
 
 ```ts
 import type { SessionRunQueue } from './SessionRunQueue.ts'
@@ -528,7 +528,7 @@ export function createConversationOrchestrator(
 }
 ```
 
-- [ ] **Step 3: 更新 createApplication 注入新依赖**
+- [x] **Step 3: 更新 createApplication 注入新依赖**
 
 ```ts
 import { SessionRunQueue } from '@/orchestrator/SessionRunQueue.ts'
@@ -546,7 +546,7 @@ const orchestrator = createConversationOrchestrator({
 
 注意返回的 `app` 对象要暴露 `abortRegistry` 给 SlackAdapter 的 reaction handler（见 Task 3.2）。
 
-- [ ] **Step 4: Run tests → PASS，Commit**
+- [x] **Step 4: Run tests → PASS，Commit**
 
 ```bash
 git add src/orchestrator/ConversationOrchestrator.ts src/orchestrator/ConversationOrchestrator.test.ts src/application/createApplication.ts
@@ -564,13 +564,13 @@ git commit -m "阶段 5: Orchestrator 集成 queue + registry"
 - 新 handler：`app.event('reaction_added')` → 若 `reaction === 'stop_sign'`（🛑） → `abortRegistry.abort(item.ts)`
 - `app_mention` handler 内：调 `orchestrator.handle` 之前，判断 `runQueue.queueDepth(sessionId) > 0` → `reactions.add(⏳)`；实际入队后 depth 必然 ≥ 1，所以判断点应在 adapter 内部构造 sessionId 后（sessionId 构造方式要和 SessionStore 一致：`slack:${channelId}:${threadTs}`）
 
-- [ ] **Step 1: 测试（mock bolt app）**
+- [x] **Step 1: 测试（mock bolt app）**
 
 - reaction_added 'stop_sign' → abortRegistry.abort 被调一次（key = event.item.ts）
 - reaction_added 其他 name → 无影响
 - app_mention 且同 session 已有任务 → reactions.add(hourglass_flowing_sand) 被调
 
-- [ ] **Step 2: 实现**
+- [x] **Step 2: 实现**
 
 ```ts
 app.event('reaction_added', async ({ event }) => {
@@ -591,7 +591,7 @@ if (deps.runQueue.queueDepth(sessionId) > 0) {
 
 > Slack app manifest 需新增 event subscription：`reaction_added`；scope：`reactions:read`。写入本 task Step 3 的手动验收清单。
 
-- [ ] **Step 3: Run tests → PASS，Commit**
+- [x] **Step 3: Run tests → PASS，Commit**
 
 ```bash
 git add src/im/slack/SlackAdapter.ts src/im/slack/SlackAdapter.test.ts
@@ -624,7 +624,7 @@ git commit -m "阶段 5: reaction_added abort + queued ⏳"
 
 **更简洁的做法**：在 `AiSdkExecutor` 的 `done` 事件里附带 `responseMessages: ModelMessage[]`，Orchestrator 在 done 时替代手工 append。
 
-- [ ] **Step 1: 扩展 `done` event 类型**
+- [x] **Step 1: 扩展 `done` event 类型**
 
 `src/core/events.ts`：
 
@@ -637,7 +637,7 @@ git commit -m "阶段 5: reaction_added abort + queued ⏳"
     }
 ```
 
-- [ ] **Step 2: AiSdkExecutor 填充 responseMessages**
+- [x] **Step 2: AiSdkExecutor 填充 responseMessages**
 
 ```ts
 // 在迭代完 fullStream 后、yield done 之前：
@@ -646,7 +646,7 @@ const responseMessages = (response.messages ?? []) as CoreMessage[]
 yield { type: 'done', finalText, totalUsage: total, responseMessages }
 ```
 
-- [ ] **Step 3: Orchestrator 替换 append 逻辑**
+- [x] **Step 3: Orchestrator 替换 append 逻辑**
 
 删掉 M1 里 `appendMessage({ role: 'assistant', content: finalText })`，改为：
 
@@ -659,15 +659,15 @@ if (event.type === 'done') {
 }
 ```
 
-- [ ] **Step 4: 更新 SessionStore 测试**
+- [x] **Step 4: 更新 SessionStore 测试**
 
 新增 case：append 一条 assistant-with-toolCalls + 一条 tool-result，loadMessages 返回原样。
 
-- [ ] **Step 5: 更新 Orchestrator 测试**
+- [x] **Step 5: 更新 Orchestrator 测试**
 
 Mock executor 的 done 带 `responseMessages: [assistantMsg, toolResultMsg]`，验证 jsonl 多了 2 行而非 1 行。
 
-- [ ] **Step 6: Run tests → PASS，Commit**
+- [x] **Step 6: Run tests → PASS，Commit**
 
 ```bash
 git add src/core/events.ts src/agent/AiSdkExecutor.ts src/orchestrator/ConversationOrchestrator.ts src/store/SessionStore.test.ts src/orchestrator/ConversationOrchestrator.test.ts
@@ -687,7 +687,7 @@ git commit -m "阶段 5: tool-call / tool-result 持久化"
 
 ### Task 5.1: Skills 验收
 
-- [ ] **Step 1: 创建一个 skill**
+- [x] **Step 1: 创建一个 skill**
 
 `<cwd>/.agent-slack/skills/tone/SKILL.md`:
 
@@ -701,13 +701,13 @@ whenToUse: always
 回复时使用正式书面中文，避免口语化词汇。
 ```
 
-- [ ] **Step 2: 重启 `pnpm dev`，`@bot 你好吗`**
+- [x] **Step 2: 重启 `pnpm dev`，`@bot 你好吗`**
 
 Expected：回复用正式书面语。若需补充排查，可再参考 `logs/...` 中是否包含 "Available Skills"，但这不是 Slack UI 主验收标准。
 
 ### Task 5.2: 并发排队验收
 
-- [ ] **Step 1: 同 thread 连发 3 条**
+- [x] **Step 1: 同 thread 连发 3 条**
 
 `@bot A`、`@bot B`、`@bot C`（间隔 < 500ms）
 
@@ -719,9 +719,9 @@ Expected：
 
 ### Task 5.3: 🛑 abort 验收
 
-- [ ] **Step 1: `@bot 写一篇 500 字关于 TypeScript 的文章`**
+- [x] **Step 1: `@bot 写一篇 500 字关于 TypeScript 的文章`**
 
-- [ ] **Step 2: 在 bot 占位消息上加 🛑 reaction**
+- [x] **Step 2: 在 bot 占位消息上加 🛑 reaction**
 
 Expected：
 - 流式输出停止
@@ -730,13 +730,13 @@ Expected：
 
 ### Task 5.4: 多轮 tool-call 延续性验收
 
-- [ ] **Step 1: `@bot 用 bash 跑 \`ls -la\`，然后总结`**（等完成）
+- [x] **Step 1: `@bot 用 bash 跑 \`ls -la\`，然后总结`**（等完成）
 
-- [ ] **Step 2: 同 thread `@bot 上一步你看到了多少文件？`**
+- [x] **Step 2: 同 thread `@bot 上一步你看到了多少文件？`**
 
 Expected：模型能准确引用上一轮 tool 结果（证明 tool-call/tool-result 被正确持久化并重新加载）。
 
-- [ ] **Step 3: Commit M3 完成**
+- [x] **Step 3: Commit M3 完成**
 
 ```bash
 git commit --allow-empty -m "M3 完成: skills + queue + abort + tool 持久化 验收通过"
@@ -746,12 +746,12 @@ git commit --allow-empty -m "M3 完成: skills + queue + abort + tool 持久化 
 
 ## M3 完成检查清单
 
-- [ ] `pnpm lint && pnpm test && pnpm typecheck` 全绿
-- [ ] Skills 自动加载到 system prompt
-- [ ] 同 session 消息严格串行（FIFO）
-- [ ] 排队期间显示 ⏳
-- [ ] 🛑 reaction 能中断执行，消息变"已停止"
-- [ ] Slack 多轮对话中能准确引用上一轮 tool 输出（tool 持久化主验收）
-- [ ] 如需补充排查，可核对 jsonl 中的 tool-call + tool-result 持久化
+- [x] `pnpm lint && pnpm test && pnpm typecheck` 全绿
+- [x] Skills 自动加载到 system prompt
+- [x] 同 session 消息严格串行（FIFO）
+- [x] 排队期间显示 ⏳
+- [x] 🛑 reaction 能中断执行，消息变"已停止"
+- [x] Slack 多轮对话中能准确引用上一轮 tool 输出（tool 持久化主验收）
+- [x] 如需补充排查，可核对 jsonl 中的 tool-call + tool-result 持久化
 
 **下一步**：M4 plan — CLI（commander）+ Onboard 向导（@clack/prompts）+ tsdown 打包 + `agent-slack` bin 分发到其他目录。
