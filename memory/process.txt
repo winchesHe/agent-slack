@@ -675,3 +675,340 @@
   - stage + commit chunk-2 相关文件
   - 读取 chunk-3 计划并派 implementer 子 agent
 - round 状态：ready-to-commit-chunk-2-and-start-chunk-3
+
+[2026-04-21 16:42+08:00] round-37 chunk-2 已提交，切入 chunk-3 Task 3.1
+- 提交结果：
+  - commit: `a0ac0e2`
+  - message: `阶段 5: queue 与 abort 基础组件`
+- 提交前 fresh 验证：
+  - `pnpm -s vitest run src/orchestrator/AbortRegistry.test.ts src/orchestrator/SessionRunQueue.test.ts`：通过（2 files / 8 tests）
+  - `rtk pnpm typecheck`：通过
+  - `rtk pnpm lint`：通过（中途修正了 `AbortRegistry` 两个文件的 Prettier 格式）
+- 提交范围说明：
+  - 已提交：chunk-2 相关 4 个实现/测试文件 + plan 文档对齐 + `memory/process.txt`
+  - 未提交：`.env.example` 仍为未暂存改动
+- chunk-3 调度收口：
+  - 先执行 `Task 3.1: Orchestrator 接入 queue + registry`
+  - 本轮写入责任范围：
+    - `src/orchestrator/ConversationOrchestrator.ts`
+    - `src/orchestrator/ConversationOrchestrator.test.ts`
+    - `src/application/createApplication.ts`
+  - 暂不进入 `Task 3.2: SlackAdapter reaction_added + ⏳ queued`
+- Task 3.1 完成标准：
+  1. `ConversationOrchestratorDeps` 新增 `runQueue: SessionRunQueue`、`abortRegistry: AbortRegistry`
+  2. `handle(input, sink)` 外层走 `runQueue.enqueue(session.id, runner)`
+  3. `runner` 内部通过 `abortRegistry.create(input.messageTs)` 创建 signal，并传给 executor
+  4. `finally` 中 `abortRegistry.delete(input.messageTs)`
+  5. 增加测试覆盖：同 session 通过 queue 串行；abort 可使 executor 看到 `signal.aborted=true`
+  6. `createApplication.ts` 注入 `new SessionRunQueue()` 与 `new AbortRegistry()`
+- 下一步：
+  - 派 chunk-3 Task 3.1 implementer 子 agent
+  - 完成后继续 spec review → code quality review
+- round 状态：ready-for-chunk-3-task-3-1
+
+[2026-04-21 16:48+08:00] round-38 chunk-3 Task 3.1 implementer 返回
+- 子 agent：`m3-chunk3-task3-1-orchestrator-queue-registry`
+- 结果：`DONE`
+- implementer 摘要：
+  - `ConversationOrchestrator.ts` 已接入 `SessionRunQueue` 与 `AbortRegistry`
+  - `createApplication.ts` 已注入 `new SessionRunQueue()` / `new AbortRegistry<string>()`
+  - `ConversationOrchestrator.test.ts` 已新增：
+    - 同 session 串行排队
+    - abort 后 executor 观察到 `signal.aborted === true`
+  - implementer 为兼容未改调用点，把 `runQueue` / `abortRegistry` 依赖做成了可选回退
+- implementer 自报验证：
+  - `pnpm vitest run src/orchestrator/ConversationOrchestrator.test.ts`：通过（9 passed）
+  - `pnpm exec tsc --noEmit`：通过
+  - `pnpm lint`：通过
+- controller 下一步：
+  - 发起 Task 3.1 spec review
+  - 重点核查：可选依赖回退是否与 chunk-3 口径冲突
+- round 状态：awaiting-chunk-3-task-3-1-spec-review
+
+[2026-04-21 16:53+08:00] round-39 chunk-3 Task 3.1 spec review 发现依赖边界偏差
+- 子 agent：`m3-chunk3-task3-1-spec-review`
+- 结果：`SPEC_ISSUES`
+- 结论：
+  - 主体接线与测试覆盖都已到位
+  - 唯一 spec 偏差在于：
+    - `runQueue`
+    - `abortRegistry`
+    被降级成了可选依赖，并在 orchestrator 内部做回退实例化
+- controller 判断：
+  - 这是局部修补，方向正确，不需要换 agent
+  - 必须按 Task 3.1 原口径收紧为必填依赖，维持共享实例边界
+- 下一步：
+  - 继续复用当前 implementer
+  - 定点移除 `ConversationOrchestrator` 中的可选依赖与回退实例化
+  - 修完后重跑 Task 3.1 spec review
+- round 状态：awaiting-chunk-3-task-3-1-spec-fix
+
+[2026-04-21 16:58+08:00] round-40 Task 3.1 依赖边界已收紧，但暴露出集成测试漏接线
+- 子 agent：`m3-chunk3-task3-1-orchestrator-queue-registry`
+- 结果：`DONE_WITH_CONCERNS`
+- 已完成：
+  - `ConversationOrchestratorDeps.runQueue` / `abortRegistry` 改回必填
+  - 删除 orchestrator 内部 fallback 实例化
+- controller 本地复核：
+  - `rtk pnpm typecheck` 现在只剩 3 处错误，均为集成测试调用点仍未给 `createConversationOrchestrator(...)` 传入必填依赖：
+    - `tests/integration/mvp.test.ts:82`
+    - `tests/integration/slack-render-flow.test.ts:176`
+    - `tests/integration/slack-render-flow.test.ts:270`
+- controller 判断：
+  - 这属于 Task 3.1 接线扩散到直接调用方的自然修补，不算越界到 Task 3.2
+  - 继续复用同一个 implementer，只补这两个测试文件的接线
+- 下一步：
+  - 修正 `tests/integration/mvp.test.ts`
+  - 修正 `tests/integration/slack-render-flow.test.ts`
+  - 修完后重新跑 `ConversationOrchestrator.test.ts` + `typecheck`
+- round 状态：awaiting-chunk-3-task-3-1-test-callsite-fix
+
+[2026-04-21 17:02+08:00] round-41 Task 3.1 直接调用方接线修补完成
+- 子 agent：`m3-chunk3-task3-1-orchestrator-queue-registry`
+- 结果：`DONE`
+- 修补摘要：
+  - `tests/integration/mvp.test.ts` 已补入 `runQueue` / `abortRegistry`
+  - `tests/integration/slack-render-flow.test.ts` 的两个 orchestrator 构造调用已补入 `runQueue` / `abortRegistry`
+  - 未触碰 SlackAdapter / Task 3.2 文件
+- implementer 自报验证：
+  - `pnpm vitest run src/orchestrator/ConversationOrchestrator.test.ts tests/integration/mvp.test.ts tests/integration/slack-render-flow.test.ts`：通过（12 passed）
+  - `pnpm exec tsc --noEmit`：通过
+- controller 下一步：
+  - 重跑 Task 3.1 spec review
+  - 若 spec 通过，则进入 code quality review
+- round 状态：awaiting-chunk-3-task-3-1-spec-rereview
+
+[2026-04-21 17:05+08:00] round-42 Task 3.1 spec 复审通过
+- 子 agent：`m3-chunk3-task3-1-spec-review`
+- 结果：`SPEC_OK`
+- 复审结论：
+  - `runQueue` / `abortRegistry` 已恢复为必填依赖
+  - orchestrator 已无 fallback 实例化
+  - `handle` 通过 queue 串行，且完成 create -> abortSignal -> delete 链路
+  - `createApplication` 已注入共享实例
+  - 单测与直接调用点都已补齐
+  - 未提前接入 Task 3.2 的 SlackAdapter 逻辑
+- controller 下一步：
+  - 发起 Task 3.1 code quality review
+  - 若 quality 通过，则停在 chunk-3 当前人工 review gate；Task 3.2 另起一轮
+- round 状态：awaiting-chunk-3-task-3-1-code-quality-review
+
+[2026-04-21 17:12+08:00] round-43 controller 恢复现场并确认 code quality blocker
+- 已读取：
+  - `memory/process.txt`
+  - `docs/superpowers/plans/2026-04-18-M3-interactive.md`
+  - `src/orchestrator/ConversationOrchestrator.ts`
+  - `src/orchestrator/ConversationOrchestrator.test.ts`
+  - `src/application/createApplication.ts`
+  - `tests/integration/mvp.test.ts`
+  - `tests/integration/slack-render-flow.test.ts`
+- 当前确认：
+  - Task 3.1 主体接线已在工作树中
+  - 但上一轮 code quality review 提到的 2 个 blocker 仍未修：
+    1. `sessionStore.getOrCreate()` 发生在 `runQueue.enqueue()` 之前，首次建档仍有并发初始化竞态
+    2. `sink.onEvent()` 抛错后的补偿顺序错误，`emitSyntheticFailed()` 早于持久化错误状态，可能导致 session 卡在 `running`
+- controller 判断：
+  - 方向正确但局部实现不安全，属于“继续同类任务修补”而不是切任务
+  - 由于上一版实现已锚定到错误顺序，本轮改为启动一个新的 implementer，避免沿着旧心智继续补歪
+- 下一步：
+  - 派发新的 Task 3.1 implementer，只修这 2 个 blocker 和对应回归测试
+  - 修后重新走 spec review → code quality review → 必要验证
+- round 状态：dispatching-chunk-3-task-3-1-blocker-fix
+
+[2026-04-21 17:23+08:00] round-44 Task 3.1 blocker fix implementer 返回
+- 子 agent：`m3-chunk3-task3-1-orchestrator-queue-registry`
+- 结果：`DONE`
+- 修补摘要：
+  - `ConversationOrchestrator.ts`
+    - 改为先按 `${imProvider}:${channelId}:${threadTs}` 计算稳定 session key，再 `runQueue.enqueue(...)`
+    - `sessionStore.getOrCreate()` 已移入 queue runner 内，首次建档也受串行保护
+    - `sink.onEvent()` 抛错后改为先持久化 `[error: ...]` 与 `status=error`，再 best-effort 发 synthetic failed
+  - `ConversationOrchestrator.test.ts`
+    - 新增“首次建档并发不并发进入 getOrCreate”回归测试
+    - 新增“sink.onEvent 持续失败时最终不留在 running 且错误标记落盘”回归测试
+- implementer 自报验证：
+  - `pnpm vitest run src/orchestrator/ConversationOrchestrator.test.ts`：通过（11 passed）
+  - `pnpm exec tsc --noEmit`：通过
+- controller 下一步：
+  - 发起 Task 3.1 spec review，确认本轮只修 blocker、未越界到 Task 3.2
+  - 若 spec 通过，再发起 code quality review
+- round 状态：awaiting-chunk-3-task-3-1-blocker-fix-spec-review
+
+[2026-04-21 17:26+08:00] round-45 Task 3.1 blocker fix spec review 通过
+- 子 agent：`m3-chunk3-task3-1-spec-review`
+- 结果：`SPEC_OK`
+- 结论：
+  - queue 位置已前移到首次建档前，`getOrCreate()` 已受 `runQueue.enqueue(sessionKey, ...)` 保护
+  - `abortRegistry.create(messageTs)`、`abortSignal` 透传、`finally delete(messageTs)` 仍满足 Task 3.1 原口径
+  - 新增两条回归测试准确覆盖了“首次建档并发”和“sink 持续失败”两个修补点
+  - 未越界到 Task 3.2；没有提前引入 `SlackAdapter` / `reaction_added` / `queued` 逻辑
+- controller 下一步：
+  - 发起 Task 3.1 code quality review
+  - 若 quality 通过，则进入 controller 自身验证并准备提交 chunk-3 / Task 3.1
+- round 状态：awaiting-chunk-3-task-3-1-blocker-fix-code-quality-review
+
+[2026-04-21 17:31+08:00] round-46 Task 3.1 blocker fix code quality 仍有 1 个 P1 漏口
+- 子 agent：`m3-chunk3-task3-1-code-quality-review`
+- 结果：`ISSUES_FOUND`
+- blocker：
+  - `ConversationOrchestrator.ts` 中 queue runner 里 `setStatus('running')` 之后到 `executor.execute()` 消费循环之前的 setup 段，仍然没有进入错误补偿逻辑
+  - 只要 `loadMessages()`、`appendMessage(user)`、`memoryStore.exists()`、`toolsBuilder()`、`executorFactory()` 或 `abortRegistry.create()` 在该区间抛错，就只会走外层 catch 的 best-effort sink 通知，不会执行 `persistErrorState()`，session 仍可能卡在 `running`
+- 当前判断：
+  - 这是同一类问题的补偿边界不完整，不是方向错误
+  - 按重试策略继续复用同一个 implementer，扩展异常补偿覆盖范围，并补一条 queue-runner setup 失败回归测试
+- 下一步：
+  - 定点修补 queue runner setup 失败路径
+  - 修后重走 code quality review（若补偿结构改动较大，再顺带重跑 spec review）
+- round 状态：awaiting-chunk-3-task-3-1-setup-failure-fix
+
+[2026-04-21 17:40+08:00] round-47 Task 3.1 setup-failure fix implementer 返回
+- 子 agent：`m3-chunk3-task3-1-orchestrator-queue-registry`
+- 结果：`DONE`
+- 修补摘要：
+  - `ConversationOrchestrator.ts`
+    - queue runner 内改为先声明 `session`，把“session 已创建后的 setup + executor 初始化 + 事件消费”整体纳入同一层异常补偿
+    - 若异常发生时 `session` 已存在，则统一执行 `persistErrorState(session.id, errorMessage)` → `emitSyntheticFailedBestEffort(...)`
+    - 若异常发生在 session 创建前，则仍走外层 `setupErr` 的 best-effort sink 通知
+  - `ConversationOrchestrator.test.ts`
+    - 新增“queue runner 内 setup 失败时仍落盘 error 状态与错误标记”回归测试，使用 `toolsBuilder()` 抛错模拟
+- implementer 自报验证：
+  - `pnpm vitest run src/orchestrator/ConversationOrchestrator.test.ts`：通过（12 passed）
+  - `pnpm exec tsc --noEmit`：通过
+- controller 下一步：
+  - 重跑 Task 3.1 code quality review
+  - 若通过，则进入 controller 自身验证并准备提交 chunk-3 / Task 3.1
+- round 状态：awaiting-chunk-3-task-3-1-setup-failure-quality-rereview
+
+[2026-04-21 17:45+08:00] round-48 Task 3.1 code quality 复审通过 + controller 验证完成
+- 子 agent：`m3-chunk3-task3-1-code-quality-review`
+- 结果：`APPROVED`
+- 复审结论：
+  - 上轮指出的 P1 已消除：queue runner 中 session 创建后的 setup / executor 初始化 / 事件消费异常，都已进入统一补偿路径
+  - reviewer 额外做了只读复现：`memoryStore.exists()` 在 session 创建后抛错时，`meta.status` 正确变成 `error`，错误标记落盘，不再卡在 `running`
+- controller 新鲜验证：
+  - `pnpm vitest run src/orchestrator/ConversationOrchestrator.test.ts tests/integration/mvp.test.ts tests/integration/slack-render-flow.test.ts`
+    - 3 files, 15 tests passed
+  - `pnpm exec tsc --noEmit`
+    - exit 0
+  - `pnpm lint`
+    - 首次失败：`src/orchestrator/ConversationOrchestrator.ts` 需要 Prettier 格式化
+    - 已执行 `pnpm exec prettier --write src/orchestrator/ConversationOrchestrator.ts`
+    - 重跑后通过：`eslint . && prettier --check .`
+- Task 3.1 当前结论：
+  - spec review ✅
+  - code quality review ✅
+  - controller verification ✅
+  - 可进入 chunk-3 的下一任务 Task 3.2
+- controller 下一步：
+  - 读取 `memory/process.txt`
+  - 恢复 `Task 3.2: SlackAdapter reaction_added + queued` 的上下文
+  - 派新的 implementer，严格限制在 `SlackAdapter` 及其测试范围
+- round 状态：ready-for-chunk-3-task-3-2
+
+[2026-04-21 17:49+08:00] round-49 Task 3.2 上下文恢复完成，准备派发 implementer
+- 已读取：
+  - `memory/process.txt`
+  - `docs/superpowers/plans/2026-04-18-M3-interactive.md` 中 Task 3.2 段落
+  - `src/im/slack/SlackAdapter.ts`
+  - `src/im/slack/SlackAdapter.test.ts`
+  - `src/application/createApplication.ts`
+- 当前缺口确认：
+  - `SlackAdapter.ts` 还没有 `reaction_added` handler
+  - `app_mention` 路径还没有 queue depth 检查，也不会在排队时加 `hourglass_flowing_sand`
+  - `createSlackAdapter` 目前未接收 `abortRegistry` / `runQueue`
+  - `createApplication.ts` 里虽然已经创建共享 `runQueue` / `abortRegistry`，但还没有传给 `createSlackAdapter`
+  - `SlackAdapter.test.ts` 目前只有构造 smoke，用例不足以覆盖 Task 3.2 行为
+- 本轮 Task 3.2 允许改动范围：
+  - `src/im/slack/SlackAdapter.ts`
+  - `src/im/slack/SlackAdapter.test.ts`
+  - `src/application/createApplication.ts`（仅作为 `createSlackAdapter` 新依赖的直接调用点）
+- 本轮禁止提前改动：
+  - `src/orchestrator/ConversationOrchestrator.ts`
+  - `src/im/slack/SlackRenderer.ts`
+  - 任何 chunk-4 文件
+- controller 下一步：
+  - 派新的 Task 3.2 implementer
+  - 实现后走 spec review → code quality review → controller verification
+- round 状态：dispatching-chunk-3-task-3-2-implementer
+
+[2026-04-21 17:56+08:00] round-50 Task 3.2 implementer 返回
+- 子 agent：`m3-chunk3-task3-2-slack-adapter`
+- 结果：`DONE`
+- 改动摘要：
+  - `src/im/slack/SlackAdapter.ts`
+    - `createSlackAdapter` 新增 `abortRegistry` / `runQueue` 依赖
+    - 新增 `reaction_added` handler：仅对 `stop_sign + message item` 调 `abortRegistry.abort(event.item.ts, 'user_stop_reaction')`
+    - `app_mention` 路径新增 `sessionId = slack:${channelId}:${threadTs}` 的 queue depth 检查；深度大于 0 时，对原消息 best-effort 添加 `hourglass_flowing_sand`
+  - `src/application/createApplication.ts`
+    - 把现有共享 `abortRegistry` / `runQueue` 传给 `createSlackAdapter(...)`
+  - `src/im/slack/SlackAdapter.test.ts`
+    - 改为 mock `@slack/bolt` 的 handler 级测试
+    - 覆盖 `stop_sign` abort、其他 reaction 忽略、非 message item 忽略、queued hourglass
+- implementer 自报验证：
+  - `pnpm vitest run src/im/slack/SlackAdapter.test.ts`：通过（1 file, 6 tests passed）
+  - `pnpm exec tsc --noEmit`：通过
+- controller 下一步：
+  - 发起 Task 3.2 spec review
+  - 若 spec 通过，再发起 code quality review
+- round 状态：awaiting-chunk-3-task-3-2-spec-review
+
+[2026-04-21 17:58+08:00] round-51 Task 3.2 spec review 通过
+- 子 agent：`m3-chunk3-task3-2-spec-review`
+- 结果：`SPEC_OK`
+- 结论：
+  - `SlackAdapter` 已新增 `abortRegistry` / `runQueue` 依赖
+  - `reaction_added`、`queueDepth > 0 -> hourglass_flowing_sand`、`sessionId = slack:${channelId}:${threadTs}` 均满足 Task 3.2 原口径
+  - 新测试覆盖了 `stop_sign` abort、其他 reaction 忽略、queued hourglass，并额外补了非 message item 负例
+  - `createApplication.ts` 只做了必要的依赖透传，未越界
+- controller 下一步：
+  - 发起 Task 3.2 code quality review
+  - 若 quality 通过，则进入 controller 自身验证并判断 chunk-3 是否进入人工验收 gate
+- round 状态：awaiting-chunk-3-task-3-2-code-quality-review
+
+[2026-04-21 18:03+08:00] round-52 Task 3.2 code quality 通过 + chunk-3 controller 验证完成
+- 子 agent：`m3-chunk3-task3-2-code-quality-review`
+- 结果：`APPROVED`
+- 复审结论：
+  - `hourglass_flowing_sand` 使用单独 `try/catch`，失败只 `warn`，不会打断 `orchestrator.handle(...)`
+  - `reaction_added` 仅在 `stop_sign + message item` 时触发 `abortRegistry.abort(...)`
+  - `SlackAdapter.test.ts` 的 hoisted bolt mock 在 `beforeEach` 中清空 handler / mock 状态，没有明显共享污染
+- controller 新鲜验证：
+  - `pnpm vitest run src/orchestrator/ConversationOrchestrator.test.ts src/im/slack/SlackAdapter.test.ts tests/integration/mvp.test.ts tests/integration/slack-render-flow.test.ts`
+    - 4 files, 21 tests passed
+  - `pnpm exec tsc --noEmit`
+    - exit 0
+  - `pnpm lint`
+    - 首次失败：`src/im/slack/SlackAdapter.test.ts` 需要 Prettier 格式化
+    - 已执行 `pnpm exec prettier --write src/im/slack/SlackAdapter.test.ts`
+    - 重跑后通过：`eslint . && prettier --check .`
+- chunk-3 当前结论：
+  - Task 3.1 ✅（spec / quality / verification 均通过）
+  - Task 3.2 ✅（spec / quality / verification 均通过）
+  - chunk-3 实现侧已完成，进入人工 Slack 验收 gate
+- chunk-3 Slack UI 验收待办：
+  - 同一 thread 快速连续发送两条请求，确认后进入队列的请求在原消息上出现 `⏳`
+  - 在正在流式输出的消息上添加 `🛑` reaction，确认当前执行停止，且不会出现两条回复同时流式竞争
+  - 如需排查，可补充查看 logs / `messages.jsonl` / `meta.json`，但这些不是主验收标准
+- controller 下一步：
+  - 等待人工 Slack 验证结果
+  - 验证通过后，再提交 chunk-3 并进入 chunk-4
+- round 状态：waiting-human-slack-review-for-chunk-3
+
+[2026-04-21 18:08+08:00] round-53 chunk-3 人工 Slack 验收通过，进入提交流程
+- 用户反馈：
+  - chunk-3 Slack 人工验收已通过
+  - 允许提交 chunk-3，并继续进入 chunk-4
+- controller 当前决策：
+  - 只提交 chunk-3 相关实现与测试文件，忽略无关的 `.env.example`
+  - 提交前重新执行 chunk-3 相关验证，避免用旧结果直接提交
+  - 提交完成后立即恢复 chunk-4 上下文并派发 Task 4.1 implementer
+- 本次待提交范围：
+  - `src/orchestrator/ConversationOrchestrator.ts`
+  - `src/orchestrator/ConversationOrchestrator.test.ts`
+  - `src/im/slack/SlackAdapter.ts`
+  - `src/im/slack/SlackAdapter.test.ts`
+  - `src/application/createApplication.ts`
+  - `tests/integration/mvp.test.ts`
+  - `tests/integration/slack-render-flow.test.ts`
+  - `memory/process.txt`
+- round 状态：verifying-and-committing-chunk-3

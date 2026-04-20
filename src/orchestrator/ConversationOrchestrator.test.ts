@@ -2,14 +2,17 @@ import { describe, expect, it, beforeEach, vi } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { createSessionStore } from '@/store/SessionStore.ts'
+import { createSessionStore, type SessionStore } from '@/store/SessionStore.ts'
 import { createMemoryStore } from '@/store/MemoryStore.ts'
 import { resolveWorkspacePaths } from '@/workspace/paths.ts'
 import { createConversationOrchestrator } from './ConversationOrchestrator.ts'
+import { SessionRunQueue } from './SessionRunQueue.ts'
+import { AbortRegistry } from './AbortRegistry.ts'
 import type { AgentExecutor, AgentExecutionRequest } from '@/agent/AgentExecutor.ts'
 import type { AgentExecutionEvent } from '@/core/events.ts'
 import type { EventSink, InboundMessage } from '@/im/types.ts'
 import type { Logger } from '@/logger/logger.ts'
+import type { CoreMessage } from 'ai'
 
 function stubLogger(overrides: Partial<Logger> = {}): Logger {
   const l: Logger = {
@@ -73,6 +76,16 @@ function makeExecutor(events: AgentExecutionEvent[]): AgentExecutor {
   }
 }
 
+async function waitUntil(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!predicate()) {
+    if (Date.now() > deadline) {
+      throw new Error('waitUntil timeout')
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+  }
+}
+
 describe('ConversationOrchestrator 粗事件消费', () => {
   let cwd: string
   beforeEach(() => {
@@ -119,6 +132,8 @@ describe('ConversationOrchestrator 粗事件消费', () => {
       executorFactory: () => executor,
       sessionStore: store,
       memoryStore,
+      runQueue: new SessionRunQueue(),
+      abortRegistry: new AbortRegistry<string>(),
       systemPrompt: '',
       logger: stubLogger(),
     })
@@ -154,6 +169,8 @@ describe('ConversationOrchestrator 粗事件消费', () => {
       executorFactory: () => executor,
       sessionStore: store,
       memoryStore,
+      runQueue: new SessionRunQueue(),
+      abortRegistry: new AbortRegistry<string>(),
       systemPrompt: '',
       logger: stubLogger(),
     })
@@ -184,6 +201,8 @@ describe('ConversationOrchestrator 粗事件消费', () => {
       executorFactory: () => executor,
       sessionStore: store,
       memoryStore,
+      runQueue: new SessionRunQueue(),
+      abortRegistry: new AbortRegistry<string>(),
       systemPrompt: '',
       logger: stubLogger(),
     })
@@ -208,6 +227,8 @@ describe('ConversationOrchestrator 粗事件消费', () => {
       executorFactory: () => executor,
       sessionStore: store,
       memoryStore,
+      runQueue: new SessionRunQueue(),
+      abortRegistry: new AbortRegistry<string>(),
       systemPrompt: '',
       logger: stubLogger(),
     })
@@ -241,6 +262,8 @@ describe('ConversationOrchestrator 粗事件消费', () => {
       executorFactory: () => executor,
       sessionStore: store,
       memoryStore,
+      runQueue: new SessionRunQueue(),
+      abortRegistry: new AbortRegistry<string>(),
       systemPrompt: '',
       logger: stubLogger(),
     })
@@ -286,6 +309,8 @@ describe('ConversationOrchestrator 粗事件消费', () => {
       executorFactory: () => executor,
       sessionStore: store,
       memoryStore,
+      runQueue: new SessionRunQueue(),
+      abortRegistry: new AbortRegistry<string>(),
       systemPrompt: '你是助手。',
       logger: stubLogger(),
     })
@@ -315,6 +340,8 @@ describe('ConversationOrchestrator 粗事件消费', () => {
       executorFactory: () => executor,
       sessionStore: store,
       memoryStore,
+      runQueue: new SessionRunQueue(),
+      abortRegistry: new AbortRegistry<string>(),
       systemPrompt: '你是助手。',
       logger: stubLogger({ trace }),
     })
@@ -324,5 +351,351 @@ describe('ConversationOrchestrator 粗事件消费', () => {
     expect(capturedSystem).toContain('你是助手。')
     expect(capturedSystem).toContain('目前没有关于该用户（alice / U）的长期记忆')
     expect(trace).toHaveBeenCalledWith(`最终 system prompt 正文：\n${capturedSystem}`)
+  })
+
+  it('同 session 两次 handle 会经 queue 串行，第二次在第一次完成后才启动 executor', async () => {
+    const paths = resolveWorkspacePaths(cwd)
+    const store = createSessionStore(paths)
+    const memoryStore = createMemoryStore(paths)
+    const runQueue = new SessionRunQueue()
+    const abortRegistry = new AbortRegistry<string>()
+    const started: string[] = []
+
+    let releaseFirstExecution = () => {}
+    const firstExecutionReleased = new Promise<void>((resolve) => {
+      releaseFirstExecution = resolve
+    })
+
+    const executors: AgentExecutor[] = [
+      {
+        async *execute() {
+          started.push('first')
+          await firstExecutionReleased
+          yield { type: 'lifecycle', phase: 'started' }
+          yield { type: 'lifecycle', phase: 'completed', finalMessages: [] }
+        },
+      },
+      {
+        async *execute() {
+          started.push('second')
+          yield { type: 'lifecycle', phase: 'started' }
+          yield { type: 'lifecycle', phase: 'completed', finalMessages: [] }
+        },
+      },
+    ]
+
+    const orch = createConversationOrchestrator({
+      toolsBuilder: () => ({}),
+      executorFactory: () => {
+        const executor = executors.shift()
+        if (!executor) {
+          throw new Error('unexpected executor request')
+        }
+        return executor
+      },
+      sessionStore: store,
+      memoryStore,
+      runQueue,
+      abortRegistry,
+      systemPrompt: '',
+      logger: stubLogger(),
+    })
+
+    const firstSink = mockSink()
+    const secondSink = mockSink()
+
+    const firstHandle = orch.handle(makeInput({ messageTs: 'm1', text: 'first' }), firstSink.sink)
+    await waitUntil(() => started.includes('first'))
+
+    const secondHandle = orch.handle(
+      makeInput({ messageTs: 'm2', text: 'second' }),
+      secondSink.sink,
+    )
+    await waitUntil(() => runQueue.queueDepth('slack:C:t') === 2)
+
+    expect(started).toEqual(['first'])
+
+    releaseFirstExecution()
+    await Promise.all([firstHandle, secondHandle])
+
+    expect(started).toEqual(['first', 'second'])
+    expect(firstSink.sink.finalize).toHaveBeenCalledTimes(1)
+    expect(secondSink.sink.finalize).toHaveBeenCalledTimes(1)
+  })
+
+  it('执行中调用 abortRegistry.abort(messageTs) 时，executor 可以观察到 signal.aborted=true', async () => {
+    const paths = resolveWorkspacePaths(cwd)
+    const store = createSessionStore(paths)
+    const memoryStore = createMemoryStore(paths)
+    const runQueue = new SessionRunQueue()
+    const abortRegistry = new AbortRegistry<string>()
+
+    let observedBeforeAbort = false
+    let observedAfterAbort = false
+    let executorSignal: AbortSignal | undefined
+    let markStarted = () => {}
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve
+    })
+
+    const executor: AgentExecutor = {
+      async *execute(req: AgentExecutionRequest) {
+        executorSignal = req.abortSignal
+        observedBeforeAbort = req.abortSignal.aborted
+        markStarted()
+
+        await new Promise<void>((resolve) => {
+          const stop = () => {
+            observedAfterAbort = req.abortSignal.aborted
+            resolve()
+          }
+
+          if (req.abortSignal.aborted) {
+            stop()
+            return
+          }
+
+          req.abortSignal.addEventListener('abort', stop, { once: true })
+        })
+
+        yield { type: 'lifecycle', phase: 'stopped', reason: 'user' }
+      },
+    }
+
+    const orch = createConversationOrchestrator({
+      toolsBuilder: () => ({}),
+      executorFactory: () => executor,
+      sessionStore: store,
+      memoryStore,
+      runQueue,
+      abortRegistry,
+      systemPrompt: '',
+      logger: stubLogger(),
+    })
+
+    const { sink } = mockSink()
+    const handlePromise = orch.handle(makeInput({ messageTs: 'm-abort' }), sink)
+
+    await started
+    expect(observedBeforeAbort).toBe(false)
+    expect(executorSignal?.aborted).toBe(false)
+
+    abortRegistry.abort('m-abort', 'user-cancel')
+    await handlePromise
+
+    expect(observedAfterAbort).toBe(true)
+    expect(executorSignal?.aborted).toBe(true)
+    expect(executorSignal?.reason).toBe('user-cancel')
+    expect(() => abortRegistry.create('m-abort')).not.toThrow()
+    abortRegistry.delete('m-abort')
+  })
+
+  it('首次建档时同一新 session 的 getOrCreate 不会并发进入', async () => {
+    const runQueue = new SessionRunQueue()
+    const abortRegistry = new AbortRegistry<string>()
+    const sessionId = 'slack:C:t'
+    const statusBySession = new Map<string, 'idle' | 'running' | 'stopped' | 'error'>()
+    const messagesBySession = new Map<string, CoreMessage[]>()
+    let getOrCreateConcurrent = 0
+    let getOrCreateMaxConcurrent = 0
+    let getOrCreateCalls = 0
+
+    let releaseFirstGetOrCreate = () => {}
+    const firstGetOrCreateReleased = new Promise<void>((resolve) => {
+      releaseFirstGetOrCreate = resolve
+    })
+
+    const store: SessionStore = {
+      async getOrCreate() {
+        getOrCreateCalls += 1
+        getOrCreateConcurrent += 1
+        getOrCreateMaxConcurrent = Math.max(getOrCreateMaxConcurrent, getOrCreateConcurrent)
+
+        try {
+          if (getOrCreateCalls === 1) {
+            await firstGetOrCreateReleased
+          }
+
+          statusBySession.set(sessionId, 'idle')
+          messagesBySession.set(sessionId, messagesBySession.get(sessionId) ?? [])
+          return {
+            id: sessionId,
+            dir: '/tmp/mock-session',
+            meta: {
+              schemaVersion: 1,
+              imProvider: 'slack',
+              channelId: 'C',
+              channelName: 'c',
+              threadTs: 't',
+              imUserId: 'U',
+              agentName: 'default',
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+              status: 'idle',
+              usage: {
+                inputTokens: 0,
+                outputTokens: 0,
+                cachedInputTokens: 0,
+                totalCostUSD: 0,
+                stepCount: 0,
+              },
+            },
+          }
+        } finally {
+          getOrCreateConcurrent -= 1
+        }
+      },
+      async getMeta(id) {
+        const status = statusBySession.get(id)
+        if (!status) return undefined
+        return {
+          schemaVersion: 1,
+          imProvider: 'slack',
+          channelId: 'C',
+          channelName: 'c',
+          threadTs: 't',
+          imUserId: 'U',
+          agentName: 'default',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          status,
+          usage: {
+            inputTokens: 0,
+            outputTokens: 0,
+            cachedInputTokens: 0,
+            totalCostUSD: 0,
+            stepCount: 0,
+          },
+        }
+      },
+      async loadMessages(id) {
+        return [...(messagesBySession.get(id) ?? [])]
+      },
+      async appendMessage(id, msg) {
+        const messages = messagesBySession.get(id) ?? []
+        messages.push(msg)
+        messagesBySession.set(id, messages)
+      },
+      async accumulateUsage() {},
+      async accumulateCost() {},
+      async setStatus(id, status) {
+        statusBySession.set(id, status)
+      },
+    }
+
+    const executor: AgentExecutor = {
+      async *execute() {
+        yield { type: 'lifecycle', phase: 'started' }
+        yield { type: 'lifecycle', phase: 'completed', finalMessages: [] }
+      },
+    }
+
+    const orch = createConversationOrchestrator({
+      toolsBuilder: () => ({}),
+      executorFactory: () => executor,
+      sessionStore: store,
+      memoryStore: {
+        exists: async () => false,
+        pathFor: () => '/tmp/mock-memory.md',
+        save: async () => '/tmp/mock-memory.md',
+      },
+      runQueue,
+      abortRegistry,
+      systemPrompt: '',
+      logger: stubLogger(),
+    })
+
+    const firstHandle = orch.handle(makeInput({ messageTs: 'm1' }), mockSink().sink)
+    await waitUntil(() => getOrCreateCalls === 1)
+
+    const secondHandle = orch.handle(makeInput({ messageTs: 'm2' }), mockSink().sink)
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+    expect(getOrCreateMaxConcurrent).toBe(1)
+    expect(getOrCreateCalls).toBe(1)
+
+    releaseFirstGetOrCreate()
+    await Promise.all([firstHandle, secondHandle])
+
+    expect(getOrCreateMaxConcurrent).toBe(1)
+    expect(getOrCreateCalls).toBe(2)
+  })
+
+  it('sink.onEvent 持续失败时仍会先落盘 error 状态与错误标记', async () => {
+    const paths = resolveWorkspacePaths(cwd)
+    const store = createSessionStore(paths)
+    const memoryStore = createMemoryStore(paths)
+    const executor = makeExecutor([
+      { type: 'lifecycle', phase: 'started' },
+      { type: 'lifecycle', phase: 'completed', finalMessages: [] },
+    ])
+
+    const sink: EventSink = {
+      onEvent: vi.fn(async () => {
+        throw new Error('sink always broken')
+      }),
+      finalize: vi.fn(async () => {}),
+      get terminalPhase() {
+        return undefined
+      },
+    }
+
+    const orch = createConversationOrchestrator({
+      toolsBuilder: () => ({}),
+      executorFactory: () => executor,
+      sessionStore: store,
+      memoryStore,
+      runQueue: new SessionRunQueue(),
+      abortRegistry: new AbortRegistry<string>(),
+      systemPrompt: '',
+      logger: stubLogger(),
+    })
+
+    await expect(orch.handle(makeInput(), sink)).resolves.toBeUndefined()
+
+    const meta = await store.getMeta('slack:C:t')
+    const msgs = await store.loadMessages('slack:C:t')
+    expect(meta?.status).toBe('error')
+    expect(meta?.status).not.toBe('running')
+    expect(msgs.at(-1)).toMatchObject({
+      role: 'assistant',
+      content: expect.stringContaining('sink always broken'),
+    })
+    expect(sink.finalize).toHaveBeenCalledTimes(1)
+    expect(sink.onEvent).toHaveBeenCalledTimes(2)
+  })
+
+  it('queue runner 内 setup 失败时仍会落盘 error 状态与错误标记', async () => {
+    const paths = resolveWorkspacePaths(cwd)
+    const store = createSessionStore(paths)
+    const memoryStore = createMemoryStore(paths)
+    const sink = mockSink()
+
+    const orch = createConversationOrchestrator({
+      toolsBuilder: () => {
+        throw new Error('toolsBuilder exploded')
+      },
+      executorFactory: () => {
+        throw new Error('should not reach executorFactory')
+      },
+      sessionStore: store,
+      memoryStore,
+      runQueue: new SessionRunQueue(),
+      abortRegistry: new AbortRegistry<string>(),
+      systemPrompt: '',
+      logger: stubLogger(),
+    })
+
+    await expect(orch.handle(makeInput(), sink.sink)).resolves.toBeUndefined()
+
+    const meta = await store.getMeta('slack:C:t')
+    const msgs = await store.loadMessages('slack:C:t')
+    expect(meta?.status).toBe('error')
+    expect(meta?.status).not.toBe('running')
+    expect(msgs.at(-1)).toMatchObject({
+      role: 'assistant',
+      content: expect.stringContaining('toolsBuilder exploded'),
+    })
+    expect(sink.sink.finalize).toHaveBeenCalledTimes(1)
   })
 })

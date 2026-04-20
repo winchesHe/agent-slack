@@ -18,6 +18,8 @@ import { createMemoryStore } from '@/store/MemoryStore.ts'
 import { resolveWorkspacePaths } from '@/workspace/paths.ts'
 import { createAiSdkExecutor } from '@/agent/AiSdkExecutor.ts'
 import { createConversationOrchestrator } from '@/orchestrator/ConversationOrchestrator.ts'
+import { SessionRunQueue } from '@/orchestrator/SessionRunQueue.ts'
+import { AbortRegistry } from '@/orchestrator/AbortRegistry.ts'
 import { createSlackEventSink } from '@/im/slack/SlackEventSink.ts'
 import { createSlackRenderer } from '@/im/slack/SlackRenderer.ts'
 import type { Logger } from '@/logger/logger.ts'
@@ -178,6 +180,8 @@ describe('slack-render-flow 集成：真实 SlackRenderer + mock WebClient', () 
       executorFactory: () => executor,
       sessionStore: store,
       memoryStore,
+      runQueue: new SessionRunQueue(),
+      abortRegistry: new AbortRegistry<string>(),
       systemPrompt: 'test',
       logger,
     })
@@ -272,6 +276,8 @@ describe('slack-render-flow 集成：真实 SlackRenderer + mock WebClient', () 
       executorFactory: () => executor,
       sessionStore: store,
       memoryStore,
+      runQueue: new SessionRunQueue(),
+      abortRegistry: new AbortRegistry<string>(),
       systemPrompt: 'test',
       logger,
     })

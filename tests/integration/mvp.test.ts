@@ -10,6 +10,8 @@ import { createMemoryStore } from '@/store/MemoryStore.ts'
 import { resolveWorkspacePaths } from '@/workspace/paths.ts'
 import { createAiSdkExecutor } from '@/agent/AiSdkExecutor.ts'
 import { createConversationOrchestrator } from '@/orchestrator/ConversationOrchestrator.ts'
+import { SessionRunQueue } from '@/orchestrator/SessionRunQueue.ts'
+import { AbortRegistry } from '@/orchestrator/AbortRegistry.ts'
 import { createSlackEventSink } from '@/im/slack/SlackEventSink.ts'
 import type { SlackRenderer } from '@/im/slack/SlackRenderer.ts'
 import type { Logger } from '@/logger/logger.ts'
@@ -84,6 +86,8 @@ describe('MVP 集成：mock Slack + mock LLM 跑完整链路', () => {
       executorFactory: () => executor,
       sessionStore: store,
       memoryStore,
+      runQueue: new SessionRunQueue(),
+      abortRegistry: new AbortRegistry<string>(),
       systemPrompt: '',
       logger: stubLogger(),
     })

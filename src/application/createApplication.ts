@@ -8,6 +8,8 @@ import { createRedactor } from '@/logger/redactor.ts'
 import { createAiSdkExecutor } from '@/agent/AiSdkExecutor.ts'
 import { buildBuiltinTools } from '@/agent/tools/index.ts'
 import { createConversationOrchestrator } from '@/orchestrator/ConversationOrchestrator.ts'
+import { SessionRunQueue } from '@/orchestrator/SessionRunQueue.ts'
+import { AbortRegistry } from '@/orchestrator/AbortRegistry.ts'
 import { createSlackAdapter } from '@/im/slack/SlackAdapter.ts'
 import { createSlackRenderer } from '@/im/slack/SlackRenderer.ts'
 import { ConfigError } from '@/core/errors.ts'
@@ -43,6 +45,8 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
 
   const sessionStore = createSessionStore(ctx.paths)
   const memoryStore = createMemoryStore(ctx.paths)
+  const runQueue = new SessionRunQueue()
+  const abortRegistry = new AbortRegistry<string>()
 
   const provider = createOpenAICompatible({
     baseURL: env.litellmBaseUrl,
@@ -72,6 +76,8 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
     executorFactory,
     sessionStore,
     memoryStore,
+    runQueue,
+    abortRegistry,
     systemPrompt: ctx.systemPrompt,
     logger,
   })
@@ -80,6 +86,8 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
 
   const slack = createSlackAdapter({
     orchestrator,
+    abortRegistry,
+    runQueue,
     renderer,
     logger,
     botToken: env.slackBotToken,
