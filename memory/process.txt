@@ -548,3 +548,130 @@
   - stage + commit 当前已通过 review 的相关文件
   - 读取 M3 plan chunk-2，并派 implementer 子 agent 开始实现
 - round 状态：ready-to-commit-and-start-chunk-2
+
+[2026-04-21 15:28+08:00] round-29 当前块已提交，开始 chunk-2 调度
+- 提交结果：
+  - commit: `db55852`
+  - message: `阶段 5: skills 注入与 trace prompt 观测`
+- 提交前验证（fresh）：
+  - `rtk pnpm test`：通过（20 files / 126 tests）
+  - `rtk pnpm typecheck`：通过
+  - `rtk pnpm lint`：通过
+- 提交范围说明：
+  - 已提交：chunk-1、trace prompt 观测点、相关质量修补与测试
+  - 未提交：`.env.example`（保留为 worktree 中的未暂存改动，来源未确认）
+- chunk-2 计划收口：
+  - 范围仅限：
+    1. `src/orchestrator/AbortRegistry.ts` + test
+    2. `src/orchestrator/SessionRunQueue.ts` + test
+  - 不提前进入 chunk-3 的 orchestrator / adapter 接线
+- 完成标准：
+  - `AbortRegistry` 满足 create / abort / delete / abortAll 语义
+  - `SessionRunQueue` 满足同 session 串行、不同 session 并行、异常不破坏后续、空闲 GC
+  - 相关测试通过
+- 下一步：
+  - 派 chunk-2 implementer 子 agent
+  - 完成后继续 spec review → code quality review
+- round 状态：ready-for-chunk-2-implementer
+
+[2026-04-21 15:35+08:00] round-30 chunk-2 implementer 返回
+- 子 agent：`m3-chunk2-abort-registry-and-session-run-queue`
+- 结果：`DONE`
+- implementer 摘要：
+  - 新建 `src/orchestrator/AbortRegistry.ts`
+  - 新建 `src/orchestrator/AbortRegistry.test.ts`
+  - 新建 `src/orchestrator/SessionRunQueue.ts`
+  - 新建 `src/orchestrator/SessionRunQueue.test.ts`
+  - 已按 chunk-2 范围完成基础组件与测试，没有提前改 chunk-3 接线
+- implementer 自报验证：
+  - `pnpm -s vitest run src/orchestrator/AbortRegistry.test.ts src/orchestrator/SessionRunQueue.test.ts`：通过
+- controller 下一步：
+  - 发起 spec review，检查是否严格符合 chunk-2 计划语义
+  - 若 spec 通过，再做 code quality review
+- round 状态：awaiting-chunk-2-spec-review
+
+[2026-04-21 15:40+08:00] round-31 chunk-2 spec review 发现 plan 示例漂移
+- 子 agent：`m3-chunk2-spec-review`
+- 结果：`SPEC_ISSUES`
+- 结论：
+  - chunk-2 的 4 个实现/测试文件本身符合当前口径
+  - 唯一 spec 问题在 `docs/superpowers/plans/2026-04-18-M3-interactive.md` 的 chunk-2 示例代码：
+    - `abort(key, reason?)`
+    - `abortAll(reason?)`
+    - 仍写成 `reason ?? 'aborted'`
+  - 这会让 plan 示例与当前实现/本轮口径漂移
+- controller 判断：
+  - 这是局部文档修正，不涉及实现返工
+  - 按“局部报错但方向正确”策略，不换实现方向，只派一个最小子任务修正 plan 示例
+- 下一步：
+  - 修正 `docs/superpowers/plans/2026-04-18-M3-interactive.md` 中 chunk-2 `AbortRegistry` 示例
+  - 修完后立刻重跑 chunk-2 spec review
+- round 状态：awaiting-chunk-2-plan-fix
+
+[2026-04-21 15:43+08:00] round-32 chunk-2 plan 示例修补完成
+- 子 agent：`m3-chunk2-plan-example-fix`
+- 结果：`DONE`
+- 修补摘要：
+  - `docs/superpowers/plans/2026-04-18-M3-interactive.md` 中 chunk-2 `AbortRegistry` 示例已改为直接透传可选 `reason`
+  - 不涉及任何实现文件改动
+- controller 下一步：
+  - 立即重跑 chunk-2 spec review
+  - 若 spec 通过，则进入 code quality review
+- round 状态：awaiting-chunk-2-spec-rereview
+
+[2026-04-21 15:45+08:00] round-33 chunk-2 spec 复审通过
+- 子 agent：`m3-chunk2-spec-review`
+- 结果：`SPEC_OK`
+- 复审结论：
+  - plan 文档示例已与当前口径对齐
+  - `AbortRegistry` / `SessionRunQueue` 实现与测试均满足 chunk-2 要求
+  - 未见提前改 chunk-3 orchestrator / adapter 接线
+- controller 下一步：
+  - 发起 chunk-2 code quality review
+  - 若 quality 通过，则本轮停在 chunk-2 人工 review gate
+- round 状态：awaiting-chunk-2-code-quality-review
+
+[2026-04-21 15:52+08:00] round-34 chunk-2 code quality review 发现 plan 与实现继续漂移
+- 子 agent：`m3-chunk2-quality-review`
+- 结果：`ISSUES_FOUND`
+- 结论：
+  - `AbortRegistry.ts` / `SessionRunQueue.ts` / 两个测试文件本身没有新的 blocker
+  - 唯一 blocker 仍在 `docs/superpowers/plans/2026-04-18-M3-interactive.md`
+- 具体问题：
+  1. plan 仍把接口写成 `createAbortRegistry` / `createSessionRunQueue` 工厂函数，但当前真实实现是 `class AbortRegistry` / `class SessionRunQueue`
+  2. plan 中 `SessionRunQueue` 示例仍使用 `next.finally(...)` 维护 tail，会把当前实现已规避的 unhandled rejection 风险重新带回后续 chunk
+- controller 判断：
+  - 这是继续推进 chunk-3 前必须清理的文档阻断
+  - 采用最小修补策略：只修正 plan 文档，不回滚 chunk-2 代码
+- 下一步：
+  - 派一个最小文档修补子 agent，对齐 chunk-2 / chunk-3 计划中的 API 名称与队列示例
+  - 修完后重跑 chunk-2 code quality review
+- round 状态：awaiting-chunk-2-plan-alignment-fix
+
+[2026-04-21 15:57+08:00] round-35 chunk-2 plan API/队列示例对齐完成
+- 子 agent：`m3-chunk2-plan-alignment-fix`
+- 结果：`DONE`
+- 修补摘要：
+  - plan 中 `createAbortRegistry` / `createSessionRunQueue` 已统一改为 `new AbortRegistry()` / `new SessionRunQueue()`
+  - `SessionRunQueue` 示例已改成当前实现口径，不再使用 `next.finally(...)`
+- controller 下一步：
+  - 立即重跑 chunk-2 code quality review
+  - 若复审通过，则本轮停在 chunk-2 人工 review gate
+- round 状态：awaiting-chunk-2-code-quality-rereview
+
+[2026-04-21 16:00+08:00] round-36 chunk-2 code quality 复审通过，进入提交与 chunk-3
+- 子 agent：`m3-chunk2-quality-review`
+- 结果：`APPROVED`
+- 复审结论：
+  - plan 文档与当前实现已对齐
+  - `AbortRegistry` / `SessionRunQueue` 当前实现与测试没有新的 blocker 或重要风险
+  - `pnpm -s vitest run src/orchestrator/AbortRegistry.test.ts src/orchestrator/SessionRunQueue.test.ts` 通过
+  - `tsc --noEmit` 通过
+- controller 判断：
+  - 用户此前已明确要求“chunk2 没问题就提交并开始 chunk 3”
+  - 当前可直接进入 chunk-2 提交与 chunk-3 调度
+- 下一步：
+  - fresh 验证 chunk-2 相关命令
+  - stage + commit chunk-2 相关文件
+  - 读取 chunk-3 计划并派 implementer 子 agent
+- round 状态：ready-to-commit-chunk-2-and-start-chunk-3

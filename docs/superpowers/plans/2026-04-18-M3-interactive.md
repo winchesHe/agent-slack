@@ -251,36 +251,36 @@ git commit -m "阶段 5: Skills 拼接到 system prompt"
 
 ```ts
 import { describe, expect, it } from 'vitest'
-import { createAbortRegistry } from './AbortRegistry.ts'
+import { AbortRegistry } from './AbortRegistry.ts'
 
 describe('AbortRegistry', () => {
   it('create 返回 AbortController', () => {
-    const reg = createAbortRegistry()
+    const reg = new AbortRegistry()
     const ctrl = reg.create('k1')
     expect(ctrl.signal.aborted).toBe(false)
   })
 
   it('abort 触发 signal', () => {
-    const reg = createAbortRegistry()
+    const reg = new AbortRegistry()
     const ctrl = reg.create('k1')
     reg.abort('k1', 'user')
     expect(ctrl.signal.aborted).toBe(true)
   })
 
   it('abort 未知 key 静默', () => {
-    const reg = createAbortRegistry()
+    const reg = new AbortRegistry()
     expect(() => reg.abort('unknown')).not.toThrow()
   })
 
   it('delete 后重复 create 可用', () => {
-    const reg = createAbortRegistry()
+    const reg = new AbortRegistry()
     reg.create('k')
     reg.delete('k')
     expect(() => reg.create('k')).not.toThrow()
   })
 
   it('abortAll', () => {
-    const reg = createAbortRegistry()
+    const reg = new AbortRegistry()
     const c1 = reg.create('a')
     const c2 = reg.create('b')
     reg.abortAll('shutdown')
@@ -293,32 +293,27 @@ describe('AbortRegistry', () => {
 - [ ] **Step 2: 实现**
 
 ```ts
-export interface AbortRegistry {
-  create(key: string): AbortController
-  abort(key: string, reason?: string): void
-  delete(key: string): void
-  abortAll(reason?: string): void
-}
+export class AbortRegistry {
+  private readonly map = new Map<string, AbortController>()
 
-export function createAbortRegistry(): AbortRegistry {
-  const map = new Map<string, AbortController>()
-  return {
-    create(key) {
-      if (map.has(key)) throw new Error(`abort key already exists: ${key}`)
-      const ctrl = new AbortController()
-      map.set(key, ctrl)
-      return ctrl
-    },
-    abort(key, reason) {
-      map.get(key)?.abort(reason ?? 'aborted')
-    },
-    delete(key) {
-      map.delete(key)
-    },
-    abortAll(reason) {
-      for (const c of map.values()) c.abort(reason ?? 'aborted')
-      map.clear()
-    },
+  create(key: string): AbortController {
+    if (this.map.has(key)) throw new Error(`abort key already exists: ${key}`)
+    const ctrl = new AbortController()
+    this.map.set(key, ctrl)
+    return ctrl
+  }
+
+  abort(key: string, reason?: string): void {
+    this.map.get(key)?.abort(reason)
+  }
+
+  delete(key: string): void {
+    this.map.delete(key)
+  }
+
+  abortAll(reason?: string): void {
+    for (const c of this.map.values()) c.abort(reason)
+    this.map.clear()
   }
 }
 ```
@@ -346,11 +341,11 @@ git commit -m "阶段 5: AbortRegistry"
 
 ```ts
 import { describe, expect, it } from 'vitest'
-import { createSessionRunQueue } from './SessionRunQueue.ts'
+import { SessionRunQueue } from './SessionRunQueue.ts'
 
 describe('SessionRunQueue', () => {
   it('同 session 串行', async () => {
-    const queue = createSessionRunQueue()
+    const queue = new SessionRunQueue()
     const order: number[] = []
     const d = (n: number, ms: number): Promise<void> =>
       new Promise((r) => setTimeout(() => { order.push(n); r() }, ms))
@@ -361,7 +356,7 @@ describe('SessionRunQueue', () => {
   })
 
   it('不同 session 并行', async () => {
-    const queue = createSessionRunQueue()
+    const queue = new SessionRunQueue()
     const starts: number[] = []
     await Promise.all([
       queue.enqueue('s1', async () => { starts.push(Date.now()); await new Promise((r) => setTimeout(r, 20)) }),
@@ -371,7 +366,7 @@ describe('SessionRunQueue', () => {
   })
 
   it('runner 抛出不破坏后续', async () => {
-    const queue = createSessionRunQueue()
+    const queue = new SessionRunQueue()
     const a = queue.enqueue('s', async () => { throw new Error('x') })
     const b = queue.enqueue('s', async () => 1)
     await expect(a).rejects.toThrow('x')
@@ -379,7 +374,7 @@ describe('SessionRunQueue', () => {
   })
 
   it('queueDepth 报告排队', async () => {
-    const queue = createSessionRunQueue()
+    const queue = new SessionRunQueue()
     let release: () => void = () => {}
     const blocked = new Promise<void>((r) => { release = r })
     void queue.enqueue('s', () => blocked)
@@ -395,33 +390,36 @@ describe('SessionRunQueue', () => {
 - [ ] **Step 2: 实现**
 
 ```ts
-export interface SessionRunQueue {
-  enqueue(sessionId: string, runner: () => Promise<void>): Promise<void>
-  queueDepth(sessionId: string): number
-}
+export class SessionRunQueue {
+  private readonly tails = new Map<string, Promise<void>>()
+  private readonly depths = new Map<string, number>()
 
-export function createSessionRunQueue(): SessionRunQueue {
-  const tails = new Map<string, Promise<unknown>>()
-  const depths = new Map<string, number>()
+  enqueue(sessionId: string, runner: () => Promise<void>): Promise<void> {
+    const prevTail = this.tails.get(sessionId) ?? Promise.resolve()
+    this.depths.set(sessionId, (this.depths.get(sessionId) ?? 0) + 1)
 
-  return {
-    enqueue(sessionId, runner) {
-      const prev = tails.get(sessionId) ?? Promise.resolve()
-      depths.set(sessionId, (depths.get(sessionId) ?? 0) + 1)
-      const next = prev.catch(() => {}).then(runner)
-      const cleanup = next.finally(() => {
-        depths.set(sessionId, (depths.get(sessionId) ?? 1) - 1)
-        if (depths.get(sessionId) === 0) {
-          tails.delete(sessionId)
-          depths.delete(sessionId)
-        }
-      })
-      tails.set(sessionId, cleanup)
-      return next
-    },
-    queueDepth(sessionId) {
-      return depths.get(sessionId) ?? 0
-    },
+    // 关键点：
+    // - runPromise 代表 runner 的真实结果（可能 reject，返回给调用方）
+    // - tail 永远不 reject：用 runPromise.then(() => {}, () => {}) 把 reject 吞掉，避免把未处理的 rejection 风险带回队列链路
+    // - 清理逻辑单独挂在 runPromise 上，避免 next.finally(...) 生成新的 rejecting promise 被忽略
+    const runPromise = prevTail.then(runner)
+    const nextTail = runPromise.then(() => {}, () => {})
+
+    const cleanup = (): void => {
+      this.depths.set(sessionId, (this.depths.get(sessionId) ?? 1) - 1)
+      if (this.depths.get(sessionId) === 0) {
+        this.tails.delete(sessionId)
+        this.depths.delete(sessionId)
+      }
+    }
+    void runPromise.then(cleanup, cleanup)
+
+    this.tails.set(sessionId, nextTail)
+    return runPromise
+  }
+
+  queueDepth(sessionId: string): number {
+    return this.depths.get(sessionId) ?? 0
   }
 }
 ```
@@ -548,12 +546,12 @@ export function createConversationOrchestrator(
 - [ ] **Step 3: 更新 createApplication 注入新依赖**
 
 ```ts
-import { createSessionRunQueue } from '@/orchestrator/SessionRunQueue.ts'
-import { createAbortRegistry } from '@/orchestrator/AbortRegistry.ts'
+import { SessionRunQueue } from '@/orchestrator/SessionRunQueue.ts'
+import { AbortRegistry } from '@/orchestrator/AbortRegistry.ts'
 
 // 在 createApplication 内：
-const runQueue = createSessionRunQueue()
-const abortRegistry = createAbortRegistry()
+const runQueue = new SessionRunQueue()
+const abortRegistry = new AbortRegistry()
 
 const orchestrator = createConversationOrchestrator({
   executor, sessionStore, systemPrompt: ctx.systemPrompt, logger,
