@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import type { CoreMessage } from 'ai'
 import { resolveWorkspacePaths } from '@/workspace/paths.ts'
 import { createSessionStore } from './SessionStore.ts'
 
@@ -53,6 +54,44 @@ describe('SessionStore', () => {
     const msgs = await store.loadMessages(session.id)
     expect(msgs).toHaveLength(2)
     expect(msgs[0]).toMatchObject({ role: 'user', content: 'hi' })
+  })
+
+  it('append + loadMessages 保留 assistant tool-call 与 tool-result 原样顺序', async () => {
+    const { store, session } = await createStoreWithSession('t-tool')
+    const messages: CoreMessage[] = [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: '先查一下。' },
+          {
+            type: 'tool-call',
+            toolCallId: 'call_1',
+            toolName: 'search_docs',
+            args: { query: 'tool 持久化' },
+          },
+        ],
+      },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'call_1',
+            toolName: 'search_docs',
+            result: {
+              matches: [{ title: '设计文档', score: 0.98 }],
+            },
+          },
+        ],
+      },
+    ]
+
+    for (const message of messages) {
+      await store.appendMessage(session.id, message)
+    }
+
+    const msgs = await store.loadMessages(session.id)
+    expect(msgs).toEqual(messages)
   })
 
   it('setStatus 接受 stopped', async () => {

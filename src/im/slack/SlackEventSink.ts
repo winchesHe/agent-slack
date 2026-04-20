@@ -9,6 +9,7 @@ import type { Logger } from '@/logger/logger.ts'
 import type { EventSink } from '@/im/types.ts'
 import { STATUS, getShuffledLoadingMessages } from './thinking-messages.ts'
 import type { SlackRenderer } from './SlackRenderer.ts'
+import { isRenderDebugEnabled } from '@/workspace/config.ts'
 
 export interface SlackEventSinkDeps {
   web: WebClient
@@ -57,10 +58,10 @@ function isMeaningful(state: ActivityState): boolean {
     return false
   }
 
-  // 进入 composing / reasoning / 非默认状态 / 出现新工具时，说明用户能看到新的阶段信息，
-  // 这时才值得从状态条升级成独立 progress。
+  // 单纯“开始出字”只需要状态条，不值得单独新增一条 thread progress；
+  // 否则会在 reply cutover 时出现“刚发一条 progress 又马上删掉”的抖动。
   if (state.composing) {
-    return true
+    return false
   }
   if (state.reasoningTail) {
     return true
@@ -113,6 +114,7 @@ function toProgressUiState(
 
 export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
   const log = deps.logger.withTag('slack:sink')
+  const renderDebug = isRenderDebugEnabled()
   const local: SinkLocalState = {
     progressMessageTs: undefined,
     toolHistory: new Map<string, number>(),
@@ -123,6 +125,13 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
     terminalStopReason: undefined,
     terminalErrorMessage: undefined,
     pendingUsage: undefined,
+  }
+
+  function debugCutover(message: string, meta?: unknown): void {
+    if (!renderDebug) {
+      return
+    }
+    log.info(`[render-debug] ${message}`, meta)
   }
 
   async function handleActivity(state: ActivityState): Promise<void> {
@@ -166,6 +175,22 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
 
     local.lastStateKey = nextStateKey
 
+    // 纯 composing 且当前还没有 progress 时，继续留在状态条；
+    // 一旦前面已有 tool/reasoning 触发的 progress，后续 composing 仍更新同一条 progress。
+    const shouldKeepComposingInStatus =
+      state.composing && !local.progressMessageTs && !hasNewToolCalls && !state.reasoningTail
+
+    if (shouldKeepComposingInStatus) {
+      await deps.renderer.setStatus(
+        deps.web,
+        deps.channelId,
+        deps.threadTs,
+        state.status,
+        state.activities,
+      )
+      return
+    }
+
     if (local.progressMessageTs) {
       const nextProgressTs = await deps.renderer.upsertProgressMessage(
         deps.web,
@@ -208,6 +233,14 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
   }
 
   async function handleAssistantMessage(text: string): Promise<void> {
+    debugCutover('assistant-message received', {
+      channelId: deps.channelId,
+      hasSentToolbarInTurn: local.hasSentToolbarInTurn,
+      progressMessageTs: local.progressMessageTs,
+      textLength: text.length,
+      threadTs: deps.threadTs,
+    })
+
     const replyOptions =
       !local.hasSentToolbarInTurn && deps.workspaceLabel
         ? { workspaceLabel: deps.workspaceLabel }
@@ -216,26 +249,21 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
     await deps.renderer.postThreadReply(deps.web, deps.channelId, deps.threadTs, text, replyOptions)
     local.hasSentToolbarInTurn = true
 
-    if (local.progressMessageTs) {
-      await deps.renderer.deleteProgressMessage(
-        deps.web,
-        deps.channelId,
-        deps.threadTs,
-        local.progressMessageTs,
-      )
-      local.progressMessageTs = undefined
-    }
+    debugCutover('assistant-message reply posted', {
+      channelId: deps.channelId,
+      progressMessageTs: local.progressMessageTs,
+      threadTs: deps.threadTs,
+    })
 
-    // 回复一旦发出，就允许下一轮 activity 从头判断是否需要再次激活 progress。
+    // 回复一旦发出，就允许下一轮 activity 从头判断是否需要再次激活/更新 progress。
+    // 这里不删除已有 progress，让 completed 在 finalize() 里原地收束，避免线程内容抖动。
     local.lastStateKey = undefined
 
-    await deps.renderer.setStatus(
-      deps.web,
-      deps.channelId,
-      deps.threadTs,
-      STATUS.thinking,
-      getShuffledLoadingMessages(8),
-    )
+    debugCutover('assistant-message clearing status', {
+      channelId: deps.channelId,
+      threadTs: deps.threadTs,
+    })
+    await deps.renderer.clearStatus(deps.web, deps.channelId, deps.threadTs)
   }
 
   async function handleLifecycle(
@@ -298,6 +326,13 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
     },
     async finalize() {
       try {
+        debugCutover('finalize start', {
+          channelId: deps.channelId,
+          pendingUsage: Boolean(local.pendingUsage),
+          progressMessageTs: local.progressMessageTs,
+          terminalPhase: local.terminalPhase,
+          threadTs: deps.threadTs,
+        })
         await deps.renderer.clearStatus(deps.web, deps.channelId, deps.threadTs)
 
         if (local.progressMessageTs) {
@@ -308,6 +343,12 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
           // 2. stopped: 普通停止显示 stopped；若 superseded，则直接删掉旧 progress 让新 turn 接管
           // 3. failed: 把 progress 收束成错误文案，保留失败原因
           if (local.terminalPhase === 'completed') {
+            debugCutover('finalize progress completed', {
+              channelId: deps.channelId,
+              progressMessageTs: previousProgressTs,
+              threadTs: deps.threadTs,
+              toolHistorySize: local.toolHistory.size,
+            })
             await deps.renderer.finalizeProgressMessageDone(
               deps.web,
               deps.channelId,
@@ -317,6 +358,11 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
             )
           } else if (local.terminalPhase === 'stopped') {
             if (local.terminalStopReason === 'superseded') {
+              debugCutover('finalize deleting superseded progress', {
+                channelId: deps.channelId,
+                progressMessageTs: previousProgressTs,
+                threadTs: deps.threadTs,
+              })
               await deps.renderer.deleteProgressMessage(
                 deps.web,
                 deps.channelId,
@@ -324,6 +370,11 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
                 previousProgressTs,
               )
             } else {
+              debugCutover('finalize progress stopped', {
+                channelId: deps.channelId,
+                progressMessageTs: previousProgressTs,
+                threadTs: deps.threadTs,
+              })
               await deps.renderer.finalizeProgressMessageStopped(
                 deps.web,
                 deps.channelId,
@@ -332,6 +383,12 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
               )
             }
           } else if (local.terminalPhase === 'failed') {
+            debugCutover('finalize progress failed', {
+              channelId: deps.channelId,
+              errorMessage: local.terminalErrorMessage ?? 'unknown',
+              progressMessageTs: previousProgressTs,
+              threadTs: deps.threadTs,
+            })
             await deps.renderer.finalizeProgressMessageError(
               deps.web,
               deps.channelId,
@@ -342,6 +399,11 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
           } else {
             log.warn('finalize 时存在 progress 但没有 terminalPhase，按兜底删除 progress', {
               progressMessageTs: previousProgressTs,
+            })
+            debugCutover('finalize deleting orphan progress', {
+              channelId: deps.channelId,
+              progressMessageTs: previousProgressTs,
+              threadTs: deps.threadTs,
             })
             await deps.renderer.deleteProgressMessage(
               deps.web,
@@ -355,6 +417,10 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
         }
 
         if (local.terminalPhase === 'completed' && local.pendingUsage) {
+          debugCutover('finalize posting usage', {
+            channelId: deps.channelId,
+            threadTs: deps.threadTs,
+          })
           await deps.renderer.postSessionUsage(
             deps.web,
             deps.channelId,
@@ -373,6 +439,12 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
         } else if (local.terminalPhase === 'failed') {
           await deps.renderer.addError(deps.web, deps.channelId, deps.sourceMessageTs)
         }
+
+        debugCutover('finalize end', {
+          channelId: deps.channelId,
+          terminalPhase: local.terminalPhase,
+          threadTs: deps.threadTs,
+        })
       } catch (error) {
         log.error('sink finalize 内部异常（不冒泡）', error)
       }

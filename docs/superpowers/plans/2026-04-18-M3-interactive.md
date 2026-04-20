@@ -245,7 +245,6 @@ git commit -m "阶段 5: Skills 拼接到 system prompt"
 - `create(key)`：新建 `AbortController`，存入 map，返回 controller；若 key 已存在 throw（不应发生）
 - `abort(key, reason?)`：调用对应 controller.abort(reason)；key 不存在时静默 no-op（用户可能对历史消息加 🛑）
 - `delete(key)`：从 map 删除（orchestrator 在 finally 调用）
-- `abortAll(reason)`：graceful shutdown 用
 
 - [ ] **Step 1: 测试**
 
@@ -278,15 +277,6 @@ describe('AbortRegistry', () => {
     reg.delete('k')
     expect(() => reg.create('k')).not.toThrow()
   })
-
-  it('abortAll', () => {
-    const reg = new AbortRegistry()
-    const c1 = reg.create('a')
-    const c2 = reg.create('b')
-    reg.abortAll('shutdown')
-    expect(c1.signal.aborted).toBe(true)
-    expect(c2.signal.aborted).toBe(true)
-  })
 })
 ```
 
@@ -309,11 +299,6 @@ export class AbortRegistry {
 
   delete(key: string): void {
     this.map.delete(key)
-  }
-
-  abortAll(reason?: string): void {
-    for (const c of this.map.values()) c.abort(reason)
-    this.map.clear()
   }
 }
 ```
@@ -622,7 +607,7 @@ git commit -m "阶段 5: reaction_added abort + queued ⏳"
 
 ---
 
-## Chunk 4: Tool 持久化 + graceful shutdown
+## Chunk 4: Tool 持久化
 
 ### Task 4.1: SessionStore 支持 tool-call / tool-result 持久化
 
@@ -689,64 +674,11 @@ git add src/core/events.ts src/agent/AiSdkExecutor.ts src/orchestrator/Conversat
 git commit -m "阶段 5: tool-call / tool-result 持久化"
 ```
 
-### Task 4.2: Graceful shutdown
+### Chunk 4 Slack UI 可验证观测性任务：tool 延续性
 
-**Files:**
-- Modify: `src/application/createApplication.ts`
-- Modify: `src/application/types.ts`
-- Modify: `src/index.ts`
-
-**语义**（spec §6.3）：SIGINT/SIGTERM → 停 adapter 接新事件 → drain queue 最多 30s → abortAll → flush logger → exit(0)。
-
-- [ ] **Step 1: Application 接口加 shutdown 能力**
-
-```ts
-export interface Application {
-  start(): Promise<void>
-  stop(): Promise<void>
-  adapters: IMAdapter[]
-  abortRegistry: AbortRegistry
-  runQueue: SessionRunQueue
-}
-```
-
-- [ ] **Step 2: createApplication 返回这些**
-
-- [ ] **Step 3: src/index.ts shutdown 逻辑**
-
-```ts
-const shutdown = async (signal: string): Promise<void> => {
-  consola.info(`收到 ${signal}，正在关闭…`)
-  await app.stop()  // 停 adapter
-  // drain 最多 30s
-  const start = Date.now()
-  while (anyQueueBusy(app.runQueue) && Date.now() - start < 30_000) {
-    await new Promise((r) => setTimeout(r, 500))
-  }
-  app.abortRegistry.abortAll('shutdown')
-  process.exit(0)
-}
-
-function anyQueueBusy(_q: unknown): boolean {
-  // 简化：一期无法枚举所有 session key，直接返回 false；M4 可扩展 runQueue 接口
-  return false
-}
-```
-
-> `SessionRunQueue` 一期不暴露"是否有任务正在运行"的聚合能力；第一版 drain 直接退化为等一次 500ms，足够让正在进行的 chat.update 完成。后续若需要真正 drain 再扩接口。
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add src/application src/index.ts
-git commit -m "阶段 5: graceful shutdown"
-```
-
-### Chunk 4 Slack UI 可验证观测性任务：tool 延续性与重启后线程恢复
-
-- **目标文件**：`src/store/SessionStore.ts`、`src/orchestrator/ConversationOrchestrator.ts`、`src/application/createApplication.ts`、`src/index.ts`。
-- **Slack 上的操作 / 触发方式**：先在同一 thread 发送 `@bot 用 bash 跑 \`ls -la\`，然后总结`，待回复完成后继续发送 `@bot 上一步你看到了多少文件？`；另选一条较长回复，在流式输出期间由操作者触发服务 graceful shutdown / restart，再回到同一 thread 继续发送新消息。
-- **Slack UI 中可直接看到的预期结果**：第二条消息的最终文案能够直接引用上一轮 tool 输出；服务重启前后的 Slack 线程不会留下重复终态或长期悬挂的异常占位消息，重启后同一 thread 仍可继续正常对话。若需排查，可补充参考 `messages.jsonl` 或 shutdown 日志，但它们不是本观测性任务的主标准。
+- **目标文件**：`src/store/SessionStore.ts`、`src/orchestrator/ConversationOrchestrator.ts`。
+- **Slack 上的操作 / 触发方式**：先在同一 thread 发送 `@bot 用 bash 跑 \`ls -la\`，然后总结`，待回复完成后继续发送 `@bot 上一步你看到了多少文件？`。
+- **Slack UI 中可直接看到的预期结果**：第二条消息的最终文案能够直接引用上一轮 tool 输出，说明同一 thread 的 tool 调用与结果已被正确持久化并参与后续对话。若需排查，可补充参考 `messages.jsonl`，但它不是本观测性任务的主标准。
 - **人工 review gate**：chunk-4 完成后必须暂停，等待人工 review / Slack 验证通过，才能进入 chunk-5 / 最终验收。
 
 ---
@@ -821,6 +753,5 @@ git commit --allow-empty -m "M3 完成: skills + queue + abort + tool 持久化 
 - [ ] 🛑 reaction 能中断执行，消息变"已停止"
 - [ ] Slack 多轮对话中能准确引用上一轮 tool 输出（tool 持久化主验收）
 - [ ] 如需补充排查，可核对 jsonl 中的 tool-call + tool-result 持久化
-- [ ] SIGINT 优雅退出，不残留僵尸 promise
 
 **下一步**：M4 plan — CLI（commander）+ Onboard 向导（@clack/prompts）+ tsdown 打包 + `agent-slack` bin 分发到其他目录。

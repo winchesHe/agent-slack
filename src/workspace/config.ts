@@ -25,3 +25,7 @@ export const DEFAULT_CONFIG: WorkspaceConfig = ConfigSchema.parse({})
 export function parseConfig(raw: unknown): WorkspaceConfig {
   return ConfigSchema.parse(raw)
 }
+
+export function isRenderDebugEnabled(): boolean {
+  return process.env.SLACK_RENDER_DEBUG === '1'
+}

@@ -1012,3 +1012,790 @@
   - `tests/integration/slack-render-flow.test.ts`
   - `memory/process.txt`
 - round 状态：verifying-and-committing-chunk-3
+
+[2026-04-21 18:18+08:00] round-54 chunk-4 调度初始化
+- 已读取：
+  - `memory/process.txt`
+  - `docs/superpowers/plans/2026-04-18-M3-interactive.md`（Chunk 4 段落）
+  - `docs/superpowers/specs/2026-04-17-agent-slack-architecture-design.md`
+  - `git status --short --branch`
+  - `git log --oneline -n 8`
+- 当前仓库状态：
+  - 当前分支 `main...origin/main [ahead 4]`
+  - 最近提交已包含 chunk-3：`4d4bcef 阶段 5: 完成 chunk-3 排队与中断交互`
+  - chunk-4 尚未开始正式实现 / 审查
+- 状态快照：
+  - queued:
+    - `chunk-4 / Task 4.1: SessionStore 支持 tool-call / tool-result 持久化`
+    - `chunk-4 / Task 4.1 spec review`
+    - `chunk-4 / Task 4.1 code quality review`
+    - `chunk-4 / Task 4.2: graceful shutdown`
+    - `chunk-4 / Task 4.2 spec review`
+    - `chunk-4 / Task 4.2 code quality review`
+    - `chunk-4 Slack UI 可验证观测性任务`
+  - in_progress:
+    - `chunk-4 / 调度扫描与 implementer 派单准备`
+  - done:
+    - `chunk-1`
+    - `chunk-2`
+    - `chunk-3`
+  - notes:
+    - 主 agent 本轮只负责：差距扫描、子任务描述、派单、审查顺序控制、进度落盘、失败重试决策
+    - 子任务必须自包含，不能引用“之前分析”
+    - chunk-4 仍需遵守：实现完成后先过 review，再做人工 Slack UI 验收，最后才允许进入 chunk-5
+  - failed:
+    - `none`
+- controller 下一步：
+  - 读取 chunk-4 相关源码现状
+  - 生成自包含的 Task 4.1 implementer 指令并派发最新模型子 agent
+- round 状态：scanning-chunk-4
+
+[2026-04-21 18:24+08:00] round-55 chunk-4 差距扫描子 agent 已派发
+- 子 agent：
+  - `chunk4-task4-1-gap-scan` → `Popper`（只读 explorer，模型 `gpt-5.4`）
+  - `chunk4-task4-2-gap-scan` → `Ptolemy`（只读 explorer，模型 `gpt-5.4`）
+- 本轮目标：
+  - Task 4.1：确认“tool-call / tool-result 持久化”当前是实现缺口、测试缺口，还是仅缺回归验证
+  - Task 4.2：确认 graceful shutdown 需要的最小代码面与测试面
+- 状态快照：
+  - queued:
+    - `chunk-4 / Task 4.1 implementer`
+    - `chunk-4 / Task 4.1 spec review`
+    - `chunk-4 / Task 4.1 code quality review`
+    - `chunk-4 / Task 4.2 implementer`
+    - `chunk-4 / Task 4.2 spec review`
+    - `chunk-4 / Task 4.2 code quality review`
+    - `chunk-4 Slack UI 可验证观测性任务`
+  - in_progress:
+    - `chunk-4 / 只读差距扫描（Task 4.1 + Task 4.2）`
+  - done:
+    - `chunk-1`
+    - `chunk-2`
+    - `chunk-3`
+  - notes:
+    - 目标是把 implementer 指令收敛到“目标文件、当前失败现象、期望行为、必要上下文”四要素齐备
+    - 若 Task 4.1 已基本实现，则 implementer 任务会退化为补测试 / 收口一致性，而不是重复造轮子
+  - failed:
+    - `none`
+- controller 下一步：
+  - 等待两个 explorer 返回
+  - 结合结果优先派发 `Task 4.1 implementer`
+- round 状态：waiting-gap-scan-results
+
+[2026-04-21 18:28+08:00] round-56 Task 4.1 差距扫描收敛，准备派 implementer
+- 已完成额外基线验证：
+  - `pnpm vitest run src/core/events.test.ts src/agent/AiSdkExecutor.test.ts src/store/SessionStore.test.ts src/orchestrator/ConversationOrchestrator.test.ts`
+  - 结果：4 files, 37 tests passed
+- 子 agent：`chunk4-task4-1-gap-scan`（`Popper`）结论摘要：
+  - Task 4.1 主链路已基本具备：
+    - `AiSdkExecutor` 已通过 `lifecycle.completed.finalMessages` 暴露 `response.messages`
+    - `ConversationOrchestrator` 已把 `finalMessages` 逐条 append 到 `messages.jsonl`
+    - `SessionStore.appendMessage/loadMessages` 已支持原样处理 `CoreMessage`
+  - 当前缺口主要在测试而非生产逻辑：
+    - `src/store/SessionStore.test.ts` 尚未覆盖 assistant(tool-call) + tool message round-trip
+    - `src/orchestrator/ConversationOrchestrator.test.ts` 尚未覆盖 completed/stopped 路径下的 tool message 持久化顺序
+    - 可选再补 `src/agent/AiSdkExecutor.test.ts`，验证 `completed.finalMessages` 确实含 tool message
+- controller 决策：
+  - 采用最小可验证链路，先派 implementer 只补 Task 4.1 测试护栏
+  - 暂不重做事件模型，不把 `lifecycle.finalMessages` 强行改回 plan 文本中的 `done.responseMessages`
+- 状态快照：
+  - queued:
+    - `chunk-4 / Task 4.1 implementer`
+    - `chunk-4 / Task 4.1 spec review`
+    - `chunk-4 / Task 4.1 code quality review`
+    - `chunk-4 / Task 4.2 implementer`
+    - `chunk-4 / Task 4.2 spec review`
+    - `chunk-4 / Task 4.2 code quality review`
+    - `chunk-4 Slack UI 可验证观测性任务`
+  - in_progress:
+    - `chunk-4 / Task 4.1 implementer 派单`
+  - done:
+    - `chunk-1`
+    - `chunk-2`
+    - `chunk-3`
+  - notes:
+    - Task 4.1 当前采取“测试补齐优先”的最小策略
+    - 若 implementer 发现确有生产代码缺陷，可在报告中说明并限缩到必要最小改动
+  - failed:
+    - `none`
+- controller 下一步：
+  - 派发 `Task 4.1 implementer`
+  - implementer 返回后进入 spec review
+- round 状态：dispatching-task-4-1-implementer
+
+[2026-04-21 18:31+08:00] round-57 Task 4.2 差距扫描补充记录
+- 子 agent：`chunk4-task4-2-gap-scan`（`Ptolemy`）结论摘要：
+  - `src/application/createApplication.ts` 已创建 `runQueue` / `abortRegistry` 并传入 orchestrator / SlackAdapter，但返回的 `Application` 尚未暴露它们
+  - `src/application/types.ts` 只有 `start/stop/adapters`，缺少 chunk-4 plan 需要的 `runQueue` / `abortRegistry`
+  - `src/index.ts` 当前 shutdown 仅 `await app.stop(); process.exit(0)`，尚未做退化版 drain 等待与 `abortAll('shutdown')`
+  - `AbortRegistry.abortAll` 基础件已存在，`SessionRunQueue` 目前没有全局 busy 聚合能力；按 plan 一期允许退化实现
+  - graceful shutdown 目前没有专门测试文件，后续 implementer 需要补最小验证路径
+- controller 判断：
+  - Task 4.2 仍属于明确未落地项
+  - 但 chunk 串行规则不允许提前实现，需等待 Task 4.1 完成并过双 review
+- 状态快照：
+  - queued:
+    - `chunk-4 / Task 4.1 implementer`
+    - `chunk-4 / Task 4.1 spec review`
+    - `chunk-4 / Task 4.1 code quality review`
+    - `chunk-4 / Task 4.2 implementer`
+    - `chunk-4 / Task 4.2 spec review`
+    - `chunk-4 / Task 4.2 code quality review`
+    - `chunk-4 Slack UI 可验证观测性任务`
+  - in_progress:
+    - `chunk-4 / Task 4.1 implementer 派单`
+  - done:
+    - `chunk-1`
+    - `chunk-2`
+    - `chunk-3`
+- notes:
+  - Task 4.2 的实现面已收敛到 `src/application/types.ts`、`src/application/createApplication.ts`、`src/index.ts`
+  - logger flush 仍是 spec 级附加缺口，若 plan 最小链路未覆盖，可后置记录
+- failed:
+  - `none`
+- round 状态：dispatching-task-4-1-implementer
+
+[2026-04-21 18:36+08:00] round-58 Task 4.1 implementer 返回，进入 spec review
+- 子 agent：`m3-chunk4-task4-1-implementer`（`Russell`）
+- implementer 报告状态：`DONE`
+- implementer 摘要：
+  - 修改 `src/store/SessionStore.test.ts`
+    - 新增 `assistant(tool-call) + tool(tool-result)` round-trip 用例
+  - 修改 `src/orchestrator/ConversationOrchestrator.test.ts`
+    - 新增 `completed` 路径下的 tool finalMessages 顺序落盘测试
+    - 新增 `stopped` 路径下的 tool finalMessages + `[stopped]` 顺序落盘测试
+  - 未修改生产代码
+  - 已执行：
+    - `pnpm vitest run src/store/SessionStore.test.ts src/orchestrator/ConversationOrchestrator.test.ts`
+    - `pnpm lint`
+    - 报告均通过
+- controller 本地核查：
+  - `git diff` 显示改动仅在上述 2 个测试文件
+  - 未发现越界修改
+- 状态快照：
+  - queued:
+    - `chunk-4 / Task 4.1 spec review`
+    - `chunk-4 / Task 4.1 code quality review`
+    - `chunk-4 / Task 4.2 implementer`
+    - `chunk-4 / Task 4.2 spec review`
+    - `chunk-4 / Task 4.2 code quality review`
+    - `chunk-4 Slack UI 可验证观测性任务`
+  - in_progress:
+    - `chunk-4 / Task 4.1 spec review`
+  - done:
+    - `chunk-1`
+    - `chunk-2`
+    - `chunk-3`
+  - notes:
+    - Task 4.1 目前仍保持“只补测试护栏、不碰生产逻辑”的最小策略
+  - failed:
+    - `none`
+- controller 下一步：
+  - 派发 Task 4.1 spec reviewer
+  - 若 spec 通过，再进入 code quality review
+- round 状态：awaiting-task-4-1-spec-review
+
+[2026-04-21 18:40+08:00] round-59 Task 4.1 spec review 通过，进入 code quality review
+- 子 agent：`m3-chunk4-task4-1-spec-review`（`Beauvoir`）
+- 结果：`SPEC_OK`
+- 结论摘要：
+  - `SessionStore.test.ts` 已覆盖 `assistant(tool-call)` + `role=tool(tool-result)` 的持久化/回读护栏
+  - `ConversationOrchestrator.test.ts` 已覆盖 `completed` / `stopped` 两条 tool finalMessages 落盘顺序
+  - `stopped` 场景已明确断言先写 finalMessages、后写 `[stopped]`
+  - 改动仍保持在“最小可验证链路”，未无谓重构事件模型
+- 状态快照：
+  - queued:
+    - `chunk-4 / Task 4.1 code quality review`
+    - `chunk-4 / Task 4.2 implementer`
+    - `chunk-4 / Task 4.2 spec review`
+    - `chunk-4 / Task 4.2 code quality review`
+    - `chunk-4 Slack UI 可验证观测性任务`
+  - in_progress:
+    - `chunk-4 / Task 4.1 code quality review`
+  - done:
+    - `chunk-1`
+    - `chunk-2`
+    - `chunk-3`
+  - notes:
+    - Task 4.1 现已通过 plan 对齐检查，剩余关注点转为：测试是否过度耦合实现细节、是否存在类型/清理/稳定性问题
+  - failed:
+    - `none`
+- controller 下一步：
+  - 派发 Task 4.1 code quality reviewer
+  - 若 quality 通过，再做 controller 自身验证并切入 Task 4.2
+- round 状态：awaiting-task-4-1-code-quality-review
+
+[2026-04-21 18:56+08:00] round-60 Task 4.1 code quality 通过，但 controller verification 抓到类型错误
+- 子 agent：`m3-chunk4-task4-1-code-quality-review`（`Bernoulli`）
+- review 结果：`APPROVED`
+- controller 复核结果：
+  - `pnpm vitest run src/store/SessionStore.test.ts src/orchestrator/ConversationOrchestrator.test.ts`
+    - 通过：2 files, 21 tests passed
+  - `pnpm exec tsc --noEmit`
+    - 失败：`src/orchestrator/ConversationOrchestrator.test.ts` 新增断言里直接使用 `finalMessages[i]`
+    - strict 类型下被视为 `LifecycleFinalMessage | undefined`
+    - 典型报错位置：270~279、345~353 行
+- controller 判断：
+  - 这是局部类型安全修补，整体实现方向正确
+  - 按重试策略，继续复用**同一个 Task 4.1 implementer**定点修复，而不是换新 agent
+- 状态快照：
+  - queued:
+    - `chunk-4 / Task 4.1 implementer fix`
+    - `chunk-4 / Task 4.1 code quality rereview（如修补范围需要）`
+    - `chunk-4 / Task 4.2 implementer`
+    - `chunk-4 / Task 4.2 spec review`
+    - `chunk-4 / Task 4.2 code quality review`
+    - `chunk-4 Slack UI 可验证观测性任务`
+  - in_progress:
+    - `chunk-4 / Task 4.1 implementer fix`
+  - done:
+    - `chunk-1`
+    - `chunk-2`
+    - `chunk-3`
+  - notes:
+    - 本轮不需要重跑 spec review；目标仅是把 `finalMessages` 下标访问收窄到 strict 可接受
+  - failed:
+    - `none`
+- controller 下一步：
+  - 复用 `m3-chunk4-task4-1-implementer` 修复类型安全问题
+  - 修完后至少重跑 `tsc` 与相关 vitest
+- round 状态：awaiting-task-4-1-implementer-fix
+
+[2026-04-21 19:01+08:00] round-61 Task 4.1 定点修补完成，controller verification 全绿
+- 子 agent：`m3-chunk4-task4-1-implementer`（复用 `Russell`）
+- 修补内容：
+  - `src/orchestrator/ConversationOrchestrator.test.ts`
+    - 将 `finalMessages[i]` 提升为局部常量
+    - 先 `toBeDefined()`，再以非空断言参与 `toMatchObject(...)`
+  - 未修改生产代码
+- controller 复核验证：
+  - `pnpm vitest run src/store/SessionStore.test.ts src/orchestrator/ConversationOrchestrator.test.ts`
+    - 通过：2 files, 21 tests passed
+  - `pnpm exec tsc --noEmit`
+    - 通过：exit 0
+  - `pnpm lint`
+    - 通过：`eslint . && prettier --check .`
+- Task 4.1 当前结论：
+  - implementer ✅
+  - spec review ✅
+  - code quality review ✅
+  - controller verification ✅
+  - 可进入 Task 4.2
+- 状态快照：
+  - queued:
+    - `chunk-4 / Task 4.2 implementer`
+    - `chunk-4 / Task 4.2 spec review`
+    - `chunk-4 / Task 4.2 code quality review`
+    - `chunk-4 Slack UI 可验证观测性任务`
+  - in_progress:
+    - `chunk-4 / Task 4.2 implementer 派单准备`
+  - done:
+    - `chunk-1`
+    - `chunk-2`
+    - `chunk-3`
+    - `chunk-4 / Task 4.1`
+  - notes:
+    - Task 4.1 最终仅修改测试文件：
+      - `src/store/SessionStore.test.ts`
+      - `src/orchestrator/ConversationOrchestrator.test.ts`
+    - 当前未再扩展端到端“下一轮真的读取到 tool 历史”的更高层测试；如后续 chunk-4 Slack UI 验收暴露问题，再单独补
+  - failed:
+    - `none`
+- controller 下一步：
+  - 读取 graceful shutdown 的 spec 片段与现有源码
+  - 派发新的 Task 4.2 implementer
+- round 状态：dispatching-task-4-2-implementer
+
+[2026-04-21 19:06+08:00] round-62 Task 4.2 implementer 已派发
+- 子 agent：`m3-chunk4-task4-2-implementer` → `Curie`（模型 `gpt-5.4`）
+- 已提供的自包含上下文：
+  - 目标文件：
+    - `src/application/types.ts`
+    - `src/application/createApplication.ts`
+    - `src/index.ts`
+  - 允许新增的最小测试面：
+    - `src/index.test.ts`
+    - `src/application/createApplication.test.ts`
+    - 或 `src/application/` / `src/` 下等价最小测试文件
+  - 当前错误/失败现象：
+    - `Application` 未暴露 `runQueue` / `abortRegistry`
+    - `createApplication()` 返回对象未带出上述实例
+    - `index.ts` 收到信号后立即 `app.stop(); process.exit(0)`，没有退化版 drain、没有 `abortAll('shutdown')`
+  - 完成标准：
+    - 暴露 `runQueue` / `abortRegistry`
+    - shutdown 流程接成：stop -> 退化等待 -> abortAll('shutdown') -> exit(0)
+    - 尽量保证 shutdown 只执行一次
+    - 补最小可回归测试
+- 状态快照：
+  - queued:
+    - `chunk-4 / Task 4.2 implementer`
+    - `chunk-4 / Task 4.2 spec review`
+    - `chunk-4 / Task 4.2 code quality review`
+    - `chunk-4 Slack UI 可验证观测性任务`
+  - in_progress:
+    - `chunk-4 / Task 4.2 implementer`
+  - done:
+    - `chunk-1`
+    - `chunk-2`
+    - `chunk-3`
+    - `chunk-4 / Task 4.1`
+  - notes:
+    - Task 4.2 明确不处理 logger flush
+    - 也不为了 shutdown 去扩 `SessionRunQueue` 的全局聚合能力
+  - failed:
+    - `none`
+- controller 下一步：
+  - 等待 implementer 返回
+  - 返回后按顺序执行 spec review → code quality review → controller verification
+- round 状态：awaiting-task-4-2-implementer
+
+[2026-04-21 19:12+08:00] round-63 Task 4.2 implementer 返回，进入 review 流程
+- 子 agent：`m3-chunk4-task4-2-implementer`（`Curie`）
+- implementer 报告状态：`DONE`
+- implementer 摘要：
+  - 修改生产代码：
+    - `src/application/types.ts`
+    - `src/application/createApplication.ts`
+    - `src/index.ts`
+  - 新增测试：
+    - `src/application/createApplication.test.ts`
+    - `src/index.test.ts`
+  - 实现点：
+    - `Application` 暴露 `runQueue` / `abortRegistry`
+    - `createApplication()` 返回上述实例
+    - `index.ts` 将 shutdown 提炼为可测 helper
+    - shutdown 流程改为：记录信号 → `app.stop()` → 退化版等待 500ms → `app.abortRegistry.abortAll('shutdown')` → `exit(0)`
+    - 增加幂等保护，避免重复信号并发触发两次关闭
+  - implementer 自报验证：
+    - `pnpm vitest run src/application/createApplication.test.ts src/index.test.ts`
+    - `pnpm exec tsc --noEmit`
+    - `pnpm lint`
+    - 均通过
+- 状态快照：
+  - queued:
+    - `chunk-4 / Task 4.2 spec review`
+    - `chunk-4 / Task 4.2 code quality review`
+    - `chunk-4 Slack UI 可验证观测性任务`
+  - in_progress:
+    - `chunk-4 / Task 4.2 spec review`
+  - done:
+    - `chunk-1`
+    - `chunk-2`
+    - `chunk-3`
+    - `chunk-4 / Task 4.1`
+  - notes:
+    - Task 4.2 仍需经过 spec review、code quality review 和 controller verification，之后才能进入 chunk-4 人工 Slack 验收 gate
+  - failed:
+    - `none`
+- controller 下一步：
+  - 读取 Task 4.2 diff 与测试
+  - 先发起 spec review
+- round 状态：awaiting-task-4-2-spec-review
+
+[2026-04-21 19:16+08:00] round-64 Task 4.2 spec review 通过，进入 code quality review
+- 子 agent：`m3-chunk4-task4-2-spec-review`（`Newton`）
+- 结果：`SPEC_OK`
+- 结论摘要：
+  - `Application` 已暴露 `runQueue` / `abortRegistry`
+  - `createApplication()` 返回的是与 orchestrator / SlackAdapter 共用的同一组实例
+  - `index.ts` 的 shutdown 顺序已满足本轮 plan：记录信号 → `stop()` → 退化等待 → `abortAll('shutdown')` → `exit(0)`
+  - 已加入单次执行保护，避免重复信号并发关停
+  - helper 仍保持很小，没有扩 `SessionRunQueue` 的全局 drain 能力，也未处理 logger flush，符合本轮范围
+- 状态快照：
+  - queued:
+    - `chunk-4 / Task 4.2 code quality review`
+    - `chunk-4 Slack UI 可验证观测性任务`
+  - in_progress:
+    - `chunk-4 / Task 4.2 code quality review`
+  - done:
+    - `chunk-1`
+    - `chunk-2`
+    - `chunk-3`
+    - `chunk-4 / Task 4.1`
+  - notes:
+    - Task 4.2 已通过 plan 对齐检查，剩余关注点转为测试稳健性、入口 helper 的可维护性与类型质量
+  - failed:
+    - `none`
+- controller 下一步：
+  - 派发 Task 4.2 code quality reviewer
+  - 若通过，再做 controller verification
+- round 状态：awaiting-task-4-2-code-quality-review
+
+[2026-04-21 19:21+08:00] round-65 Task 4.2 code quality 发现 blocker，复用 implementer 定点修补
+- 子 agent：`m3-chunk4-task4-2-code-quality-review`（`Godel`）
+- 结果：`QUALITY_ISSUES`
+- blocker：
+  1. `src/index.ts`
+     - 当前 shutdown 是线性 `await` 链
+     - 若 `app.stop()` 或 `waitForDrain()` 任一步 reject，后续 `abortRegistry.abortAll('shutdown')` 与 `exit(0)` 都不会执行
+     - 这会让 graceful shutdown 在局部失败时放弃后续 cleanup，属于真实缺陷
+- non-blocker advisory：
+  1. `src/index.test.ts`
+     - 直接从进程入口模块导入 shutdown helper，测试与入口装配/副作用耦合偏深
+     - reviewer 建议可提炼到独立小模块，但当前不一定需要作为本轮 blocker
+- controller 决策：
+  - 问题属于局部报错但方向正确，继续复用 **同一个 Task 4.2 implementer**
+  - 必修：shutdown 失败路径也要保证 best-effort cleanup，至少不能跳过 `abortAll('shutdown')`
+  - 选修：若实现者能在不扩散范围的前提下顺手降低测试耦合，可一起做；否则先不把它当 blocker
+- 状态快照：
+  - queued:
+    - `chunk-4 / Task 4.2 implementer fix`
+    - `chunk-4 / Task 4.2 code quality rereview`
+    - `chunk-4 Slack UI 可验证观测性任务`
+  - in_progress:
+    - `chunk-4 / Task 4.2 implementer fix`
+  - done:
+    - `chunk-1`
+    - `chunk-2`
+    - `chunk-3`
+    - `chunk-4 / Task 4.1`
+  - notes:
+    - 本轮优先级：修 blocker，不让 shutdown 在局部失败时放弃后续 cleanup
+    - P2 测试耦合问题暂记为 advisory，是否顺手收口由 implementer 视最小改动决定
+  - failed:
+    - `none`
+- controller 下一步：
+  - 复用 `m3-chunk4-task4-2-implementer` 修补失败路径 cleanup
+  - 修完后重跑 code quality review 与 controller verification
+- round 状态：awaiting-task-4-2-implementer-fix
+
+[2026-04-21 19:25+08:00] round-66 Task 4.2 blocker 修补完成，chunk-4 实现侧全部通过
+- 子 agent：`m3-chunk4-task4-2-implementer`（复用 `Curie`）
+- 修补摘要：
+  - `src/index.ts`
+    - 新增 `runShutdownStep(...)`
+    - shutdown cleanup 改为 best-effort：`stop` / `drain` / `abortAll` 单步失败只记录日志，不中断后续 cleanup
+  - `src/index.test.ts`
+    - 新增失败路径用例：`app.stop()` reject 时，仍继续 `drain -> abortAll('shutdown') -> exit(0)`
+- 子 agent 复报验证：
+  - `pnpm vitest run src/index.test.ts src/application/createApplication.test.ts`
+  - `pnpm exec tsc --noEmit`
+  - `pnpm lint`
+  - 均通过
+- code quality 复审：
+  - 子 agent：`m3-chunk4-task4-2-code-quality-rereview`（`Halley`）
+  - 结果：`APPROVED`
+  - blocker 已解除：前序 cleanup 步骤失败时，`abortAll('shutdown')` 仍会执行
+- controller 总验证：
+  - `pnpm vitest run src/store/SessionStore.test.ts src/orchestrator/ConversationOrchestrator.test.ts src/application/createApplication.test.ts src/index.test.ts tests/integration/mvp.test.ts tests/integration/slack-render-flow.test.ts`
+    - 通过：6 files, 28 tests passed
+  - `pnpm exec tsc --noEmit`
+    - 通过：exit 0
+  - `pnpm lint`
+    - 通过：`eslint . && prettier --check .`
+- chunk-4 当前结论：
+  - Task 4.1 ✅ implementer / spec / quality / verification 全部通过
+  - Task 4.2 ✅ implementer / spec / quality / verification 全部通过
+  - chunk-4 实现侧已完成，进入人工 Slack 验收 gate
+- chunk-4 Slack UI 验收待办：
+  - tool 延续性：
+    - 在同一 thread 发送：`@bot 用 bash 跑 \`ls -la\`，然后总结`
+    - 待回复完成后继续发送：`@bot 上一步你看到了多少文件？`
+    - 期望：第二条消息的最终文案能直接引用上一轮 tool 输出
+  - graceful shutdown：
+    - 找一条较长回复，在流式输出期间触发服务 graceful shutdown / restart
+    - 回到同一 thread 再发送一条新消息
+    - 期望：Slack 线程不留下重复终态或长期悬挂占位；重启后同一 thread 仍可继续正常对话
+  - 这些是主验收标准；`messages.jsonl` / `meta.json` / shutdown 日志仅作补充排查信息
+- 状态快照：
+  - queued:
+    - `chunk-4 Slack UI 可验证观测性任务`
+    - `chunk-5 / 最终真 Slack 验收（待 chunk-4 人工通过后）`
+  - in_progress:
+    - `chunk-4 / 等待人工 Slack 验收`
+  - done:
+    - `chunk-1`
+    - `chunk-2`
+    - `chunk-3`
+    - `chunk-4 / Task 4.1`
+    - `chunk-4 / Task 4.2`
+  - notes:
+    - chunk-4 当前不提交 commit，先等人工 Slack 验收
+    - `src/index.test.ts` 与入口模块仍有一定耦合，当前为 non-blocker advisory，后续若继续演进 shutdown 可再收口
+  - failed:
+    - `none`
+- controller 下一步：
+  - 等待人工 Slack 验收结果
+  - 验收通过后，再决定是否提交 chunk-4 并进入 chunk-5
+- round 状态：waiting-human-slack-review-for-chunk-4
+
+[2026-04-21 19:31+08:00] round-67 用户变更需求：移除 graceful shutdown，并同步 plan / spec
+- 用户最新决策：
+  - `graceful shutdown` 代码全部去掉
+  - 相关 plan / spec 同步更新
+  - 当前不再需要该能力
+- controller 判断：
+  - 这是对 chunk-4 范围的显式收缩
+  - 原先 Task 4.2 的实现与人工验收要求全部作废，转为“移除 graceful shutdown 痕迹”
+  - 仍保留 Task 4.1（tool 持久化）作为 chunk-4 的有效内容
+- 重排后的状态快照：
+  - queued:
+    - `docs / 移除 graceful shutdown 的 plan & spec 同步`
+    - `code / 移除 graceful shutdown 代码与测试`
+    - `review / 文档对齐复审`
+    - `review / 代码质量与验证复审`
+    - `chunk-4 Slack UI 可验证观测性任务（仅保留 tool 延续性）`
+  - in_progress:
+    - `需求收缩后的范围扫描与子任务派发`
+  - done:
+    - `chunk-1`
+    - `chunk-2`
+    - `chunk-3`
+    - `chunk-4 / Task 4.1`
+  - notes:
+    - 旧的 graceful shutdown 代码、测试、plan、spec 文本都需要撤回
+    - `chunk-4` 的 Slack 验收口径需要同步收缩，只保留 tool 延续性，不再要求重启恢复
+    - 不回退用户或其他任务无关的工作区改动
+  - failed:
+    - `none`
+- controller 下一步：
+  - 派发文档同步 worker
+  - 派发代码移除 worker
+  - 两路完成后分别做 review 和主线程验证
+- round 状态：dispatching-graceful-shutdown-removal
+
+[2026-04-21 19:37+08:00] round-68 代码移除 worker 返回，等待文档同步 worker
+- 子 agent：`graceful-shutdown-code-removal`（`Dirac`）
+- 结果：`DONE`
+- 摘要：
+  - 已移除 graceful shutdown 相关代码与测试：
+    - `src/application/types.ts`
+    - `src/application/createApplication.ts`
+    - `src/application/createApplication.test.ts`
+    - `src/index.ts`
+    - `src/core/events.ts`
+    - `src/core/events.test.ts`
+    - 删除 `src/index.test.ts`
+  - `Application` 不再公开 `runQueue` / `abortRegistry`
+  - `src/index.ts` 回退为简单的 `SIGINT` / `SIGTERM -> app.stop()` 处理
+  - `StopReason` 去掉 `'shutdown'`
+  - 未改 docs / memory，也未动 orchestrator / Slack adapter
+  - implementer 自报验证：
+    - `pnpm vitest run src/core/events.test.ts src/application/createApplication.test.ts`
+    - `pnpm exec tsc --noEmit`
+    - `pnpm lint`
+    - 均通过
+- 状态快照：
+  - queued:
+    - `docs / 移除 graceful shutdown 的 plan & spec 同步`
+    - `review / 文档对齐复审`
+    - `review / 代码质量与验证复审`
+    - `chunk-4 Slack UI 可验证观测性任务（仅保留 tool 延续性）`
+  - in_progress:
+    - `等待文档同步 worker`
+  - done:
+    - `chunk-1`
+    - `chunk-2`
+    - `chunk-3`
+    - `chunk-4 / Task 4.1`
+    - `code / graceful shutdown removal`
+- notes:
+  - 当前仍需等待 docs worker，把 plan/spec 与代码状态重新对齐
+  - 完成后再统一做主线程验证，避免代码与文档口径短暂不一致
+- failed:
+  - `none`
+- round 状态：waiting-doc-worker
+
+[2026-04-21 19:42+08:00] round-69 文档同步 worker 返回，发现 1 处范围外旧 plan 残留
+- 子 agent：`graceful-shutdown-doc-sync`（`Noether`）
+- 结果：`DONE_WITH_CONCERNS`
+- 已同步的文档：
+  - `docs/superpowers/plans/2026-04-18-M3-interactive.md`
+  - `docs/superpowers/specs/2026-04-17-agent-slack-architecture-design.md`
+  - `docs/superpowers/specs/2026-04-19-slack-render-flow-redesign.md`
+  - `docs/superpowers/plans/2026-04-18-M4-cli.md`
+- worker 自查结论：
+  - 上述 4 个目标文件中的 graceful shutdown / 重启恢复口径已清理完毕
+  - 但 `docs/superpowers/plans/2026-04-19-M2-renderer.md` 仍残留 1 处旧表述：
+    - `StopReason = 'user' | 'superseded' | 'shutdown'`
+- controller 判断：
+  - 用户要求是“plan 和 spec 同步”，为了避免后续文档搜索仍出现旧口径，这 1 处也应一并清理
+  - 该修补是小范围文档收口，不需要重新展开更大设计讨论
+- 状态快照：
+  - queued:
+    - `docs / 清理 M2-renderer 中剩余 shutdown 旧表述`
+    - `review / 文档对齐复审`
+    - `review / 代码质量与验证复审`
+    - `chunk-4 Slack UI 可验证观测性任务（仅保留 tool 延续性）`
+  - in_progress:
+    - `docs / M2-renderer 文本残留清理`
+  - done:
+    - `chunk-1`
+    - `chunk-2`
+    - `chunk-3`
+    - `chunk-4 / Task 4.1`
+    - `code / graceful shutdown removal`
+    - `docs / graceful shutdown sync（主范围）`
+  - notes:
+    - 剩余工作已经收敛到 1 处历史 plan 文本，不涉及代码
+  - failed:
+    - `none`
+- controller 下一步：
+  - 派一个极小的 docs worker 清理该处旧表述
+  - 清理后统一做 docs/code 主线程验证
+- round 状态：dispatching-final-doc-cleanup
+
+[2026-04-21 19:46+08:00] round-70 最后 1 处历史文档残留已清理
+- 子 agent：`graceful-shutdown-final-doc-cleanup`（`Darwin`）
+- 结果：`DONE`
+- 摘要：
+  - 仅修改 `docs/superpowers/plans/2026-04-19-M2-renderer.md`
+  - 将旧表述 `StopReason = 'user' | 'superseded' | 'shutdown'` 改为 `StopReason = 'user' | 'superseded'`
+  - 自查确认该文件已无 `shutdown` 文本残留
+- 状态快照：
+  - queued:
+    - `review / 文档对齐复审`
+    - `review / 代码质量与验证复审`
+    - `controller / docs+code 总验证`
+    - `chunk-4 Slack UI 可验证观测性任务（仅保留 tool 延续性）`
+  - in_progress:
+    - `等待 docs/code 复审 explorer 返回`
+  - done:
+    - `chunk-1`
+    - `chunk-2`
+    - `chunk-3`
+    - `chunk-4 / Task 4.1`
+    - `code / graceful shutdown removal`
+    - `docs / graceful shutdown sync（主范围）`
+    - `docs / graceful shutdown sync（历史残留）`
+- notes:
+  - 当前 graceful shutdown 的代码与文档都已完成移除，待复审与主线程总验证确认
+- failed:
+  - `none`
+- round 状态：awaiting-removal-reviews
+
+[2026-04-21 19:49+08:00] round-71 文档复审发现 3 处 blocker 残留，继续定点清理
+- 子 agent：`graceful-shutdown-doc-review`（`Nash`）
+- 结果：`DOC_ISSUES`
+- blocker：
+  1. `docs/superpowers/plans/2026-04-18-M4-cli.md`
+     - `startCommand` 仍把 `SIGINT` / `SIGTERM` + `app.stop()` 作为直接实现指导
+     - 在当前“完全不需要 graceful shutdown”语境下，会继续让读者以为这仍是当前范围
+  2. `docs/superpowers/plans/2026-04-18-M3-interactive.md`
+     - 完成检查清单仍有“SIGINT 优雅退出，不残留僵尸 promise”
+     - 与当前新决策直接冲突
+  3. `docs/superpowers/specs/2026-04-17-agent-slack-architecture-design.md`
+     - `start` 启动序列仍写“收到 SIGINT / SIGTERM 时停止服务并退出”
+     - 会放大读者对 graceful shutdown 仍在范围内的误解
+- 额外提示：
+  - `docs/superpowers/plans/2026-04-18-M1-mvp.md` 仍有历史 shutdown 示例，reviewer 视作范围外单点旧文本；当前不是主 blocker，但若顺手收口更一致
+- controller 决策：
+  - 再派一个极小 docs worker，只修这 3 个 blocker；若成本很小，一并清理 M1 历史残留
+  - 代码线先继续等待复审与主线程验证结果，不混在一起处理
+- 状态快照：
+  - queued:
+    - `docs / 修复 doc review blocker（M3 / M4 / architecture spec）`
+    - `review / 代码质量与验证复审`
+    - `controller / docs+code 总验证`
+    - `chunk-4 Slack UI 可验证观测性任务（仅保留 tool 延续性）`
+  - in_progress:
+    - `docs / blocker 文本收口`
+  - done:
+    - `chunk-1`
+    - `chunk-2`
+    - `chunk-3`
+    - `chunk-4 / Task 4.1`
+    - `code / graceful shutdown removal`
+    - `docs / graceful shutdown sync（主范围）`
+    - `docs / graceful shutdown sync（历史残留 1 处）`
+- notes:
+  - 文档线仍未完全收口，暂不能进入人工 Slack 验收 gate
+- failed:
+  - `none`
+- round 状态：dispatching-doc-blocker-fix
+
+[2026-04-21 21:36+08:00] round-72 代码复审发现入口仍残留 shutdown 行为
+- 子 agent：`graceful-shutdown-code-review`（`Leibniz`）
+- 结果：`QUALITY_ISSUES`
+- blocker：
+  1. `src/index.ts`
+     - 仍显式监听 `SIGINT` / `SIGTERM`
+     - 收到信号后执行 `await app.stop()` 再 `process.exit(0)`
+     - 在当前“Graceful shutdown 代码全部去掉”的用户决策下，这仍然属于入口层 shutdown 编排残留
+- controller 判断：
+  - 这不是局部实现细节，而是对需求口径理解偏保守
+  - 按重试策略，启动**新的代码移除 worker**重新处理该项，避免继续锚定在“保留简单 signal stop 也可以”的路径上
+- 当前并行状态：
+  - 文档线还有 blocker 待修（M3 / M4 / architecture spec）
+  - 代码线也还有 blocker 待修（index signal handling）
+- 状态快照：
+  - queued:
+    - `docs / 修复 doc review blocker（M3 / M4 / architecture spec，必要时顺手清 M1）`
+    - `code / 删除 index.ts 中显式 SIGINT/SIGTERM shutdown 路径`
+    - `review / 文档对齐复审`
+    - `review / 代码质量复审`
+    - `controller / docs+code 总验证`
+    - `chunk-4 Slack UI 可验证观测性任务（仅保留 tool 延续性）`
+  - in_progress:
+    - `重新派发 docs/code blocker fix`
+  - done:
+    - `chunk-1`
+    - `chunk-2`
+    - `chunk-3`
+    - `chunk-4 / Task 4.1`
+    - `code / graceful shutdown removal（第一轮）`
+    - `docs / graceful shutdown sync（主范围）`
+    - `docs / graceful shutdown sync（历史残留 1 处）`
+- notes:
+  - 对“全部去掉”的执行口径升级为：不再保留任何显式 signal shutdown 编排
+- failed:
+  - `none`
+- round 状态：dispatching-strict-removal-fixes
+
+[2026-04-21 21:45+08:00] round-73 graceful shutdown 移除任务收口完成
+- 子 agent：
+  - `docs-blocker-fix`（`Cicero`）
+  - `code-blocker-fix`（`Banach`）
+- 最终代码结论：
+  - `src/index.ts` 已删除显式 `SIGINT` / `SIGTERM` 监听与 `app.stop()` / `process.exit(0)` 关闭编排
+  - `src/application/types.ts` 不再公开 `runQueue` / `abortRegistry`
+  - `src/application/createApplication.ts` 不再把上述实例挂到返回的 `Application`
+  - `src/core/events.ts` 的 `StopReason` 已收窄为 `user | superseded`
+  - `src/index.test.ts` 已删除；`src/application/createApplication.test.ts` 保留为内部依赖注入验证
+- 最终文档结论：
+  - `docs/superpowers/plans/2026-04-18-M3-interactive.md`
+    - chunk-4 现仅保留 tool 持久化
+    - 已删除 Task 4.2 graceful shutdown
+    - chunk-4 验收仅保留 tool 延续性
+    - M3 完成清单已移除 SIGINT 优雅退出要求
+  - `docs/superpowers/specs/2026-04-17-agent-slack-architecture-design.md`
+    - 已删除 `6.3 Graceful shutdown`
+    - 启动序列不再把 signal stop 当作当前阶段要求
+  - `docs/superpowers/specs/2026-04-19-slack-render-flow-redesign.md`
+    - `StopReason` 已改为 `user | superseded`
+  - `docs/superpowers/plans/2026-04-18-M4-cli.md`
+    - `startCommand` 示例不再包含 signal stop / `app.stop()`
+  - 顺手清理历史残留：
+    - `docs/superpowers/plans/2026-04-18-M1-mvp.md`
+    - `docs/superpowers/plans/2026-04-19-M2-renderer.md`
+- controller 总验证：
+  - `pnpm vitest run src/core/events.test.ts src/application/createApplication.test.ts src/store/SessionStore.test.ts src/orchestrator/ConversationOrchestrator.test.ts tests/integration/mvp.test.ts tests/integration/slack-render-flow.test.ts`
+    - 通过：6 files, 32 tests passed
+  - `pnpm exec tsc --noEmit`
+    - 通过：exit 0
+  - `pnpm lint`
+    - 通过：`eslint . && prettier --check .`
+  - `rg -n "graceful shutdown|createGracefulShutdownHandler|waitForShutdownDrain|abortAll('shutdown')|StopReason = 'user' | 'superseded' | 'shutdown'|Task 4.2: Graceful shutdown|Tool 持久化 + graceful shutdown|SIGINT 优雅退出|重启后线程恢复" docs src tests`
+    - 无命中（exit 1）
+- 状态快照：
+  - queued:
+    - `chunk-4 Slack UI 可验证观测性任务（仅 tool 延续性）`
+    - `chunk-5 / 最终真 Slack 验收`
+  - in_progress:
+    - `none`
+  - done:
+    - `chunk-1`
+    - `chunk-2`
+    - `chunk-3`
+    - `chunk-4 / Task 4.1`
+    - `graceful shutdown / code removal`
+    - `graceful shutdown / docs sync`
+  - notes:
+    - 用户已明确放弃 graceful shutdown；后续不再把它作为实现范围、验收项或文档要求
+    - 当前 chunk-4 只剩 tool 延续性的人工 Slack 验收
+  - failed:
+    - `none`
+- controller 下一步：
+  - 若继续 M3，则只需要做 chunk-4 的 tool 延续性 Slack 验收
+  - 通过后可进入 chunk-5 剩余人工验收
+- round 状态：ready-for-tool-persistence-review

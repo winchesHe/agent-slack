@@ -79,7 +79,7 @@ export interface SessionUsageInfo {
 - **`activity-state` 是快照 + key diff 去重**：每次状态变化 emit 完整 `ActivityState`；IM 侧 `JSON.stringify(state without newToolCalls)` 做 diff，相同则跳过。`newToolCalls` 不参与 diff（每次有新 tool 都该累加）。
 - **`assistant-message` 按 step 边界切**：AI SDK 一个 step 内的全部 text-delta 累积后，`step-finish` 时作为**一段完整消息** emit。
 - **`lifecycle { completed }` 必带 `finalMessages`**：`streamText().response.messages` 的完整 ModelMessage 数组，供 Orchestrator 整批写 jsonl（含 assistant text / tool-call / tool-result）。
-- **`lifecycle { stopped }` 可带 `finalMessages`**：abort 时若已有若干个 step-finish 的完整消息，executor 仍携带已完成 step 对应的 ModelMessage（从 `result.response` 提取，best-effort；不可得则 undefined）；未完成 step 的 text buffer 丢弃。这保证记忆在中断后仍正确。
+- **`lifecycle { stopped }` 可带 `finalMessages`**：仅表示用户主动中止，或同一 thread 的新请求 supersede 当前执行。若 abort 时已有若干个 step-finish 的完整消息，executor 仍携带已完成 step 对应的 ModelMessage（从 `result.response` 提取，best-effort；不可得则 undefined）；未完成 step 的 text buffer 丢弃。这保证记忆在中断后仍正确。
 - **`error` 事件已删除**：所有错误经 `lifecycle { failed, error: { message } }`。
 - **流式 token 不对外**：不做"文本逐字浮现"，过程感由 progress message 承担。
 - **Reasoning 一期就做**：但经 `reasoningTail` 字段表达，不单独加事件类型；无显式 reasoning 结束事件，由后续 `text-delta` / `tool-call-streaming-start` / `step-finish` 隐式结束（见 §6.2）。
@@ -261,8 +261,8 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink
 | 事件 | Sink 行为 |
 |---|---|
 | `lifecycle { started }` | `renderer.addAck(sourceMessageTs)`；`renderer.setStatus('思考中…', shuffled loading pool)` |
-| `activity-state { state }` | **先 key diff 去重**（仅当 `state.newToolCalls` 为空时才因 key 相同跳过；有 newToolCalls 必处理）；若有 `state.newToolCalls` → 累加到 `toolHistory`；<br>若 `state.clear` → 删 progress（删除后立即将 `progressMessageTs = undefined`、`progressActive = false`）+ `clearStatus`；<br>若已有 progress：`upsertProgressMessage(..., mergedState, prevTs)` → 仅当返回 ts 非 undefined 时才覆写 `progressMessageTs`（safeRender 失败时保留旧值避免丢失引用）；<br>若无 progress 且状态"有意义"（§5.3）→ 先 `clearStatus`（让状态条让位），再 `upsertProgressMessage`（首次激活），进而 `progressActive = true`；<br>其他情况：调 `setStatus(state.status, loadingMessagesWithReasoning)`，其中 `loadingMessagesWithReasoning = state.reasoningTail ? [...state.activities, '🤔 ' + state.reasoningTail] : state.activities`（即 reasoningTail 作为最后一条 loading_message 追加） |
-| `assistant-message { text }` | `renderer.postThreadReply(text, { workspaceLabel? })`（仅第一段带 workspaceLabel，随后 `hasSentToolbarInTurn = true`）；若 progress 存在 → `deleteProgressMessage`，`progressActive = false`，`progressMessageTs = undefined`；**toolHistory 不清**（跨 step 累计，finalize 时一起展示；这是相对 kagura 的**刻意偏离**——kagura 每发一条 reply 清一次 toolHistory，我们不清，因为 kagura 依赖 Claude SDK 的 activity 叙事，单轮 reply 即"收尾"语义；我们是按 step 发，累计更利于用户最终看到一 turn 内完整工具轨迹）；`lastStateKey = undefined`（下一轮重新上画）；`setStatus('思考中…', ...)` 让下一 step 继续有状态 |
+| `activity-state { state }` | **先 key diff 去重**（仅当 `state.newToolCalls` 为空时才因 key 相同跳过；有 newToolCalls 必处理）；若有 `state.newToolCalls` → 累加到 `toolHistory`；<br>若 `state.clear` → 删 progress（删除后立即将 `progressMessageTs = undefined`、`progressActive = false`）+ `clearStatus`；<br>若已有 progress：`upsertProgressMessage(..., mergedState, prevTs)` → 仅当返回 ts 非 undefined 时才覆写 `progressMessageTs`（safeRender 失败时保留旧值避免丢失引用）；<br>若无 progress 且状态"有意义"（§5.3）→ 先 `clearStatus`（让状态条让位），再 `upsertProgressMessage`（首次激活），进而 `progressActive = true`；<br>**例外**：纯 `composing=true` 且当前尚无 progress / 无 tool / 无 reasoning 时，继续停留在状态条，不单独发一条 thread progress，避免 reply cutover 抖动；<br>其他情况：调 `setStatus(state.status, loadingMessagesWithReasoning)`，其中 `loadingMessagesWithReasoning = state.reasoningTail ? [...state.activities, '🤔 ' + state.reasoningTail] : state.activities`（即 reasoningTail 作为最后一条 loading_message 追加） |
+| `assistant-message { text }` | `renderer.postThreadReply(text, { workspaceLabel? })`（仅第一段带 workspaceLabel，随后 `hasSentToolbarInTurn = true`）；**不删除已有 progress**，让它在 `finalize()` 中原地收束为终态，避免线程内容先删后显的抖动；`lastStateKey = undefined`（下一轮重新上画）；`clearStatus()` 清空顶部状态条，不再回刷一次 `思考中…` |
 | `usage-info { usage }` | 暂存 `pendingUsage = usage`（仅 completed 用；stopped/failed 不发 usage） |
 | `lifecycle { completed, finalMessages }` | `terminalPhase = 'completed'`；finalMessages 不在 sink 里消费（orchestrator 在同一事件里直接读并落盘——见 §7.1）；真正的 UI finalize 在 orchestrator finally 调 `sink.finalize()` |
 | `lifecycle { stopped, reason }` | `terminalPhase = 'stopped'`；`terminalStopReason = reason` |
@@ -300,9 +300,10 @@ switch terminalPhase:
 ```ts
 function isMeaningful(state: ActivityState): boolean {
   if (state.clear) return false
-  if (state.composing) return true
+  // 纯 composing 只走状态条，不单独激活 thread progress
+  if (state.composing) return false
   if (state.reasoningTail) return true
-  // status 非默认思考态（含 tool 文案或"推理中…"/"回复中…"等）
+  // status 非默认思考态（含 tool 文案或"推理中…"等）
   if (state.status && state.status !== STATUS.thinking) return true
   // 或 newToolCalls 非空
   if (state.newToolCalls && state.newToolCalls.length > 0) return true
@@ -315,7 +316,7 @@ function isMeaningful(state: ActivityState): boolean {
 | 快照 | meaningful |
 |---|---|
 | `{ status:'思考中…', activities: POOL }` | ❌ |
-| `{ status:'思考中…', activities: POOL, composing: true }` | ✅ |
+| `{ status:'思考中…', activities: POOL, composing: true }` | ❌ |
 | `{ status:'回复中…', activities: POOL }` | ✅（status ≠ 思考中） |
 | `{ status:'推理中…', activities: POOL, reasoningTail:'...' }` | ✅ |
 | `{ status:'正在 read_file…', activities: [...], newToolCalls:['read_file'] }` | ✅ |
@@ -556,7 +557,7 @@ export async function emitSyntheticFailed(sink: SlackEventSink, message: string)
 
 | 文件 | 操作 | 说明 |
 |---|---|---|
-| `src/core/events.ts` | **重写** | `AgentExecutionEvent` 改为粗粒度 4 类；删 `StepUsage` / 原 TotalUsage，新增 `ActivityState` / `SessionUsageInfo` / `LifecyclePhase` / `StopReason` |
+| `src/core/events.ts` | **重写** | `AgentExecutionEvent` 改为粗粒度 4 类；删 `StepUsage` / 原 TotalUsage，新增 `ActivityState` / `SessionUsageInfo` / `LifecyclePhase` / `StopReason`（仅 `user` / `superseded`） |
 | `src/agent/AiSdkExecutor.ts` | **重写内部事件映射** | 从细粒度 yield 改为粗粒度；加 AggregatorState + `emitActivity` helper + cost extractor 接入 |
 | `src/im/slack/SlackEventSink.ts` | **重写** | 现仅 24 行的简化版删除，按 §5 实装 |
 | `src/im/slack/SlackRenderer.ts` | **新建** | 按 §4 实装 |
@@ -591,7 +592,7 @@ export async function emitSyntheticFailed(sink: SlackEventSink, message: string)
     1. `lifecycle {started}` → `activity-state` (default thinking) → 直接 `lifecycle {completed, finalMessages}`：progress 从未激活，无 upsertProgressMessage 调用
     2. `activity-state (with tool)` → 激活 progress；多个 tool → toolHistory 累加
     3. `activity-state` key 相同 → 跳过 upsert
-    4. `assistant-message` 来时删 progress + post reply
+    4. `assistant-message` 来时 post reply；若已有 progress，留待 finalize 原地收束
     5. `lifecycle {stopped}` → finalize 走 stopped 分支 + addStopped reaction
     6. `lifecycle {failed}` → finalize 走 error 分支 + addError reaction
     7. `assistant.threads.setStatus` 单次失败（mock 注入） → `safeRender` warn 吞掉，不影响后续 progress/reply 路径（无开关关闭）

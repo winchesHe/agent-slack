@@ -131,7 +131,7 @@ describe('slack-render-flow 集成：真实 SlackRenderer + mock WebClient', () 
     cwd = mkdtempSync(path.join(tmpdir(), 'slack-render-'))
   })
 
-  it('完整 turn：ack → status → progress → reply → delete progress → finalize → usage → done', async () => {
+  it('完整 turn：ack → status → progress → reply → finalize progress → usage → done', async () => {
     const paths = resolveWorkspacePaths(cwd)
     const store = createSessionStore(paths)
     const memoryStore = createMemoryStore(paths)
@@ -229,9 +229,16 @@ describe('slack-render-flow 集成：真实 SlackRenderer + mock WebClient', () 
     const postCalls = calls.filter((c) => c.method === 'chat.postMessage')
     expect(postCalls.length).toBeGreaterThanOrEqual(2)
 
-    // 5. 有 chat.delete（progress 被删除）
+    // 5. completed 会把 progress 原地 finalize，而不是在 reply cutover 时删除
     const deleteCalls = calls.filter((c) => c.method === 'chat.delete')
-    expect(deleteCalls.length).toBeGreaterThanOrEqual(1)
+    expect(deleteCalls).toHaveLength(0)
+    const progressFinalizeUpdates = calls.filter(
+      (c) =>
+        c.method === 'chat.update' &&
+        typeof (c.args as { text?: string }).text === 'string' &&
+        ((c.args as { text?: string }).text ?? '').includes('✅ 完成'),
+    )
+    expect(progressFinalizeUpdates.length).toBeGreaterThanOrEqual(1)
 
     // 6. 最后一条 chat.postMessage 的 text 包含时长格式 (N.Ns)
     const lastPost = postCalls[postCalls.length - 1]!.args as { text: string }

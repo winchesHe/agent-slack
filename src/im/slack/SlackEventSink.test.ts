@@ -196,7 +196,11 @@ describe('SlackEventSink', () => {
 
   it('相同 state key + 无 newToolCalls → 跳过 upsert', async () => {
     const { sink, renderer } = makeSink()
-    const state: ActivityState = { status: '回复中…', activities: ['…'], composing: true }
+    const state: ActivityState = {
+      status: '推理中…',
+      activities: ['…'],
+      reasoningTail: 'tail',
+    }
 
     await sink.onEvent({ type: 'lifecycle', phase: 'started' })
     await sink.onEvent({ type: 'activity-state', state })
@@ -205,7 +209,7 @@ describe('SlackEventSink', () => {
     expect(getMethodCalls(renderer, 'upsertProgressMessage')).toHaveLength(1)
   })
 
-  it('assistant-message 调 postThreadReply 并 delete progress，然后恢复 thinking 状态条', async () => {
+  it('assistant-message 调 postThreadReply，保留 progress，并清空状态条', async () => {
     const { sink, renderer } = makeSink()
 
     await sink.onEvent({ type: 'lifecycle', phase: 'started' })
@@ -216,9 +220,8 @@ describe('SlackEventSink', () => {
     await sink.onEvent({ type: 'assistant-message', text: 'hello' })
 
     expect(getMethodCalls(renderer, 'postThreadReply')).toHaveLength(1)
-    expect(getMethodCalls(renderer, 'deleteProgressMessage')).toHaveLength(1)
-    expect(renderer.calls.at(-1)?.method).toBe('setStatus')
-    expect(renderer.calls.at(-1)?.args[3]).toBe('思考中…')
+    expect(getMethodCalls(renderer, 'deleteProgressMessage')).toHaveLength(0)
+    expect(renderer.calls.at(-1)?.method).toBe('clearStatus')
   })
 
   it('lifecycle:completed → finalize 调 finalizeDone + postSessionUsage + addDone', async () => {
@@ -345,9 +348,9 @@ describe('SlackEventSink: isMeaningful pin 行为', () => {
       shouldActivateProgress: false,
     },
     {
-      label: 'composing=true → 激活',
+      label: 'composing=true 且无其他信号 → 不激活',
       state: { status: '思考中…', activities: ['a'], composing: true },
-      shouldActivateProgress: true,
+      shouldActivateProgress: false,
     },
     {
       label: 'status=回复中… → 激活（非默认 thinking）',

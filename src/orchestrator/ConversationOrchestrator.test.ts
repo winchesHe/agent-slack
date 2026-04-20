@@ -1,10 +1,11 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest'
 import { mkdtempSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createSessionStore, type SessionStore } from '@/store/SessionStore.ts'
 import { createMemoryStore } from '@/store/MemoryStore.ts'
-import { resolveWorkspacePaths } from '@/workspace/paths.ts'
+import { resolveWorkspacePaths, slackSessionDir } from '@/workspace/paths.ts'
 import { createConversationOrchestrator } from './ConversationOrchestrator.ts'
 import { SessionRunQueue } from './SessionRunQueue.ts'
 import { AbortRegistry } from './AbortRegistry.ts'
@@ -74,6 +75,93 @@ function makeExecutor(events: AgentExecutionEvent[]): AgentExecutor {
       for (const e of events) yield e
     },
   }
+}
+
+function buildCompletedToolFinalMessages(): Extract<
+  AgentExecutionEvent,
+  { type: 'lifecycle'; phase: 'completed' }
+>['finalMessages'] {
+  return [
+    {
+      id: 'msg-tool-call',
+      role: 'assistant',
+      content: [
+        { type: 'text', text: '我先查一下。' },
+        {
+          type: 'tool-call',
+          toolCallId: 'call_1',
+          toolName: 'search_docs',
+          args: { query: 'tool 历史' },
+        },
+      ],
+    },
+    {
+      id: 'msg-tool-result',
+      role: 'tool',
+      content: [
+        {
+          type: 'tool-result',
+          toolCallId: 'call_1',
+          toolName: 'search_docs',
+          result: { hits: [{ id: 'doc-1', title: '会话存储设计' }] },
+        },
+      ],
+    },
+    {
+      id: 'msg-answer',
+      role: 'assistant',
+      content: '已找到相关文档。',
+    },
+  ]
+}
+
+function buildStoppedToolFinalMessages(): NonNullable<
+  Extract<AgentExecutionEvent, { type: 'lifecycle'; phase: 'stopped' }>['finalMessages']
+> {
+  return [
+    {
+      id: 'msg-stop-tool-call',
+      role: 'assistant',
+      content: [
+        {
+          type: 'tool-call',
+          toolCallId: 'call_stop_1',
+          toolName: 'search_docs',
+          args: { query: '中断前历史' },
+        },
+      ],
+    },
+    {
+      id: 'msg-stop-tool-result',
+      role: 'tool',
+      content: [
+        {
+          type: 'tool-result',
+          toolCallId: 'call_stop_1',
+          toolName: 'search_docs',
+          result: { hits: [{ id: 'doc-stop-1' }] },
+        },
+      ],
+    },
+  ]
+}
+
+async function readMessagesJsonl(
+  cwd: string,
+  channelName = 'c',
+  channelId = 'C',
+  threadTs = 't',
+): Promise<unknown[]> {
+  const messagesFile = path.join(
+    slackSessionDir(resolveWorkspacePaths(cwd), channelName, channelId, threadTs),
+    'messages.jsonl',
+  )
+  const raw = await readFile(messagesFile, 'utf8')
+  return raw
+    .trim()
+    .split('\n')
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as unknown)
 }
 
 async function waitUntil(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
@@ -151,6 +239,51 @@ describe('ConversationOrchestrator 粗事件消费', () => {
     expect(sink.finalize).toHaveBeenCalledTimes(1)
   })
 
+  it('completed + tool finalMessages → user 后按顺序落盘 assistant(tool-call) / tool-result / assistant(text)', async () => {
+    const paths = resolveWorkspacePaths(cwd)
+    const store = createSessionStore(paths)
+    const memoryStore = createMemoryStore(paths)
+    const finalMessages = buildCompletedToolFinalMessages()
+    const executor = makeExecutor([
+      { type: 'lifecycle', phase: 'started' },
+      { type: 'assistant-message', text: '我先查一下。' },
+      { type: 'assistant-message', text: '已找到相关文档。' },
+      { type: 'lifecycle', phase: 'completed', finalMessages },
+    ])
+    const { sink } = mockSink()
+    const orch = createConversationOrchestrator({
+      toolsBuilder: () => ({}),
+      executorFactory: () => executor,
+      sessionStore: store,
+      memoryStore,
+      runQueue: new SessionRunQueue(),
+      abortRegistry: new AbortRegistry<string>(),
+      systemPrompt: '',
+      logger: stubLogger(),
+    })
+
+    await orch.handle(makeInput(), sink)
+
+    const [toolCallMessage, toolResultMessage, finalAssistantMessage] = finalMessages
+    expect(toolCallMessage).toBeDefined()
+    expect(toolResultMessage).toBeDefined()
+    expect(finalAssistantMessage).toBeDefined()
+
+    const messages = await store.loadMessages('slack:C:t')
+    expect(messages).toHaveLength(4)
+    expect(messages[0]).toMatchObject({ role: 'user', content: 'hi' })
+    expect(messages[1]).toMatchObject(toolCallMessage!)
+    expect(messages[2]).toMatchObject(toolResultMessage!)
+    expect(messages[3]).toMatchObject(finalAssistantMessage!)
+
+    const jsonlMessages = await readMessagesJsonl(cwd)
+    expect(jsonlMessages).toHaveLength(4)
+    expect(jsonlMessages[0]).toMatchObject({ role: 'user', content: 'hi' })
+    expect(jsonlMessages[1]).toMatchObject(toolCallMessage!)
+    expect(jsonlMessages[2]).toMatchObject(toolResultMessage!)
+    expect(jsonlMessages[3]).toMatchObject(finalAssistantMessage!)
+  })
+
   it('stopped + finalMessages → 先写 finalMessages 再写 [stopped] 标记 + status=stopped', async () => {
     const paths = resolveWorkspacePaths(cwd)
     const store = createSessionStore(paths)
@@ -185,6 +318,52 @@ describe('ConversationOrchestrator 粗事件消费', () => {
     const meta = await store.getMeta('slack:C:t')
     expect(meta?.status).toBe('stopped')
     expect(sink.finalize).toHaveBeenCalledTimes(1)
+  })
+
+  it('stopped + tool finalMessages → 先落 finalMessages 再落 [stopped] 标记', async () => {
+    const paths = resolveWorkspacePaths(cwd)
+    const store = createSessionStore(paths)
+    const memoryStore = createMemoryStore(paths)
+    const finalMessages = buildStoppedToolFinalMessages()
+    const executor = makeExecutor([
+      { type: 'lifecycle', phase: 'started' },
+      { type: 'assistant-message', text: '准备调用工具。' },
+      { type: 'lifecycle', phase: 'stopped', reason: 'user', finalMessages },
+    ])
+    const { sink } = mockSink()
+    const orch = createConversationOrchestrator({
+      toolsBuilder: () => ({}),
+      executorFactory: () => executor,
+      sessionStore: store,
+      memoryStore,
+      runQueue: new SessionRunQueue(),
+      abortRegistry: new AbortRegistry<string>(),
+      systemPrompt: '',
+      logger: stubLogger(),
+    })
+
+    await orch.handle(makeInput(), sink)
+
+    const [toolCallMessage, toolResultMessage] = finalMessages
+    expect(toolCallMessage).toBeDefined()
+    expect(toolResultMessage).toBeDefined()
+
+    const messages = await store.loadMessages('slack:C:t')
+    expect(messages).toHaveLength(4)
+    expect(messages[0]).toMatchObject({ role: 'user', content: 'hi' })
+    expect(messages[1]).toMatchObject(toolCallMessage!)
+    expect(messages[2]).toMatchObject(toolResultMessage!)
+    expect(messages[3]).toMatchObject({ role: 'assistant', content: '[stopped]' })
+
+    const jsonlMessages = await readMessagesJsonl(cwd)
+    expect(jsonlMessages).toHaveLength(4)
+    expect(jsonlMessages[0]).toMatchObject({ role: 'user', content: 'hi' })
+    expect(jsonlMessages[1]).toMatchObject(toolCallMessage!)
+    expect(jsonlMessages[2]).toMatchObject(toolResultMessage!)
+    expect(jsonlMessages[3]).toMatchObject({ role: 'assistant', content: '[stopped]' })
+
+    const meta = await store.getMeta('slack:C:t')
+    expect(meta?.status).toBe('stopped')
   })
 
   it('stopped 不带 finalMessages → 仅写 [stopped] 标记', async () => {
