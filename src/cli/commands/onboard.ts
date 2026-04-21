@@ -131,7 +131,7 @@ export async function runOnboard(opts: OnboardOpts, deps: OnboardDeps): Promise<
 
   const model = await prompter.text({
     message: '默认模型',
-    initialValue: provider === 'anthropic' ? 'claude-sonnet-4-5' : 'claude-sonnet-4-6',
+    initialValue: provider === 'anthropic' ? 'claude-sonnet-4-5' : 'gpt-5.4',
   })
 
   const slackRes = await deps.validateSlack({ botToken: slackBotToken })
