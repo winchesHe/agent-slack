@@ -10,8 +10,13 @@
   "bin": {
     "agent-slack": "./bin/agent-slack.js"
   },
+  "files": [
+    "bin",
+    "README.md"
+  ],
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "cli": "tsx src/cli/index.ts",
     "build": "tsdown",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -22,9 +27,11 @@
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^0.1.0",
+    "@clack/prompts": "^1.2.0",
     "@slack/bolt": "^4.0.0",
     "@slack/web-api": "^7.15.1",
     "ai": "^4.0.0",
+    "commander": "^14.0.3",
     "consola": "^3.2.0",
     "dotenv": "^16.4.0",
     "gray-matter": "^4.0.3",
@@ -38,7 +45,7 @@
     "@typescript-eslint/parser": "^8.0.0",
     "eslint": "^9.0.0",
     "prettier": "^3.3.0",
-    "tsdown": "^0.8.0",
+    "tsdown": "^0.21.9",
     "tsx": "^4.16.0",
     "typescript": "^5.6.0",
     "vitest": "^2.0.0"
