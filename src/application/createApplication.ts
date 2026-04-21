@@ -1,6 +1,6 @@
-import 'dotenv/config'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { loadWorkspaceContext } from '@/workspace/WorkspaceContext.ts'
+import { loadWorkspaceEnv } from '@/workspace/loadEnv.ts'
 import { createSessionStore } from '@/store/SessionStore.ts'
 import { createMemoryStore } from '@/store/MemoryStore.ts'
 import { createLogger } from '@/logger/logger.ts'
@@ -22,6 +22,7 @@ export interface CreateApplicationArgs {
 }
 
 export async function createApplication(args: CreateApplicationArgs): Promise<Application> {
+  loadWorkspaceEnv({ workspaceDir: args.workspaceDir })
   // 需要先创建 logger 才能传给 loadWorkspaceContext
   const env = {
     slackBotToken: requireEnv('SLACK_BOT_TOKEN'),
