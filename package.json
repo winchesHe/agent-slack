@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^0.1.0",
+    "@clack/prompts": "^1.2.0",
     "@slack/bolt": "^4.0.0",
     "@slack/web-api": "^7.15.1",
     "ai": "^4.0.0",

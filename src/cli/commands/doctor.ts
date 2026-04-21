@@ -10,21 +10,38 @@ import { validateLiteLLM, validateSlack } from '../validators.ts'
 
 export async function doctorCommand(opts: { cwd: string }): Promise<void> {
   let failures = 0
+  let warnings = 0
   const check = (label: string, ok: boolean, hint?: string): void => {
     const fn = ok ? consola.success : consola.error
     fn(`${label}: ${ok ? 'OK' : 'FAIL'}${hint ? ` — ${hint}` : ''}`)
     if (!ok) failures++
+  }
+  const warn = (label: string, ok: boolean, hint?: string): void => {
+    if (ok) {
+      consola.success(`${label}: OK`)
+      return
+    }
+    consola.warn(`${label}: WARN${hint ? ` — ${hint}` : ''}`)
+    warnings++
   }
 
   // 1. Node 版本
   const nodeMajor = Number(process.versions.node.split('.')[0])
   check('Node >= 22', nodeMajor >= 22, `当前 ${process.versions.node}`)
 
-  // 2. 目录结构
+  // 2. 目录结构：root 必须；config.yaml / system.md 缺失仅 warn（会 fallback 到默认配置 / 空 system prompt）
   const paths = resolveWorkspacePaths(opts.cwd)
   check('.agent-slack 存在', existsSync(paths.root), paths.root)
-  check('config.yaml 存在', existsSync(paths.configFile))
-  check('system.md 存在', existsSync(paths.systemFile))
+  warn(
+    'config.yaml 存在',
+    existsSync(paths.configFile),
+    `缺失则使用默认配置（agent.name=default / model=AGENT_MODEL 或 gpt-5.4）。建议 agent-slack onboard 生成。`,
+  )
+  warn(
+    'system.md 存在',
+    existsSync(paths.systemFile),
+    `缺失则 system prompt 仅由 skills 拼装，可能缺少项目特定指令。建议 agent-slack onboard 生成。`,
+  )
 
   // 3. 凭证（从 workspace 下 .env.local / 环境变量取）
   const slackToken = process.env.SLACK_BOT_TOKEN
@@ -73,8 +90,12 @@ export async function doctorCommand(opts: { cwd: string }): Promise<void> {
   }
 
   if (failures > 0) {
-    consola.error(`doctor 发现 ${failures} 个问题`)
+    consola.error(`doctor 发现 ${failures} 个错误${warnings > 0 ? `，${warnings} 个警告` : ''}`)
     process.exit(1)
+  }
+  if (warnings > 0) {
+    consola.warn(`doctor 通过，但有 ${warnings} 个警告`)
+    return
   }
   consola.success('全部检查通过')
 }
