@@ -4,9 +4,10 @@ export const ConfigSchema = z.object({
   agent: z
     .object({
       name: z.string().default('default'),
-      model: z.string().default(process.env.AGENT_MODEL ?? 'gpt-5.4'),
-      provider: z.literal('litellm').default('litellm'),
+      model: z.string().default('gpt-5.4'),
       maxSteps: z.number().int().positive().default(20),
+      // provider 为唯一权威来源（env 不参与），默认 litellm
+      provider: z.enum(['litellm', 'anthropic']).default('litellm'),
     })
     .default({}),
   skills: z.object({ enabled: z.array(z.string()).default(['*']) }).default({}),

@@ -12,8 +12,10 @@ import { resolveWorkspacePaths } from '@/workspace/paths.ts'
 import { createClackPrompter, PrompterCancelled, type Prompter } from '../prompts.ts'
 import { defaultConfigYaml, defaultEnv, defaultSystemMd, GITIGNORE_BLOCK } from '../templates.ts'
 import {
+  validateAnthropic,
   validateLiteLLM,
   validateSlack,
+  type ValidateAnthropicArgs,
   type ValidateLiteLLMArgs,
   type ValidateSlackArgs,
   type ValidationResult,
@@ -33,6 +35,7 @@ export interface OnboardDeps {
   exists: (p: string) => boolean
   validateSlack: (args: ValidateSlackArgs) => Promise<ValidationResult>
   validateLiteLLM: (args: ValidateLiteLLMArgs) => Promise<ValidationResult>
+  validateAnthropic: (args: ValidateAnthropicArgs) => Promise<ValidationResult>
 }
 
 export async function onboardCommand(opts: OnboardOpts): Promise<void> {
@@ -58,6 +61,7 @@ function buildDefaultDeps(): OnboardDeps {
     exists: existsSync,
     validateSlack,
     validateLiteLLM,
+    validateAnthropic,
   }
 }
 
@@ -93,14 +97,41 @@ export async function runOnboard(opts: OnboardOpts, deps: OnboardDeps): Promise<
     validate: (v) => (v.startsWith('xapp-') ? undefined : '应以 xapp- 开头'),
   })
   const slackSigningSecret = await prompter.password({ message: 'SLACK_SIGNING_SECRET' })
-  const litellmBaseUrl = await prompter.text({
-    message: 'LiteLLM Base URL',
-    initialValue: 'http://localhost:4000',
+
+  const provider = await prompter.select<'litellm' | 'anthropic'>({
+    message: 'Agent provider',
+    options: [
+      { label: 'LiteLLM（默认，通过代理层走多家）', value: 'litellm' },
+      { label: 'Anthropic（官方 Claude API）', value: 'anthropic' },
+    ],
+    initialValue: 'litellm',
   })
-  const litellmApiKey = await prompter.password({ message: 'LiteLLM API Key' })
+
+  let litellmBaseUrl = ''
+  let litellmApiKey = ''
+  let anthropicApiKey = ''
+  let anthropicBaseUrl = ''
+
+  if (provider === 'litellm') {
+    litellmBaseUrl = await prompter.text({
+      message: 'LiteLLM Base URL',
+      initialValue: 'http://localhost:4000',
+    })
+    litellmApiKey = await prompter.password({ message: 'LiteLLM API Key' })
+  } else {
+    anthropicApiKey = await prompter.password({
+      message: 'ANTHROPIC_API_KEY',
+      validate: (v) => (v.startsWith('sk-ant-') ? undefined : '应以 sk-ant- 开头'),
+    })
+    anthropicBaseUrl = await prompter.text({
+      message: 'ANTHROPIC_BASE_URL（可选，回车跳过）',
+      initialValue: '',
+    })
+  }
+
   const model = await prompter.text({
     message: '默认模型',
-    initialValue: 'claude-sonnet-4-6',
+    initialValue: provider === 'anthropic' ? 'claude-sonnet-4-5' : 'claude-sonnet-4-6',
   })
 
   const slackRes = await deps.validateSlack({ botToken: slackBotToken })
@@ -110,13 +141,27 @@ export async function runOnboard(opts: OnboardOpts, deps: OnboardDeps): Promise<
       : `✗ Slack: ${slackRes.reason}`,
     'Slack',
   )
-  const liteRes = await deps.validateLiteLLM({ baseUrl: litellmBaseUrl, apiKey: litellmApiKey })
-  prompter.note(
-    liteRes.ok ? '✓ LiteLLM /models 通过' : `✗ LiteLLM: ${liteRes.reason}（可稍后 doctor 排查）`,
-    'LiteLLM',
-  )
+  let providerRes: ValidationResult
+  if (provider === 'litellm') {
+    providerRes = await deps.validateLiteLLM({ baseUrl: litellmBaseUrl, apiKey: litellmApiKey })
+    prompter.note(
+      providerRes.ok
+        ? '✓ LiteLLM /models 通过'
+        : `✗ LiteLLM: ${providerRes.reason}（可稍后 doctor 排查）`,
+      'LiteLLM',
+    )
+  } else {
+    providerRes = await deps.validateAnthropic({
+      apiKey: anthropicApiKey,
+      ...(anthropicBaseUrl ? { baseUrl: anthropicBaseUrl } : {}),
+    })
+    prompter.note(
+      providerRes.ok ? '✓ Anthropic API key 形状校验通过' : `✗ Anthropic: ${providerRes.reason}`,
+      'Anthropic',
+    )
+  }
 
-  if (!slackRes.ok || !liteRes.ok) {
+  if (!slackRes.ok || !providerRes.ok) {
     const go = await prompter.confirm({
       message: '有校验失败。仍要写入配置？',
       initialValue: true,
@@ -133,28 +178,38 @@ export async function runOnboard(opts: OnboardOpts, deps: OnboardDeps): Promise<
   await deps.mkdir(paths.logsDir)
 
   if (overwrite || !deps.exists(paths.configFile)) {
-    await deps.writeFile(paths.configFile, defaultConfigYaml(model))
+    await deps.writeFile(paths.configFile, defaultConfigYaml(model, provider))
   }
   if (overwrite || !deps.exists(paths.systemFile)) {
     await deps.writeFile(paths.systemFile, defaultSystemMd())
   }
   const envFile = path.join(paths.root, '.env.local')
   if (overwrite || !deps.exists(envFile)) {
-    await deps.writeFile(
-      envFile,
-      defaultEnv({
-        slackBotToken,
-        slackAppToken,
-        slackSigningSecret,
-        litellmBaseUrl,
-        litellmApiKey,
-      }),
-    )
+    const envArgs =
+      provider === 'litellm'
+        ? ({
+            provider: 'litellm' as const,
+            slackBotToken,
+            slackAppToken,
+            slackSigningSecret,
+            litellmBaseUrl,
+            litellmApiKey,
+          } as const)
+        : ({
+            provider: 'anthropic' as const,
+            slackBotToken,
+            slackAppToken,
+            slackSigningSecret,
+            anthropicApiKey,
+            ...(anthropicBaseUrl ? { anthropicBaseUrl } : {}),
+          } as const)
+    await deps.writeFile(envFile, defaultEnv(envArgs))
   }
 
   await maybeAppendGitignore(opts.cwd, deps)
 
-  prompter.outro([`✓ 已初始化 ${paths.root}`, `下一步：agent-slack start`].join('\n'))
+  const providerHint = `当前 provider=${provider}（写入 config.yaml 的 agent.provider）。切换方法：编辑 config.yaml 改为另一值后重启`
+  prompter.outro([`✓ 已初始化 ${paths.root}`, providerHint, `下一步：agent-slack start`].join('\n'))
 }
 
 async function maybeAppendGitignore(cwd: string, deps: OnboardDeps): Promise<void> {

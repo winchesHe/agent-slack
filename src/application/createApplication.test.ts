@@ -23,6 +23,9 @@ const mocks = vi.hoisted(() => {
     createOpenAICompatible: vi.fn(() => ({
       chatModel: vi.fn((modelName: string) => ({ modelName })),
     })),
+    createAnthropic: vi.fn(() => ({
+      languageModel: vi.fn((modelName: string) => ({ modelName, provider: 'anthropic' })),
+    })),
     loadWorkspaceContext: vi.fn(async () => ({
       cwd: '/mock-workspace',
       paths: {
@@ -32,6 +35,7 @@ const mocks = vi.hoisted(() => {
         agent: {
           model: 'test-model',
           maxSteps: 8,
+          provider: 'litellm' as const,
         },
       },
       systemPrompt: 'system prompt',
@@ -73,6 +77,10 @@ const mocks = vi.hoisted(() => {
 
 vi.mock('@ai-sdk/openai-compatible', () => ({
   createOpenAICompatible: mocks.createOpenAICompatible,
+}))
+
+vi.mock('@ai-sdk/anthropic', () => ({
+  createAnthropic: mocks.createAnthropic,
 }))
 
 vi.mock('@/workspace/WorkspaceContext.ts', () => ({
@@ -129,6 +137,9 @@ describe('createApplication', () => {
       LITELLM_API_KEY: 'litellm-key',
       LOG_LEVEL: 'info',
     }
+    delete process.env.AGENT_PROVIDER
+    delete process.env.ANTHROPIC_API_KEY
+    delete process.env.ANTHROPIC_BASE_URL
   })
 
   afterEach(() => {
@@ -162,5 +173,68 @@ describe('createApplication', () => {
     await app.stop()
     expect(mocks.slackAdapter.start).toHaveBeenCalledTimes(1)
     expect(mocks.slackAdapter.stop).toHaveBeenCalledTimes(1)
+  })
+
+  it('config 默认 provider=litellm → 调用 createOpenAICompatible', async () => {
+    await createApplication({ workspaceDir: '/workspace' })
+    expect(mocks.createOpenAICompatible).toHaveBeenCalledWith({
+      baseURL: 'https://litellm.example.com',
+      apiKey: 'litellm-key',
+      name: 'litellm',
+    })
+  })
+
+  it('config.agent.provider=anthropic → 调用 createAnthropic（含 apiKey，无 baseURL）', async () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-xxx'
+    mocks.loadWorkspaceContext.mockResolvedValueOnce({
+      cwd: '/mock-workspace',
+      paths: { rootDir: '/mock-workspace/.agent-slack' },
+      config: {
+        agent: { model: 'claude-sonnet-4-5', maxSteps: 8, provider: 'anthropic' as const },
+      },
+      systemPrompt: 'system prompt',
+      skills: [],
+    })
+    await createApplication({ workspaceDir: '/workspace' })
+    expect(mocks.createAnthropic).toHaveBeenCalledWith({ apiKey: 'sk-ant-xxx' })
+    expect(mocks.createOpenAICompatible).not.toHaveBeenCalled()
+  })
+
+  it('config.agent.provider=anthropic + ANTHROPIC_BASE_URL → createAnthropic 收到 baseURL', async () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-xxx'
+    process.env.ANTHROPIC_BASE_URL = 'https://gateway.example.com/v1'
+    mocks.loadWorkspaceContext.mockResolvedValueOnce({
+      cwd: '/mock-workspace',
+      paths: { rootDir: '/mock-workspace/.agent-slack' },
+      config: {
+        agent: { model: 'claude-sonnet-4-5', maxSteps: 8, provider: 'anthropic' as const },
+      },
+      systemPrompt: 'system prompt',
+      skills: [],
+    })
+    await createApplication({ workspaceDir: '/workspace' })
+    expect(mocks.createAnthropic).toHaveBeenCalledWith({
+      apiKey: 'sk-ant-xxx',
+      baseURL: 'https://gateway.example.com/v1',
+    })
+  })
+
+  it('config.agent.provider=anthropic 缺 ANTHROPIC_API_KEY → 抛 ConfigError', async () => {
+    mocks.loadWorkspaceContext.mockResolvedValueOnce({
+      cwd: '/mock-workspace',
+      paths: { rootDir: '/mock-workspace/.agent-slack' },
+      config: { agent: { model: 'test-model', maxSteps: 8, provider: 'anthropic' as const } },
+      systemPrompt: 'system prompt',
+      skills: [],
+    })
+    await expect(createApplication({ workspaceDir: '/workspace' })).rejects.toThrow(
+      /ANTHROPIC_API_KEY/,
+    )
+  })
+
+  it('env AGENT_PROVIDER 不再影响选择（config 单一权威）', async () => {
+    process.env.AGENT_PROVIDER = 'anthropic'
+    await createApplication({ workspaceDir: '/workspace' })
+    expect(mocks.createOpenAICompatible).toHaveBeenCalled()
   })
 })

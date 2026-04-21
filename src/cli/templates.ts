@@ -1,9 +1,10 @@
 // onboard 写入的默认文件模板
-export function defaultConfigYaml(model: string): string {
+export function defaultConfigYaml(model: string, provider: 'litellm' | 'anthropic'): string {
   return `agent:
   name: default
   model: ${model}
-  provider: litellm
+  # 可选值: litellm | anthropic；env 不参与选择，需改此处后重启生效
+  provider: ${provider}
   maxSteps: 20
 
 skills:
@@ -34,22 +35,64 @@ export function defaultSystemMd(): string {
 `
 }
 
-export interface DefaultEnvArgs {
+export interface SlackCreds {
   slackBotToken: string
   slackAppToken: string
   slackSigningSecret: string
-  litellmBaseUrl: string
-  litellmApiKey: string
 }
 
+export type DefaultEnvArgs =
+  | (SlackCreds & {
+      provider: 'litellm'
+      litellmBaseUrl: string
+      litellmApiKey: string
+    })
+  | (SlackCreds & {
+      provider: 'anthropic'
+      anthropicApiKey: string
+      anthropicBaseUrl?: string
+    })
+
 export function defaultEnv(args: DefaultEnvArgs): string {
-  return `SLACK_BOT_TOKEN=${args.slackBotToken}
+  const slackBlock = `# ---------- Slack（必填）----------
+SLACK_BOT_TOKEN=${args.slackBotToken}
 SLACK_APP_TOKEN=${args.slackAppToken}
 SLACK_SIGNING_SECRET=${args.slackSigningSecret}
+`
+
+  const tailBlock = `
+# ---------- 日志 & 调试 ----------
+# 日志级别: trace | debug | info | warn | error
+LOG_LEVEL=info
+# Slack Block Kit 渲染调试: 1 启用 / 0 禁用
+# SLACK_RENDER_DEBUG=0
+`
+
+  if (args.provider === 'litellm') {
+    return `${slackBlock}
+# ---------- LiteLLM（当前 config.yaml 选用）----------
 LITELLM_BASE_URL=${args.litellmBaseUrl}
 LITELLM_API_KEY=${args.litellmApiKey}
-LOG_LEVEL=info
-`
+
+# ---------- Anthropic（切到 anthropic 时填；provider 切换在 config.yaml）----------
+# ANTHROPIC_API_KEY=sk-ant-...
+# 可选；走自建网关时覆盖，默认 https://api.anthropic.com/v1
+# ANTHROPIC_BASE_URL=
+${tailBlock}`
+  }
+
+  const anthropicBaseUrlLine = args.anthropicBaseUrl
+    ? `ANTHROPIC_BASE_URL=${args.anthropicBaseUrl}`
+    : `# 可选；走自建网关时覆盖，默认 https://api.anthropic.com/v1\n# ANTHROPIC_BASE_URL=`
+  return `${slackBlock}
+# ---------- Anthropic（当前 config.yaml 选用）----------
+ANTHROPIC_API_KEY=${args.anthropicApiKey}
+${anthropicBaseUrlLine}
+
+# ---------- LiteLLM（切到 litellm 时填；provider 切换在 config.yaml）----------
+# LITELLM_BASE_URL=http://localhost:4000
+# LITELLM_API_KEY=sk-...
+${tailBlock}`
 }
 
 export const GITIGNORE_BLOCK = `
