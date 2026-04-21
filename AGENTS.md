@@ -2,7 +2,7 @@
 
 ## Identity & Boundaries
 
-单进程绑定 `process.cwd()` 的 Slack agent 服务；一期基座 = Vercel AI SDK + LiteLLM，存储 = 全 files。
+单进程绑定 `process.cwd()` 的 Slack agent 服务；一期基座 = Vercel AI SDK（LiteLLM 默认；可切 Anthropic），存储 = 全 files。
 
 **Do not**:
 - 引入 SQLite / Drizzle / 任何 ORM — 全 files 存储（JSON/JSONL/Markdown）
@@ -27,6 +27,19 @@
 - Don't 用 `any` — 用 `unknown` + type guard。
 - Don't 裸用 `console.*` — 用 `logger.withTag('<tag>')`。
 - Don't 把凭证拼字符串 — 从 env 读并经 `redactor` 脱敏。
+
+### Env / Config 单一权威原则（方案 A）
+- **行为配置**（model / provider / maxSteps / skills / im / agent.name）只在 `config.yaml`；env 不参与。
+- **env** 只放凭证（`SLACK_*` / `LITELLM_*` / `ANTHROPIC_*`）、部署差异（`*_BASE_URL`）、调试（`LOG_LEVEL` / `SLACK_RENDER_DEBUG`）。
+- 禁止重新引入 `AGENT_MODEL` / `AGENT_PROVIDER` / `PROVIDER_NAME` 这类行为类 env 变量；如确需加新行为选项，加到 `src/workspace/config.ts` schema。
+
+### Env 变更联动规则
+对任何 env 变量的引入/修改/删除，必须**同步**更新以下处：
+1. `src/application/createApplication.ts`（以及相关校验 / `loadProviderEnv` 分支）
+2. `src/cli/templates.ts` 的 `defaultEnv`（onboard 写入模板）
+3. `.env.example`（开源示例）
+4. `.env`（本地开发模板，存在时追加注释块即可，**不动已有值**）
+5. 相关 spec / README 对应段落
 
 ### Changing architecture
 改 design doc → 用户 review → 改代码。Don't 在代码里做未登记的架构决策。

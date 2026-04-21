@@ -9,20 +9,27 @@ interface MockFs {
   dirs: Set<string>
 }
 
+const cwd = '/tmp/ws'
+const root = `${cwd}/.agent-slack`
+
 interface BuildDepsOverrides {
   answers?: Partial<{
     existsAction: 'fill' | 'overwrite' | 'exit'
+    provider: 'litellm' | 'anthropic'
     slackBot: string
     slackApp: string
     slackSecret: string
     litellmUrl: string
     litellmKey: string
+    anthropicKey: string
+    anthropicBaseUrl: string
     model: string
     confirmProceed: boolean
   }>
   initialFs?: Partial<MockFs>
   slackResult?: ValidationResult
   litellmResult?: ValidationResult
+  anthropicResult?: ValidationResult
 }
 
 function buildDeps(o: BuildDepsOverrides = {}): {
@@ -36,16 +43,30 @@ function buildDeps(o: BuildDepsOverrides = {}): {
   }
   const a = {
     existsAction: o.answers?.existsAction ?? 'overwrite',
+    provider: o.answers?.provider ?? 'litellm',
     slackBot: o.answers?.slackBot ?? 'xoxb-test',
     slackApp: o.answers?.slackApp ?? 'xapp-test',
     slackSecret: o.answers?.slackSecret ?? 'secret',
     litellmUrl: o.answers?.litellmUrl ?? 'http://localhost:4000',
     litellmKey: o.answers?.litellmKey ?? 'sk-test',
+    anthropicKey: o.answers?.anthropicKey ?? 'sk-ant-xxx',
+    anthropicBaseUrl: o.answers?.anthropicBaseUrl ?? '',
     model: o.answers?.model ?? 'gpt-5.4',
     confirmProceed: o.answers?.confirmProceed ?? true,
   }
-  const textQueue = [a.litellmUrl, a.model]
-  const passwordQueue = [a.slackBot, a.slackApp, a.slackSecret, a.litellmKey]
+  const textQueue =
+    a.provider === 'litellm' ? [a.litellmUrl, a.model] : [a.anthropicBaseUrl, a.model]
+  const passwordQueue =
+    a.provider === 'litellm'
+      ? [a.slackBot, a.slackApp, a.slackSecret, a.litellmKey]
+      : [a.slackBot, a.slackApp, a.slackSecret, a.anthropicKey]
+
+  // select 按调用顺序返回：第 1 次是 existsAction（仅当目录已存在），第 2 次是 provider
+  const selectQueue: Array<'fill' | 'overwrite' | 'exit' | 'litellm' | 'anthropic'> = []
+  if (fs.dirs.has(`${cwd}/.agent-slack`) || fs.files.has(`${cwd}/.agent-slack/config.yaml`)) {
+    selectQueue.push(a.existsAction)
+  }
+  selectQueue.push(a.provider)
 
   const prompter: Prompter = {
     intro: vi.fn(),
@@ -53,7 +74,7 @@ function buildDeps(o: BuildDepsOverrides = {}): {
     note: vi.fn(),
     text: vi.fn(async () => textQueue.shift() ?? ''),
     password: vi.fn(async () => passwordQueue.shift() ?? ''),
-    select: vi.fn(async () => a.existsAction) as Prompter['select'],
+    select: vi.fn(async () => selectQueue.shift() ?? '') as Prompter['select'],
     confirm: vi.fn(async () => a.confirmProceed),
   }
   const deps: OnboardDeps = {
@@ -73,12 +94,10 @@ function buildDeps(o: BuildDepsOverrides = {}): {
       async () => o.slackResult ?? ({ ok: true, team: 'T' } as ValidationResult),
     ),
     validateLiteLLM: vi.fn(async () => o.litellmResult ?? ({ ok: true } as ValidationResult)),
+    validateAnthropic: vi.fn(async () => o.anthropicResult ?? ({ ok: true } as ValidationResult)),
   }
   return { deps, fs, prompter }
 }
-
-const cwd = '/tmp/ws'
-const root = `${cwd}/.agent-slack`
 
 describe('runOnboard', () => {
   it('全新目录 happy path：写入五件套 + 调用两次校验', async () => {
@@ -164,5 +183,47 @@ describe('runOnboard', () => {
     const { deps, fs } = buildDeps()
     await runOnboard({ cwd }, deps)
     expect(fs.files.has(`${cwd}/.gitignore`)).toBe(false)
+  })
+
+  it('选择 anthropic → config.yaml 含 agent.provider=anthropic；.env.local 含 ANTHROPIC_API_KEY，无 LITELLM_ 实值', async () => {
+    const { deps, fs } = buildDeps({
+      answers: { provider: 'anthropic', anthropicKey: 'sk-ant-abc' },
+    })
+    await runOnboard({ cwd }, deps)
+    const env = fs.files.get(`${root}/.env.local`) ?? ''
+    expect(env).toContain('ANTHROPIC_API_KEY=sk-ant-abc')
+    expect(env).not.toMatch(/^LITELLM_/m)
+    expect(env).not.toMatch(/^ANTHROPIC_BASE_URL=/m)
+    expect(env).not.toMatch(/^AGENT_PROVIDER=/m) // env 不再参与 provider 选择
+    const cfg = fs.files.get(`${root}/config.yaml`) ?? ''
+    expect(cfg).toContain('provider: anthropic')
+    expect(cfg).not.toContain('provider: litellm')
+    expect(deps.validateAnthropic).toHaveBeenCalledOnce()
+    expect(deps.validateLiteLLM).not.toHaveBeenCalled()
+  })
+
+  it('选择 anthropic + 填 ANTHROPIC_BASE_URL → .env.local 含该行', async () => {
+    const { deps, fs } = buildDeps({
+      answers: {
+        provider: 'anthropic',
+        anthropicKey: 'sk-ant-abc',
+        anthropicBaseUrl: 'https://api.anthropic.com/v1',
+      },
+    })
+    await runOnboard({ cwd }, deps)
+    const env = fs.files.get(`${root}/.env.local`) ?? ''
+    expect(env).toContain('ANTHROPIC_BASE_URL=https://api.anthropic.com/v1')
+  })
+
+  it('选择 litellm → config.yaml 含 agent.provider=litellm；.env.local 无 AGENT_PROVIDER', async () => {
+    const { deps, fs } = buildDeps()
+    await runOnboard({ cwd }, deps)
+    const env = fs.files.get(`${root}/.env.local`) ?? ''
+    expect(env).not.toMatch(/^AGENT_PROVIDER=/m)
+    expect(env).not.toMatch(/AGENT_PROVIDER/) // 不再在 env 里出现（包括注释）
+    expect(env).not.toMatch(/^ANTHROPIC_[A-Z_]*=[^#]/m) // 无 uncommented ANTHROPIC_
+    expect(env).toContain('LITELLM_BASE_URL=http://localhost:4000')
+    const cfg = fs.files.get(`${root}/config.yaml`) ?? ''
+    expect(cfg).toContain('provider: litellm')
   })
 })

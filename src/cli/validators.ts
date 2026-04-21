@@ -44,3 +44,19 @@ export async function validateSlack(args: ValidateSlackArgs): Promise<Validation
     return { ok: false, reason: err instanceof Error ? err.message : String(err) }
   }
 }
+
+export interface ValidateAnthropicArgs {
+  apiKey: string
+  baseUrl?: string
+  fetcher?: typeof fetch
+}
+
+// 一期仅做形状校验（sk-ant- 前缀 + 非空）；fetcher 入参预留，后续可升级到真实请求
+export async function validateAnthropic(args: ValidateAnthropicArgs): Promise<ValidationResult> {
+  const key = args.apiKey?.trim() ?? ''
+  if (key === '') return { ok: false, reason: 'ANTHROPIC_API_KEY 不能为空' }
+  if (!key.startsWith('sk-ant-')) {
+    return { ok: false, reason: 'API key 需以 sk-ant- 开头' }
+  }
+  return { ok: true }
+}

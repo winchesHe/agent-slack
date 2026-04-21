@@ -27,15 +27,20 @@ export interface CreateApplicationArgs {
 export async function createApplication(args: CreateApplicationArgs): Promise<Application> {
   loadWorkspaceEnv({ workspaceDir: args.workspaceDir })
 
-  const provider = selectProvider()
-
   // 通用凭证
   const slackBotToken = requireEnv('SLACK_BOT_TOKEN')
   const slackAppToken = requireEnv('SLACK_APP_TOKEN')
   const slackSigningSecret = requireEnv('SLACK_SIGNING_SECRET')
   const logLevel = parseLogLevel(process.env.LOG_LEVEL)
 
-  // 分支凭证
+  // 先用 bootstrap logger 加载 workspace context（此时尚未知晓 provider secrets）
+  const bootstrapRedactor = createRedactor([slackBotToken, slackAppToken, slackSigningSecret])
+  const bootstrapLogger = createLogger({ level: logLevel, redactor: bootstrapRedactor })
+
+  const ctx = await loadWorkspaceContext(args.workspaceDir, bootstrapLogger)
+
+  // provider 唯一来源：config.agent.provider（env 不参与选择）
+  const provider = selectProvider(ctx.config.agent.provider)
   const providerEnv = loadProviderEnv(provider)
 
   const redactor = createRedactor([
@@ -47,14 +52,12 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
   const logger = createLogger({ level: logLevel, redactor })
   logger.withTag('agent').info(`provider=${provider}`)
 
-  const ctx = await loadWorkspaceContext(args.workspaceDir, logger)
-
   const sessionStore = createSessionStore(ctx.paths)
   const memoryStore = createMemoryStore(ctx.paths)
   const runQueue = new SessionRunQueue()
   const abortRegistry = new AbortRegistry<string>()
 
-  const modelName = process.env.AGENT_MODEL ?? ctx.config.agent.model
+  const modelName = ctx.config.agent.model
   const runtime = buildProviderRuntime(provider, providerEnv, modelName)
 
   const toolsBuilder = (currentUser: { userName: string; userId: string }) =>
@@ -67,9 +70,7 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
       tools,
       maxSteps: ctx.config.agent.maxSteps,
       logger,
-      ...(runtime.providerNameForOptions
-        ? { providerName: runtime.providerNameForOptions }
-        : {}),
+      ...(runtime.providerNameForOptions ? { providerName: runtime.providerNameForOptions } : {}),
     })
 
   const orchestrator = createConversationOrchestrator({
@@ -108,15 +109,11 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
   }
 }
 
-export function selectProvider(): AgentProvider {
-  const raw = process.env.AGENT_PROVIDER
-  if (!raw || raw.trim() === '') return 'litellm'
-  const v = raw.trim().toLowerCase()
-  if (v === 'litellm' || v === 'anthropic') return v
-  throw new ConfigError(
-    `非法 provider: AGENT_PROVIDER=${raw}`,
-    '可选值为 litellm（默认）或 anthropic',
-  )
+/**
+ * provider 校验：config.agent.provider 已是 z.enum，此处仅做类型收窄。
+ */
+export function selectProvider(configProvider: AgentProvider): AgentProvider {
+  return configProvider
 }
 
 type ProviderEnv =
@@ -142,7 +139,7 @@ function loadProviderEnv(provider: AgentProvider): ProviderEnv {
       provider: 'litellm',
       litellmBaseUrl,
       litellmApiKey,
-      providerName: process.env.PROVIDER_NAME ?? 'litellm',
+      providerName: 'litellm',
       secrets: [litellmApiKey],
     }
   }
@@ -180,8 +177,8 @@ function buildProviderRuntime(
     }
   }
   throw new ConfigError(
-    'AGENT_PROVIDER=anthropic 暂未实装，P3 阶段接入',
-    '临时改用 litellm 或等待 P3',
+    'agent.provider=anthropic 暂未实装，P3 阶段接入',
+    '临时改 config.yaml 的 agent.provider 为 litellm 或等待 P3',
   )
 }
 

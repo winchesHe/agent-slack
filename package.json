@@ -18,6 +18,7 @@
     "dev": "tsx watch src/index.ts",
     "cli": "tsx src/cli/index.ts",
     "build": "tsdown",
+    "build:dev": "tsdown --watch",
     "prepublishOnly": "pnpm build",
     "test": "vitest run",
     "test:watch": "vitest",

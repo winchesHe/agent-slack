@@ -32,6 +32,7 @@ const mocks = vi.hoisted(() => {
         agent: {
           model: 'test-model',
           maxSteps: 8,
+          provider: 'litellm' as const,
         },
       },
       systemPrompt: 'system prompt',
@@ -167,7 +168,7 @@ describe('createApplication', () => {
     expect(mocks.slackAdapter.stop).toHaveBeenCalledTimes(1)
   })
 
-  it('AGENT_PROVIDER 未设 → 走 litellm 分支并调用 createOpenAICompatible', async () => {
+  it('config 默认 provider=litellm → 调用 createOpenAICompatible', async () => {
     await createApplication({ workspaceDir: '/workspace' })
     expect(mocks.createOpenAICompatible).toHaveBeenCalledWith({
       baseURL: 'https://litellm.example.com',
@@ -176,21 +177,34 @@ describe('createApplication', () => {
     })
   })
 
-  it('AGENT_PROVIDER=anthropic → 抛 ConfigError 文案含"暂未实装"', async () => {
-    process.env.AGENT_PROVIDER = 'anthropic'
+  it('config.agent.provider=anthropic → 抛 ConfigError 文案含"暂未实装"', async () => {
     process.env.ANTHROPIC_API_KEY = 'sk-ant-xxx'
+    mocks.loadWorkspaceContext.mockResolvedValueOnce({
+      cwd: '/mock-workspace',
+      paths: { rootDir: '/mock-workspace/.agent-slack' },
+      config: { agent: { model: 'test-model', maxSteps: 8, provider: 'anthropic' as const } },
+      systemPrompt: 'system prompt',
+      skills: [],
+    })
     await expect(createApplication({ workspaceDir: '/workspace' })).rejects.toThrow(/暂未实装/)
   })
 
-  it('AGENT_PROVIDER=anthropic 缺 ANTHROPIC_API_KEY → 抛 ConfigError', async () => {
-    process.env.AGENT_PROVIDER = 'anthropic'
+  it('config.agent.provider=anthropic 缺 ANTHROPIC_API_KEY → 抛 ConfigError', async () => {
+    mocks.loadWorkspaceContext.mockResolvedValueOnce({
+      cwd: '/mock-workspace',
+      paths: { rootDir: '/mock-workspace/.agent-slack' },
+      config: { agent: { model: 'test-model', maxSteps: 8, provider: 'anthropic' as const } },
+      systemPrompt: 'system prompt',
+      skills: [],
+    })
     await expect(createApplication({ workspaceDir: '/workspace' })).rejects.toThrow(
       /ANTHROPIC_API_KEY/,
     )
   })
 
-  it('AGENT_PROVIDER=foo → 抛 ConfigError 文案含"非法 provider"', async () => {
-    process.env.AGENT_PROVIDER = 'foo'
-    await expect(createApplication({ workspaceDir: '/workspace' })).rejects.toThrow(/非法 provider/)
+  it('env AGENT_PROVIDER 不再影响选择（config 单一权威）', async () => {
+    process.env.AGENT_PROVIDER = 'anthropic'
+    await createApplication({ workspaceDir: '/workspace' })
+    expect(mocks.createOpenAICompatible).toHaveBeenCalled()
   })
 })

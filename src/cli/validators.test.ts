@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { validateLiteLLM, validateSlack } from './validators.ts'
+import { validateAnthropic, validateLiteLLM, validateSlack } from './validators.ts'
 
 describe('validateLiteLLM', () => {
   it('200 → ok', async () => {
@@ -67,5 +67,24 @@ describe('validateSlack', () => {
     const r = await validateSlack({ webClientFactory: () => web, botToken: 'x' })
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.reason).toBe('token_revoked')
+  })
+})
+
+describe('validateAnthropic', () => {
+  it('sk-ant- 开头 → ok', async () => {
+    const r = await validateAnthropic({ apiKey: 'sk-ant-abc123' })
+    expect(r.ok).toBe(true)
+  })
+
+  it('非法前缀 → ok=false', async () => {
+    const r = await validateAnthropic({ apiKey: 'sk-proj-xxx' })
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.reason).toMatch(/sk-ant-/)
+  })
+
+  it('空串 → ok=false', async () => {
+    const r = await validateAnthropic({ apiKey: '   ' })
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.reason).toMatch(/不能为空/)
   })
 })
