@@ -1,8 +1,8 @@
 {
-  "name": "agent-slack",
+  "name": "@winches/agent-slack",
   "version": "0.1.0",
   "type": "module",
-  "private": true,
+  "private": false,
   "packageManager": "pnpm@10.32.1",
   "engines": {
     "node": ">=22"
@@ -18,12 +18,17 @@
     "dev": "tsx watch src/index.ts",
     "cli": "tsx src/cli/index.ts",
     "build": "tsdown",
+    "prepublishOnly": "pnpm build",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
     "typecheck": "tsc --noEmit",
     "smoke": "tsx scripts/smoke.ts"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^0.1.0",
