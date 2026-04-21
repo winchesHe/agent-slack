@@ -1,12 +1,13 @@
 // doctor 命令：环境自检（Node 版本 / 目录结构 / 凭证 / 模型 / skills）
 import { consola } from 'consola'
+import 'dotenv/config'
 import { existsSync } from 'node:fs'
 import { resolveWorkspacePaths } from '@/workspace/paths.ts'
 import { loadWorkspaceContext } from '@/workspace/WorkspaceContext.ts'
-import { loadWorkspaceEnv } from '@/workspace/loadEnv.ts'
 import { createLogger } from '@/logger/logger.ts'
 import { createRedactor } from '@/logger/redactor.ts'
-import { validateLiteLLM, validateSlack } from '../validators.ts'
+import { validateSlack } from '../validators.ts'
+import { loadWorkspaceEnv } from '@/workspace/loadEnv.ts'
 
 export async function doctorCommand(opts: { cwd: string }): Promise<void> {
   loadWorkspaceEnv({ workspaceDir: opts.cwd })
