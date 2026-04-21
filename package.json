@@ -10,6 +10,10 @@
   "bin": {
     "agent-slack": "./bin/agent-slack.js"
   },
+  "files": [
+    "bin",
+    "README.md"
+  ],
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "cli": "tsx src/cli/index.ts",
@@ -41,7 +45,7 @@
     "@typescript-eslint/parser": "^8.0.0",
     "eslint": "^9.0.0",
     "prettier": "^3.3.0",
-    "tsdown": "^0.8.0",
+    "tsdown": "^0.21.9",
     "tsx": "^4.16.0",
     "typescript": "^5.6.0",
     "vitest": "^2.0.0"
