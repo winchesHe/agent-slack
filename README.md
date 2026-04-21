@@ -70,7 +70,6 @@ src/
 bin/cli.ts                # agent-slack CLI 入口（onboard/start/status/doctor）
 tests/                    # 跨模块集成测试
 docs/superpowers/specs/   # 架构决策文档（design doc）
-kagura/                   # 参考仓库（gitignored；不要提交，不要直接引用代码）
 ```
 
 ## Storage Conventions (file-based, no DB)

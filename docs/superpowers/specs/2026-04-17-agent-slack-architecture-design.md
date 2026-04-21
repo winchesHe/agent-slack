@@ -465,7 +465,7 @@ SIGINT / SIGTERM
 - **多 IM 适配**：基于 `IMAdapter` 接口的 `TelegramAdapter`
 - **Memory 检索增强**：ripgrep 封装 tool 或可选的向量索引
 - **多 workspace 切换**：在 `config.yaml` 声明多个 workspace 或引入 `global.yaml` 的 workspace 注册表
-- **E2E 框架**：脱胎于 kagura `packages/live-cli`
+- **E2E 框架**：脱胎于 app `packages/live-cli`
 
 ---
 
@@ -477,22 +477,22 @@ SIGINT / SIGTERM
 | `@ai-sdk/openai-compatible` | 接 LiteLLM | OpenAI 兼容 provider |
 | `@slack/bolt` | Slack SDK | socket mode |
 | `markdown-to-slack-blocks` | 长消息分块 | 官方推荐 |
-| `consola` | Logger | kagura 同款 |
+| `consola` | Logger | app 同款 |
 | `commander` | CLI 命令解析 | 成熟稳定 |
 | `@clack/prompts` | 交互式问答 | onboard 向导 |
 | `dotenv` | `.env` 加载 | 标准方案 |
 | `yaml` | 解析 `config.yaml` | |
 | `gray-matter` | 解析 SKILL.md frontmatter | |
 | `zod` | tool schema / 配置校验 | AI SDK 原生支持 |
-| `vitest` | 单元测试 | kagura 同款 |
-| `tsdown` | 打包 | kagura 同款 |
+| `vitest` | 单元测试 | app 同款 |
+| `tsdown` | 打包 | app 同款 |
 | `eslint` / `prettier` / `typescript` | 代码质量 | |
 
 ---
 
-## 9. 与 kagura 的对照与差异
+## 9. 与 app 的对照与差异
 
-**借鉴自 kagura**：
+**借鉴自 app**：
 
 - DI 容器模式（`createApplication()`）
 - Zod 环境变量校验
@@ -505,9 +505,9 @@ SIGINT / SIGTERM
 - 👀 / ✅ / ❌ reaction 协议
 - 🛑 reaction 触发 abort
 
-**主动偏离 kagura**：
+**主动偏离 app**：
 
-| 维度 | kagura | agent-slack | 原因 |
+| 维度 | app | agent-slack | 原因 |
 |---|---|---|---|
 | 存储 | SQLite + Drizzle | 全 Files（JSON/JSONL/MD） | Agent 原生索引友好、用户可直接读写、git 可 version |
 | Agent 基座 | Claude Agent SDK | Vercel AI SDK + LiteLLM | 统一模型层代理、多 provider 自由切换 |
@@ -541,7 +541,7 @@ SIGINT / SIGTERM
 
 ### 11.2 参考
 
-- kagura 仓库本地路径：`/Users/moego-winches/Desktop/Company/AI-Agent/agent-slack/kagura`
+- app 仓库本地路径：`/Users/moego-winches/Desktop/Company/AI-Agent/agent-slack/app`
 - Vercel AI SDK：https://ai-sdk.dev
 - LiteLLM：https://docs.litellm.ai
 - Slack Bolt JS：https://tools.slack.dev/bolt-js

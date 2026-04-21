@@ -12,11 +12,11 @@
 
 - 原 architecture spec（2026-04-17）定义了 `AgentExecutionEvent` 为 AI SDK 细粒度事件（`text_delta` / `tool_input_delta` / `tool_call_*` / `step_*` / `done`）。
 - 原 M2 plan（2026-04-18）基于这套细粒度事件设计了"占位消息编辑流"——一切（thinking / tool / 正文 / cost）都通过 `chat.update` 改写同一条 placeholder 消息。
-- 实际实装（M1 已落、M2 部分已落）和参考实现 kagura 的 `slackRender` 差异巨大，UX 体验不符合预期。
+- 实际实装（M1 已落、M2 部分已落）和参考实现 app 的 `slackRender` 差异巨大，UX 体验不符合预期。
 
-### 1.2 与 kagura 的核心差异（根因）
+### 1.2 与 app 的核心差异（根因）
 
-| 维度 | kagura（参考） | 当前设计 | 后果 |
+| 维度 | app（参考） | 当前设计 | 后果 |
 |---|---|---|---|
 | **UI 载体** | 3 个分工：状态条 + progress message + reply messages | 1 个 placeholder 通吃 | 过程态与结果态混在同一条消息，不干净 |
 | **thinking 显示** | `assistant.threads.setStatus` 原生状态条 + `loading_messages` 轮换 | placeholder 文本直接 update | 非原生体验 |
@@ -26,11 +26,11 @@
 | **事件粒度** | Agent SDK 粗粒度事件（`activity-state` / `assistant-message` / `lifecycle`） | AI SDK 细粒度事件 | 驱动模型错位 |
 | **节流** | 基于 state key 变化幂等去重 | 基于时间 debounce | 易抖易卡 |
 
-**症结**：当前设计把"过程态"和"结果态"挤在同一条消息里编辑；kagura 把两者分开（状态条/progress 显示过程 → 过程结束后删除/收尾 → 最终消息独立 post）。
+**症结**：当前设计把"过程态"和"结果态"挤在同一条消息里编辑；app 把两者分开（状态条/progress 显示过程 → 过程结束后删除/收尾 → 最终消息独立 post）。
 
 ### 1.3 本次设计的 3 条核心决策
 
-1. **UI 三载体模型**（对齐 kagura）：状态条 + progress message + reply messages 分工；本项目运行环境已确认启用 Slack Assistant feature，状态条直接使用 `assistant.threads.setStatus`，不保留降级开关。
+1. **UI 三载体模型**（对齐 app）：状态条 + progress message + reply messages 分工；本项目运行环境已确认启用 Slack Assistant feature，状态条直接使用 `assistant.threads.setStatus`，不保留降级开关。
 2. **聚合层下沉到 Executor**：对外事件改为粗粒度 4 类（`activity-state` / `assistant-message` / `lifecycle` / `usage-info`），AI SDK 细粒度流只在 `AiSdkExecutor` 内部处理。
 3. **Renderer 无状态、Sink 有状态**：`SlackRenderer` 是纯 I/O 门面；`SlackEventSink` 持有该 turn 本地状态（progress ts、toolHistory、lastStateKey 等），消费事件并编排 renderer 调用。
 
@@ -575,7 +575,7 @@ export async function emitSyntheticFailed(sink: SlackEventSink, message: string)
 ### 10.3 不做的
 
 - 不引入 `splitBlocksWithText` 的手卷替代方案——直接用 `markdown-to-slack-blocks` 原生 `splitBlocksWithText` export
-- 不做 status probe / analytics store（kagura 有，一期 YAGNI）
+- 不做 status probe / analytics store（app 有，一期 YAGNI）
 - 不做 user-input bridge（interactive modal 交互一期不做）
 - 不做 generated-files / generated-images（非 codex 场景，一期不用）
 
