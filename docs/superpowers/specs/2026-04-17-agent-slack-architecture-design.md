@@ -446,7 +446,7 @@ SIGINT / SIGTERM
 | **3. Slack MVP** 🎯 | Bolt socket；Adapter；Orchestrator；简化 Renderer | 真 Slack：`@bot hello` 有回复 + 持久化 | 2 天 |
 | **4. Renderer 丰富度** | 2.5s thinking；reasoning/tool/cost 渲染；safeRender；reaction | Slack UX 达到截图标准；长回复分块正常 | 2 天 |
 | **5. 交互完善** | Skills 加载；/usage；🛑 reaction abort；SessionRunQueue；AbortRegistry | 并发消息按序处理；🛑 能中断 | 1.5 天 |
-| **6. CLI + Onboard** | bin；commander；@clack/prompts；onboard/start/status/doctor | 另一个目录 `agent-slack start` 能服务那个目录 | 1.5 天 |
+| **6. CLI + Onboard** ✅ | bin；commander；@clack/prompts；onboard/start/status/doctor | 另一个目录 `agent-slack start` 能服务那个目录 | 1.5 天 |
 
 **MVP（阶段 0–3 完成）**：约 6 天工作量。
 
@@ -455,7 +455,7 @@ SIGINT / SIGTERM
 - 🎯 **M1（阶段 3 末）**：`@mention` 能收到回复，消息历史正确持久化——**最关键的跨越**（litellm + AI SDK + slack 三方同时碰头，越早发现兼容性问题越好）。
 - 🎯 **M2（阶段 4 末）**：丰富度 UX 达成（thinking、tool-use、cost）。⚠️ M2 原 plan `plans/2026-04-18-M2-renderer.md` 已作废；当前权威 plan 见 [`plans/2026-04-19-M2-renderer.md`](../plans/2026-04-19-M2-renderer.md)，设计源自 [`specs/2026-04-19-slack-render-flow-redesign.md`](./2026-04-19-slack-render-flow-redesign.md)
 - 🎯 **M3（阶段 5 末）**：skills / 并发 / cancel 完整，功能闭环
-- 🎯 **M4（阶段 6 末）**：脱离 `pnpm dev`，bin 可分发，进入二期准备
+- 🎯 **M4（阶段 6 末）** ✅：脱离 `pnpm dev`，bin 可分发，进入二期准备
 
 ### 7.2 阶段 7 二期范围
 
