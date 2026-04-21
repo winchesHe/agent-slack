@@ -45,10 +45,6 @@ agent-slack start           # 启动（前台阻塞）
 
 所有命令支持 `--cwd <dir>` 显式指定 workspace 目录。
 
-## 架构 / 贡献
-
-详见 [docs/superpowers/specs/2026-04-17-agent-slack-architecture-design.md](docs/superpowers/specs/2026-04-17-agent-slack-architecture-design.md)。
-
 ---
 
 ## Project Structure
