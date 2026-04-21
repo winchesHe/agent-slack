@@ -70,7 +70,10 @@ describe('loadWorkspaceContext', () => {
     expect(ctx.systemPrompt).toContain('### tone')
     expect(ctx.systemPrompt).toContain('控制语气')
     expect(ctx.systemPrompt).toContain('当需要特定语气时')
-    expect(ctx.systemPrompt).toContain('使用正式书面语')
+    // skill 全文内容不应出现在 system prompt，只保留元数据索引
+    expect(ctx.systemPrompt).not.toContain('使用正式书面语')
+    expect(ctx.systemPrompt).toContain('Source:')
+    expect(ctx.systemPrompt).toContain('SKILL.md')
     expect(ctx.systemPrompt).toContain('Base system prompt')
   })
 

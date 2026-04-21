@@ -40,6 +40,8 @@ export function bashTool(ctx: ToolContext) {
       timeout_ms: z.number().int().positive().max(MAX_TIMEOUT).optional(),
     }),
     async execute({ cmd, timeout_ms }): Promise<BashResult> {
+      const log = ctx.logger.withTag('bash')
+      log.info(`执行命令: ${cmd}`)
       const timeout = timeout_ms ?? DEFAULT_TIMEOUT
       return await new Promise<BashResult>((resolve) => {
         const child = spawn('bash', ['-c', cmd], { cwd: ctx.cwd })
