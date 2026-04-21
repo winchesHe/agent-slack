@@ -1,4 +1,5 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
+import { createAnthropic } from '@ai-sdk/anthropic'
 import type { LanguageModel } from 'ai'
 import { loadWorkspaceContext } from '@/workspace/WorkspaceContext.ts'
 import { loadWorkspaceEnv } from '@/workspace/loadEnv.ts'
@@ -176,9 +177,20 @@ function buildProviderRuntime(
       providerNameForOptions: env.providerName,
     }
   }
+  if (provider === 'anthropic' && env.provider === 'anthropic') {
+    const p = createAnthropic({
+      apiKey: env.anthropicApiKey,
+      ...(env.anthropicBaseUrl ? { baseURL: env.anthropicBaseUrl } : {}),
+    })
+    return {
+      model: p.languageModel(modelName),
+      modelName,
+      providerNameForOptions: undefined,
+    }
+  }
   throw new ConfigError(
-    'agent.provider=anthropic 暂未实装，P3 阶段接入',
-    '临时改 config.yaml 的 agent.provider 为 litellm 或等待 P3',
+    `provider 装配不一致：config=${provider}, env=${env.provider}`,
+    '这是内部错误；请检查 config.yaml 与 env 是否一致',
   )
 }
 

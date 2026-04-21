@@ -47,6 +47,50 @@ agent-slack start           # 启动（前台阻塞）
 
 ---
 
+## Provider 切换（LiteLLM / Anthropic）
+
+一期支持两种模型 provider，**启动时选定**（运行期不切换）：
+
+| Provider | 底层 | 必填 env | 适用 |
+| --- | --- | --- | --- |
+| `litellm`（默认） | LiteLLM OpenAI-compatible 网关 | `LITELLM_BASE_URL` / `LITELLM_API_KEY` | 多模型聚合、自建网关 |
+| `anthropic` | Anthropic Messages API | `ANTHROPIC_API_KEY`（可选 `ANTHROPIC_BASE_URL`） | 直连 Anthropic / 自建 Claude 网关 |
+
+**行为配置走 `config.yaml`**（方案 A：config 单一权威）：
+
+```yaml
+agent:
+  name: default
+  model: claude-sonnet-4-5      # provider 对应的模型 ID
+  provider: anthropic           # litellm | anthropic
+  maxSteps: 20
+```
+
+**凭证 / URL / debug 走 `.env.local`**：
+
+```dotenv
+# Slack（必填）
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_APP_TOKEN=xapp-...
+SLACK_SIGNING_SECRET=...
+
+# LiteLLM（provider=litellm 时必填）
+LITELLM_BASE_URL=http://localhost:4000
+LITELLM_API_KEY=sk-...
+
+# Anthropic（provider=anthropic 时必填）
+ANTHROPIC_API_KEY=sk-ant-...
+# ANTHROPIC_BASE_URL=https://api.anthropic.com/v1   # 可选：自建网关
+
+LOG_LEVEL=info
+```
+
+**切换步骤**：编辑 `.agent-slack/config.yaml` 的 `agent.provider` + 对应 `agent.model`，补齐 `.env.local` 凭证，重启进程。`agent-slack onboard` 在交互流程中会直接问一次 provider 并把选择写入 config.yaml。
+
+> **不支持**：运行期多 provider 并存 / per-session 切换 / Claude Agent SDK / OpenAI Responses API（后续 spec 评估）。
+
+---
+
 ## Project Structure
 
 ```

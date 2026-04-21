@@ -1,7 +1,7 @@
 # Agent Provider 适配：Claude（Anthropic）接入
 
 **日期**：2026-04-21
-**状态**：待 review
+**状态**：已实装（P1-P3 完成；P4.2/P4.4 文档收尾同步）
 **关联**：
 - 继承 [`2026-04-17-agent-slack-architecture-design.md`](./2026-04-17-agent-slack-architecture-design.md) §2.1 分层、§2.2 `AgentExecutor` 抽象
 - 粗粒度事件以 [`2026-04-19-slack-render-flow-redesign.md`](./2026-04-19-slack-render-flow-redesign.md) §2 为准

@@ -23,6 +23,9 @@ const mocks = vi.hoisted(() => {
     createOpenAICompatible: vi.fn(() => ({
       chatModel: vi.fn((modelName: string) => ({ modelName })),
     })),
+    createAnthropic: vi.fn(() => ({
+      languageModel: vi.fn((modelName: string) => ({ modelName, provider: 'anthropic' })),
+    })),
     loadWorkspaceContext: vi.fn(async () => ({
       cwd: '/mock-workspace',
       paths: {
@@ -74,6 +77,10 @@ const mocks = vi.hoisted(() => {
 
 vi.mock('@ai-sdk/openai-compatible', () => ({
   createOpenAICompatible: mocks.createOpenAICompatible,
+}))
+
+vi.mock('@ai-sdk/anthropic', () => ({
+  createAnthropic: mocks.createAnthropic,
 }))
 
 vi.mock('@/workspace/WorkspaceContext.ts', () => ({
@@ -177,16 +184,39 @@ describe('createApplication', () => {
     })
   })
 
-  it('config.agent.provider=anthropic → 抛 ConfigError 文案含"暂未实装"', async () => {
+  it('config.agent.provider=anthropic → 调用 createAnthropic（含 apiKey，无 baseURL）', async () => {
     process.env.ANTHROPIC_API_KEY = 'sk-ant-xxx'
     mocks.loadWorkspaceContext.mockResolvedValueOnce({
       cwd: '/mock-workspace',
       paths: { rootDir: '/mock-workspace/.agent-slack' },
-      config: { agent: { model: 'test-model', maxSteps: 8, provider: 'anthropic' as const } },
+      config: {
+        agent: { model: 'claude-sonnet-4-5', maxSteps: 8, provider: 'anthropic' as const },
+      },
       systemPrompt: 'system prompt',
       skills: [],
     })
-    await expect(createApplication({ workspaceDir: '/workspace' })).rejects.toThrow(/暂未实装/)
+    await createApplication({ workspaceDir: '/workspace' })
+    expect(mocks.createAnthropic).toHaveBeenCalledWith({ apiKey: 'sk-ant-xxx' })
+    expect(mocks.createOpenAICompatible).not.toHaveBeenCalled()
+  })
+
+  it('config.agent.provider=anthropic + ANTHROPIC_BASE_URL → createAnthropic 收到 baseURL', async () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-xxx'
+    process.env.ANTHROPIC_BASE_URL = 'https://gateway.example.com/v1'
+    mocks.loadWorkspaceContext.mockResolvedValueOnce({
+      cwd: '/mock-workspace',
+      paths: { rootDir: '/mock-workspace/.agent-slack' },
+      config: {
+        agent: { model: 'claude-sonnet-4-5', maxSteps: 8, provider: 'anthropic' as const },
+      },
+      systemPrompt: 'system prompt',
+      skills: [],
+    })
+    await createApplication({ workspaceDir: '/workspace' })
+    expect(mocks.createAnthropic).toHaveBeenCalledWith({
+      apiKey: 'sk-ant-xxx',
+      baseURL: 'https://gateway.example.com/v1',
+    })
   })
 
   it('config.agent.provider=anthropic 缺 ANTHROPIC_API_KEY → 抛 ConfigError', async () => {

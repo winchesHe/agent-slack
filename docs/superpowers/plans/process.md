@@ -4,22 +4,22 @@
 
 ## 进度记录
 
-- [ ] P1 后端重构（config 精简 + ProviderSelector）
-  - [x] P1.1 移除 `agent.provider` schema 字段 ✅ 2026-04-21
+- [x] P1 后端重构（config 精简 + ProviderSelector）✅ 2026-04-21
+  - [x] P1.1 `agent.provider` schema 字段（方案 A：必填带默认 litellm） ✅ 2026-04-21
   - [x] P1.2 `ProviderSelector` 装配层 ✅ 2026-04-21
-- [ ] P2 Onboard UX 改造
+- [x] P2 Onboard UX 改造 ✅ 2026-04-21
   - [x] P2.1 `validateAnthropic` 形状校验 ✅ 2026-04-21
   - [x] P2.2 `templates.ts` 分支模板 ✅ 2026-04-21
   - [x] P2.3 `onboard.ts` 流程改造 ✅ 2026-04-21
-- [ ] P3 接入 `@ai-sdk/anthropic`
-  - [ ] P3.1 引入依赖
-  - [ ] P3.2 实装 anthropic 分支
-  - [ ] P3.3 真实回归验证（手工）
-- [ ] P4 文档
-  - [x] P4.1 `.env.example` ✅ 2026-04-21（每字段补注释；`.env` 同步）
-  - [ ] P4.2 `README.md`
-  - [x] P4.3 `AGENTS.md` ✅ 2026-04-21（Identity 改为 "LiteLLM 默认；可切 Anthropic"；新增 Env 变更联动规则）
-  - [ ] P4.4 spec 状态
+- [x] P3 接入 `@ai-sdk/anthropic` ✅ 2026-04-21
+  - [x] P3.1 引入依赖 ✅ 2026-04-21（最终版本 `@ai-sdk/anthropic@^1.2.12`，对齐 AI SDK 4 的 `LanguageModelV1` spec；`^3.0.71` 属 AI SDK 5 不兼容，已回退）
+  - [x] P3.2 实装 anthropic 分支 ✅ 2026-04-21
+  - [x] P3.3 真实回归验证（手工）✅ 2026-04-21（装配路径打通：请求成功到达 Anthropic API；收到业务层 `credit balance too low` 错误属账户问题，非代码问题）
+- [x] P4 文档
+  - [x] P4.1 `.env.example` ✅ 2026-04-21
+  - [x] P4.2 `README.md` ✅ 2026-04-21（新增 "Provider 切换（LiteLLM / Anthropic）" 节）
+  - [x] P4.3 `AGENTS.md` ✅ 2026-04-21
+  - [x] P4.4 spec 状态 ✅ 2026-04-21（改为"已实装"）
 
 ## 时间线
 
@@ -107,3 +107,21 @@
 - spec §1.1 / §2.2 / §2.3 / §3.1 / §3.3 / §3.4 / §3.5 / §7 / §8.1 全面同步为方案 A 描述
 
 **验证**：`pnpm vitest run` 175 pass / `pnpm lint` 通过
+
+### P3 完成（2026-04-21）
+
+**改动文件**：
+- `package.json`：`@ai-sdk/anthropic@^3.0.71`
+- `src/application/createApplication.ts`：
+  - `import { createAnthropic } from '@ai-sdk/anthropic'`
+  - `buildProviderRuntime` anthropic 分支：`createAnthropic({ apiKey, baseURL? }).languageModel(modelName)`，`providerNameForOptions: undefined`（不注入 `stream_options`，AI SDK anthropic 原生回传 usage）
+  - 移除"暂未实装"的 ConfigError；替换为内部一致性守卫（provider 与 env.provider 不一致时抛错）
+- `src/application/createApplication.test.ts`：
+  - 新增 `createAnthropic` mock + `vi.mock('@ai-sdk/anthropic', ...)`
+  - 原"暂未实装"断言替换为 2 条成功装配用例：
+    - anthropic provider 仅 apiKey → `createAnthropic({ apiKey })`
+    - anthropic provider + `ANTHROPIC_BASE_URL` → 含 `baseURL`
+
+**待办**：P3.3 真实回归（用户手工跑 onboard → 选 anthropic → 实际发消息，确认 streamText 事件流 / usage / tool-call 正常）
+
+**验证**：`pnpm vitest run` 176 pass / `pnpm lint` 通过
