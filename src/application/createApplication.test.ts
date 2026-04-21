@@ -129,6 +129,9 @@ describe('createApplication', () => {
       LITELLM_API_KEY: 'litellm-key',
       LOG_LEVEL: 'info',
     }
+    delete process.env.AGENT_PROVIDER
+    delete process.env.ANTHROPIC_API_KEY
+    delete process.env.ANTHROPIC_BASE_URL
   })
 
   afterEach(() => {
@@ -162,5 +165,32 @@ describe('createApplication', () => {
     await app.stop()
     expect(mocks.slackAdapter.start).toHaveBeenCalledTimes(1)
     expect(mocks.slackAdapter.stop).toHaveBeenCalledTimes(1)
+  })
+
+  it('AGENT_PROVIDER 未设 → 走 litellm 分支并调用 createOpenAICompatible', async () => {
+    await createApplication({ workspaceDir: '/workspace' })
+    expect(mocks.createOpenAICompatible).toHaveBeenCalledWith({
+      baseURL: 'https://litellm.example.com',
+      apiKey: 'litellm-key',
+      name: 'litellm',
+    })
+  })
+
+  it('AGENT_PROVIDER=anthropic → 抛 ConfigError 文案含"暂未实装"', async () => {
+    process.env.AGENT_PROVIDER = 'anthropic'
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-xxx'
+    await expect(createApplication({ workspaceDir: '/workspace' })).rejects.toThrow(/暂未实装/)
+  })
+
+  it('AGENT_PROVIDER=anthropic 缺 ANTHROPIC_API_KEY → 抛 ConfigError', async () => {
+    process.env.AGENT_PROVIDER = 'anthropic'
+    await expect(createApplication({ workspaceDir: '/workspace' })).rejects.toThrow(
+      /ANTHROPIC_API_KEY/,
+    )
+  })
+
+  it('AGENT_PROVIDER=foo → 抛 ConfigError 文案含"非法 provider"', async () => {
+    process.env.AGENT_PROVIDER = 'foo'
+    await expect(createApplication({ workspaceDir: '/workspace' })).rejects.toThrow(/非法 provider/)
   })
 })

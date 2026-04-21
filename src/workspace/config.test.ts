@@ -16,4 +16,10 @@ describe('parseConfig', () => {
   it('未知 provider 报错', () => {
     expect(() => parseConfig({ im: { provider: 'discord' } })).toThrow()
   })
+
+  it('向后兼容：旧 config 里的 agent.provider 字段被静默忽略', () => {
+    const cfg = parseConfig({ agent: { provider: 'litellm', model: 'x' } })
+    expect(cfg.agent.model).toBe('x')
+    expect('provider' in cfg.agent).toBe(false)
+  })
 })

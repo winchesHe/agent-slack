@@ -1,4 +1,5 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
+import type { LanguageModel } from 'ai'
 import { loadWorkspaceContext } from '@/workspace/WorkspaceContext.ts'
 import { loadWorkspaceEnv } from '@/workspace/loadEnv.ts'
 import { createSessionStore } from '@/store/SessionStore.ts'
@@ -17,30 +18,34 @@ import type { Application } from './types.ts'
 
 type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error'
 
+export type AgentProvider = 'litellm' | 'anthropic'
+
 export interface CreateApplicationArgs {
   workspaceDir: string
 }
 
 export async function createApplication(args: CreateApplicationArgs): Promise<Application> {
   loadWorkspaceEnv({ workspaceDir: args.workspaceDir })
-  // 需要先创建 logger 才能传给 loadWorkspaceContext
-  const env = {
-    slackBotToken: requireEnv('SLACK_BOT_TOKEN'),
-    slackAppToken: requireEnv('SLACK_APP_TOKEN'),
-    slackSigningSecret: requireEnv('SLACK_SIGNING_SECRET'),
-    litellmBaseUrl: requireEnv('LITELLM_BASE_URL'),
-    litellmApiKey: requireEnv('LITELLM_API_KEY'),
-    logLevel: parseLogLevel(process.env.LOG_LEVEL),
-    providerName: process.env.PROVIDER_NAME ?? 'litellm',
-  }
+
+  const provider = selectProvider()
+
+  // 通用凭证
+  const slackBotToken = requireEnv('SLACK_BOT_TOKEN')
+  const slackAppToken = requireEnv('SLACK_APP_TOKEN')
+  const slackSigningSecret = requireEnv('SLACK_SIGNING_SECRET')
+  const logLevel = parseLogLevel(process.env.LOG_LEVEL)
+
+  // 分支凭证
+  const providerEnv = loadProviderEnv(provider)
 
   const redactor = createRedactor([
-    env.slackBotToken,
-    env.slackAppToken,
-    env.slackSigningSecret,
-    env.litellmApiKey,
+    slackBotToken,
+    slackAppToken,
+    slackSigningSecret,
+    ...providerEnv.secrets,
   ])
-  const logger = createLogger({ level: env.logLevel, redactor })
+  const logger = createLogger({ level: logLevel, redactor })
+  logger.withTag('agent').info(`provider=${provider}`)
 
   const ctx = await loadWorkspaceContext(args.workspaceDir, logger)
 
@@ -49,27 +54,22 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
   const runQueue = new SessionRunQueue()
   const abortRegistry = new AbortRegistry<string>()
 
-  const provider = createOpenAICompatible({
-    baseURL: env.litellmBaseUrl,
-    apiKey: env.litellmApiKey,
-    name: env.providerName,
-  })
-
   const modelName = process.env.AGENT_MODEL ?? ctx.config.agent.model
-  const model = provider.chatModel(modelName)
+  const runtime = buildProviderRuntime(provider, providerEnv, modelName)
 
-  // tools per-handle 构造，将 currentUser 闭包注入
   const toolsBuilder = (currentUser: { userName: string; userId: string }) =>
     buildBuiltinTools({ cwd: ctx.cwd, logger, currentUser }, { memoryStore })
 
   const executorFactory = (tools: ReturnType<typeof toolsBuilder>) =>
     createAiSdkExecutor({
-      model,
-      modelName,
+      model: runtime.model,
+      modelName: runtime.modelName,
       tools,
       maxSteps: ctx.config.agent.maxSteps,
       logger,
-      providerName: env.providerName,
+      ...(runtime.providerNameForOptions
+        ? { providerName: runtime.providerNameForOptions }
+        : {}),
     })
 
   const orchestrator = createConversationOrchestrator({
@@ -91,9 +91,9 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
     runQueue,
     renderer,
     logger,
-    botToken: env.slackBotToken,
-    appToken: env.slackAppToken,
-    signingSecret: env.slackSigningSecret,
+    botToken: slackBotToken,
+    appToken: slackAppToken,
+    signingSecret: slackSigningSecret,
   })
 
   return {
@@ -106,6 +106,83 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
       for (const a of [slack]) await a.stop()
     },
   }
+}
+
+export function selectProvider(): AgentProvider {
+  const raw = process.env.AGENT_PROVIDER
+  if (!raw || raw.trim() === '') return 'litellm'
+  const v = raw.trim().toLowerCase()
+  if (v === 'litellm' || v === 'anthropic') return v
+  throw new ConfigError(
+    `非法 provider: AGENT_PROVIDER=${raw}`,
+    '可选值为 litellm（默认）或 anthropic',
+  )
+}
+
+type ProviderEnv =
+  | {
+      provider: 'litellm'
+      litellmBaseUrl: string
+      litellmApiKey: string
+      providerName: string
+      secrets: string[]
+    }
+  | {
+      provider: 'anthropic'
+      anthropicApiKey: string
+      anthropicBaseUrl?: string
+      secrets: string[]
+    }
+
+function loadProviderEnv(provider: AgentProvider): ProviderEnv {
+  if (provider === 'litellm') {
+    const litellmBaseUrl = requireEnv('LITELLM_BASE_URL')
+    const litellmApiKey = requireEnv('LITELLM_API_KEY')
+    return {
+      provider: 'litellm',
+      litellmBaseUrl,
+      litellmApiKey,
+      providerName: process.env.PROVIDER_NAME ?? 'litellm',
+      secrets: [litellmApiKey],
+    }
+  }
+  const anthropicApiKey = requireEnv('ANTHROPIC_API_KEY')
+  const anthropicBaseUrl = process.env.ANTHROPIC_BASE_URL?.trim() || undefined
+  return {
+    provider: 'anthropic',
+    anthropicApiKey,
+    ...(anthropicBaseUrl ? { anthropicBaseUrl } : {}),
+    secrets: [anthropicApiKey],
+  }
+}
+
+interface ProviderRuntime {
+  model: LanguageModel
+  modelName: string
+  providerNameForOptions: string | undefined
+}
+
+function buildProviderRuntime(
+  provider: AgentProvider,
+  env: ProviderEnv,
+  modelName: string,
+): ProviderRuntime {
+  if (provider === 'litellm' && env.provider === 'litellm') {
+    const p = createOpenAICompatible({
+      baseURL: env.litellmBaseUrl,
+      apiKey: env.litellmApiKey,
+      name: env.providerName,
+    })
+    return {
+      model: p.chatModel(modelName),
+      modelName,
+      providerNameForOptions: env.providerName,
+    }
+  }
+  throw new ConfigError(
+    'AGENT_PROVIDER=anthropic 暂未实装，P3 阶段接入',
+    '临时改用 litellm 或等待 P3',
+  )
 }
 
 function requireEnv(key: string): string {
