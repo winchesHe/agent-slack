@@ -97,6 +97,7 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
 
   return {
     adapters: [slack],
+    abortRegistry,
     async start() {
       for (const a of [slack]) await a.start()
     },
