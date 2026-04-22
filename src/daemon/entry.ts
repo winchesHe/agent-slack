@@ -1,6 +1,6 @@
-// daemon 子进程入口：D1 最小实现
-// 启动 createApplication，写 daemon.json，响应信号优雅退出，退出时清理 daemon.json
-// D2 会在此基础上加 dashboard server / /api/daemon/* 路由
+// daemon 子进程入口：D2 实现
+// 启动 createApplication + dashboard HTTP server（含 /api/daemon/*）
+// 写 daemon.json（含真实监听端口），响应信号优雅退出
 import { consola } from 'consola'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
@@ -9,6 +9,7 @@ import { resolveWorkspacePaths } from '@/workspace/paths.ts'
 import { loadWorkspaceContext } from '@/workspace/WorkspaceContext.ts'
 import { createLogger } from '@/logger/logger.ts'
 import { createRedactor } from '@/logger/redactor.ts'
+import { startDashboardServer, type DashboardServer } from '@/dashboard/server.ts'
 import {
   clearDaemonMeta,
   ensureDaemonDir,
@@ -26,24 +27,43 @@ export async function runDaemonEntry(opts: { cwd: string }): Promise<void> {
     process.exit(1)
   }
 
-  // 提前读 config 获取 daemon.host / port（用于写入 daemon.json）
-  // 若 D2 起 HTTP server 在此 host:port 上监听
-  const tmpLogger = createLogger({ level: 'warn', redactor: createRedactor([]) })
-  const ctx = await loadWorkspaceContext(opts.cwd, tmpLogger)
+  // 提前读 config 获取 daemon.host / port
+  const bootstrapLogger = createLogger({ level: 'warn', redactor: createRedactor([]) })
+  const ctx = await loadWorkspaceContext(opts.cwd, bootstrapLogger)
   const host = ctx.config.daemon.host
   const port = ctx.config.daemon.port
 
   const app = await createApplication({ workspaceDir: opts.cwd })
 
-  // D1 阶段尚未起 HTTP server；url 先按 config 值写入，D2 会校准为实际监听端口
-  const url = `http://${host}:${port}`
+  const startedAt = new Date().toISOString()
+  // 启动统一的 HTTP server（dashboard + /api/daemon/*）
+  let server: DashboardServer
+  try {
+    server = await startDashboardServer({
+      cwd: opts.cwd,
+      host,
+      port,
+      logger: bootstrapLogger,
+      daemon: {
+        app,
+        startedAt,
+        version: pkg.version,
+        cwd: path.resolve(opts.cwd),
+      },
+    })
+  } catch (err) {
+    consola.error(`daemon 启动 HTTP server 失败：${(err as Error).message}`)
+    // 启动失败直接退出，不留残留 meta
+    process.exit(1)
+  }
+
   const meta: DaemonMeta = {
     pid: process.pid,
-    port,
-    host,
-    url,
-    dashboardUrl: url,
-    startedAt: new Date().toISOString(),
+    port: server.port,
+    host: server.host,
+    url: server.url,
+    dashboardUrl: server.url,
+    startedAt,
     version: pkg.version,
     cwd: path.resolve(opts.cwd),
   }
@@ -51,7 +71,7 @@ export async function runDaemonEntry(opts: { cwd: string }): Promise<void> {
   await writeDaemonMeta(paths, meta)
 
   await app.start()
-  consola.success(`agent-slack daemon 已启动 pid=${process.pid} cwd=${opts.cwd}`)
+  consola.success(`agent-slack daemon 已启动 pid=${process.pid} url=${server.url}`)
 
   let shuttingDown = false
   const shutdown = async (signal: string): Promise<void> => {
@@ -59,6 +79,7 @@ export async function runDaemonEntry(opts: { cwd: string }): Promise<void> {
     shuttingDown = true
     consola.info(`daemon 收到 ${signal}，正在关闭…`)
     try {
+      await server.stop().catch(() => {})
       await app.stop()
       app.abortRegistry.abortAll('shutdown')
     } finally {

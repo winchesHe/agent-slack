@@ -34,4 +34,12 @@ export class AbortRegistry<Key extends string = string> {
     }
     this.controllers.clear()
   }
+
+  keys(): Key[] {
+    return Array.from(this.controllers.keys())
+  }
+
+  size(): number {
+    return this.controllers.size
+  }
 }

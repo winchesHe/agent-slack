@@ -7,16 +7,21 @@ import { URL } from 'node:url'
 import type { Logger } from '@/logger/logger.ts'
 import { createDashboardApi, type DashboardApi } from './api.ts'
 import { renderIndexHtml } from './ui.ts'
+import { handleDaemonRoute, type DaemonContext } from '@/daemon/routes.ts'
 
 export interface DashboardServerOptions {
   cwd: string
   host?: string
   port?: number
   logger: Logger
+  // daemon 模式：提供 app 实例后挂载 /api/daemon/* 路由
+  daemon?: DaemonContext
 }
 
 export interface DashboardServer {
   url: string
+  host: string
+  port: number
   api: DashboardApi
   stop(): Promise<void>
 }
@@ -26,9 +31,10 @@ export async function startDashboardServer(opts: DashboardServerOptions): Promis
   const port = opts.port ?? 0 // 0 = 让 OS 挑一个空闲端口，避免端口冲突
   const log = opts.logger.withTag('dashboard-http')
   const api = createDashboardApi(opts.cwd, opts.logger)
+  const daemonCtx = opts.daemon
 
   const server = http.createServer((req, res) => {
-    void handle(req, res, api, log).catch((err) => {
+    void handle(req, res, api, log, daemonCtx).catch((err) => {
       log.error('handler 异常', err)
       if (!res.headersSent) {
         res.statusCode = 500
@@ -51,6 +57,8 @@ export async function startDashboardServer(opts: DashboardServerOptions): Promis
 
   return {
     url,
+    host,
+    port: actualPort,
     api,
     async stop() {
       await new Promise<void>((resolve) => {
@@ -65,6 +73,7 @@ async function handle(
   res: http.ServerResponse,
   api: DashboardApi,
   log: Logger,
+  daemonCtx: DaemonContext | undefined,
 ): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://localhost')
   const pathname = url.pathname
@@ -79,6 +88,12 @@ async function handle(
   const notFound = (): void => json({ error: 'not_found' }, 404)
 
   log.debug(`${req.method} ${pathname}`)
+
+  // --- daemon 控制路由（仅 daemon 模式挂载） ---
+  if (daemonCtx && pathname.startsWith('/api/daemon/')) {
+    const r = await handleDaemonRoute(req, pathname, daemonCtx)
+    if (r) return json(r.body, r.status)
+  }
 
   // --- 写操作（PUT / DELETE）：先处理，命中直接 return ---
   // 限制 body 最大 1 MB，避免占用大量内存
