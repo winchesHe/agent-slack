@@ -13,12 +13,13 @@ import { startDashboardServer, type DashboardServer } from '@/dashboard/server.t
 import {
   clearDaemonMeta,
   ensureDaemonDir,
+  readDashboardMeta,
   writeDaemonMeta,
   type DaemonMeta,
 } from '@/daemon/daemonFile.ts'
 import pkg from '../../package.json' with { type: 'json' }
 
-export async function runDaemonEntry(opts: { cwd: string }): Promise<void> {
+export async function runDaemonEntry(opts: { cwd: string; headless?: boolean }): Promise<void> {
   const paths = resolveWorkspacePaths(opts.cwd)
   const configDir = paths.root
   if (!existsSync(configDir)) {
@@ -36,7 +37,57 @@ export async function runDaemonEntry(opts: { cwd: string }): Promise<void> {
   const app = await createApplication({ workspaceDir: opts.cwd })
 
   const startedAt = new Date().toISOString()
-  // 启动统一的 HTTP server（dashboard + /api/daemon/*）
+
+  if (opts.headless) {
+    // headless 模式：不启动 HTTP server，从 dashboard.json 获取 dashboard URL
+    const dashboardMeta = await readDashboardMeta(paths)
+    const dashboardUrl = dashboardMeta?.url ?? `http://${host}:${port}`
+
+    const meta: DaemonMeta = {
+      pid: process.pid,
+      port: 0,
+      host,
+      url: '',
+      dashboardUrl,
+      startedAt,
+      version: pkg.version,
+      cwd: path.resolve(opts.cwd),
+      mode: 'headless',
+    }
+    await ensureDaemonDir(paths)
+    await writeDaemonMeta(paths, meta)
+
+    await app.start()
+    consola.success(`agent-slack daemon 已启动 (headless) pid=${process.pid}`)
+
+    let shuttingDown = false
+    const shutdown = async (signal: string): Promise<void> => {
+      if (shuttingDown) return
+      shuttingDown = true
+      consola.info(`daemon 收到 ${signal}，正在关闭…`)
+      try {
+        await app.stop()
+        app.abortRegistry.abortAll('shutdown')
+      } finally {
+        await clearDaemonMeta(paths)
+        process.exit(0)
+      }
+    }
+    process.on('SIGINT', () => {
+      void shutdown('SIGINT')
+    })
+    process.on('SIGTERM', () => {
+      void shutdown('SIGTERM')
+    })
+    process.on('uncaughtException', async (err) => {
+      consola.error('daemon uncaughtException:', err)
+      await clearDaemonMeta(paths).catch(() => {})
+      process.exit(1)
+    })
+    return
+  }
+
+  // embedded 模式：启动统一的 HTTP server（dashboard + /api/daemon/*）
   let server: DashboardServer
   try {
     server = await startDashboardServer({
@@ -52,8 +103,14 @@ export async function runDaemonEntry(opts: { cwd: string }): Promise<void> {
       },
     })
   } catch (err) {
-    consola.error(`daemon 启动 HTTP server 失败：${(err as Error).message}`)
-    // 启动失败直接退出，不留残留 meta
+    const msg =
+      (err as NodeJS.ErrnoException).code === 'EADDRINUSE'
+        ? `daemon 启动失败：${host}:${port} 已被占用\n` +
+          `可能是上次 daemon 进程未正常退出；请运行：\n` +
+          `  lsof -i :${port} -P -n | awk 'NR>1{print $2}' | xargs kill\n` +
+          `或在 .agent-slack/config.yaml 修改 daemon.port 后重试`
+        : `daemon 启动 HTTP server 失败：${(err as Error).message}`
+    consola.error(msg)
     process.exit(1)
   }
 
@@ -66,6 +123,7 @@ export async function runDaemonEntry(opts: { cwd: string }): Promise<void> {
     startedAt,
     version: pkg.version,
     cwd: path.resolve(opts.cwd),
+    mode: 'embedded',
   }
   await ensureDaemonDir(paths)
   await writeDaemonMeta(paths, meta)

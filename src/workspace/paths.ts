@@ -14,6 +14,7 @@ export interface WorkspacePaths {
   daemonFile: string
   daemonPidFile: string
   daemonLockFile: string
+  dashboardFile: string
   globalRoot: string
   globalEnv: string
   globalConfig: string
@@ -36,6 +37,7 @@ export function resolveWorkspacePaths(cwd: string): WorkspacePaths {
     daemonFile: path.join(daemonDir, 'daemon.json'),
     daemonPidFile: path.join(daemonDir, 'daemon.pid'),
     daemonLockFile: path.join(daemonDir, 'daemon.lock'),
+    dashboardFile: path.join(daemonDir, 'dashboard.json'),
     globalRoot,
     globalEnv: path.join(globalRoot, '.env'),
     globalConfig: path.join(globalRoot, 'global.yaml'),

@@ -432,6 +432,7 @@ export function createDashboardApi(cwd: string, logger: Logger) {
         startedAt: string
         version: string
         cwd: string
+        mode: 'embedded' | 'headless'
       }
       live?: {
         uptimeMs: number
@@ -443,7 +444,7 @@ export function createDashboardApi(cwd: string, logger: Logger) {
       if (status.state === 'offline') {
         return {
           state: 'offline',
-          note: '未启动。使用 `agent-slack daemon start` 启动。',
+          note: '未启动。点击下方按钮或执行 `agent-slack daemon start` 启动。',
         }
       }
       if (status.state === 'stale') {
@@ -458,27 +459,32 @@ export function createDashboardApi(cwd: string, logger: Logger) {
             startedAt: status.meta.startedAt,
             version: status.meta.version,
             cwd: status.meta.cwd,
+            mode: status.meta.mode ?? 'embedded',
           },
-          note: 'daemon.json 存在但进程已不在；请执行 `agent-slack daemon stop` 清理。',
+          note: 'daemon.json 存在但进程已不在；点击"清理并启动"或执行 `agent-slack daemon stop` 清理。',
         }
       }
 
-      // running：尝试 fetch /api/daemon/state（2s 超时）
+      const mode = status.meta.mode ?? 'embedded'
+
+      // running 且 embedded 模式：尝试 fetch /api/daemon/state（2s 超时）
       let live: { uptimeMs: number; inflight: { count: number; keys: string[] } } | undefined
-      try {
-        const ctrl = new AbortController()
-        const to = setTimeout(() => ctrl.abort(), 2000)
-        const resp = await fetch(`${status.meta.url}/api/daemon/state`, { signal: ctrl.signal })
-        clearTimeout(to)
-        if (resp.ok) {
-          const js = (await resp.json()) as {
-            uptimeMs: number
-            inflight: { count: number; keys: string[] }
+      if (mode === 'embedded' && status.meta.url) {
+        try {
+          const ctrl = new AbortController()
+          const to = setTimeout(() => ctrl.abort(), 2000)
+          const resp = await fetch(`${status.meta.url}/api/daemon/state`, { signal: ctrl.signal })
+          clearTimeout(to)
+          if (resp.ok) {
+            const js = (await resp.json()) as {
+              uptimeMs: number
+              inflight: { count: number; keys: string[] }
+            }
+            live = { uptimeMs: js.uptimeMs, inflight: js.inflight }
           }
-          live = { uptimeMs: js.uptimeMs, inflight: js.inflight }
+        } catch {
+          // fetch 失败就不返回 live，UI 自己按 offline-ish 处理
         }
-      } catch {
-        // fetch 失败就不返回 live，UI 自己按 offline-ish 处理
       }
 
       const result: {
@@ -492,6 +498,7 @@ export function createDashboardApi(cwd: string, logger: Logger) {
           startedAt: string
           version: string
           cwd: string
+          mode: 'embedded' | 'headless'
         }
         live?: { uptimeMs: number; inflight: { count: number; keys: string[] } }
       } = {
@@ -505,6 +512,7 @@ export function createDashboardApi(cwd: string, logger: Logger) {
           startedAt: status.meta.startedAt,
           version: status.meta.version,
           cwd: status.meta.cwd,
+          mode,
         },
       }
       if (live) result.live = live

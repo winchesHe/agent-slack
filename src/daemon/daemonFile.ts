@@ -14,6 +14,7 @@ export interface DaemonMeta {
   startedAt: string
   version: string
   cwd: string
+  mode: 'embedded' | 'headless'
 }
 
 export async function ensureDaemonDir(paths: WorkspacePaths): Promise<void> {
@@ -40,6 +41,38 @@ export async function clearDaemonMeta(paths: WorkspacePaths): Promise<void> {
   for (const f of [paths.daemonFile, paths.daemonPidFile, paths.daemonLockFile]) {
     if (existsSync(f)) await rm(f, { force: true })
   }
+}
+
+// dashboard.json 读写与清理
+export interface DashboardMeta {
+  pid: number
+  port: number
+  host: string
+  url: string
+  startedAt: string
+  cwd: string
+}
+
+export async function readDashboardMeta(paths: WorkspacePaths): Promise<DashboardMeta | null> {
+  if (!existsSync(paths.dashboardFile)) return null
+  try {
+    const raw = await readFile(paths.dashboardFile, 'utf8')
+    return JSON.parse(raw) as DashboardMeta
+  } catch {
+    return null
+  }
+}
+
+export async function writeDashboardMeta(
+  paths: WorkspacePaths,
+  meta: DashboardMeta,
+): Promise<void> {
+  await ensureDaemonDir(paths)
+  await writeFile(paths.dashboardFile, JSON.stringify(meta, null, 2), 'utf8')
+}
+
+export async function clearDashboardMeta(paths: WorkspacePaths): Promise<void> {
+  if (existsSync(paths.dashboardFile)) await rm(paths.dashboardFile, { force: true })
 }
 
 // 判断 pid 对应进程是否还活着（kill 0 不发信号只检查）

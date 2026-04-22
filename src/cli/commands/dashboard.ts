@@ -7,6 +7,9 @@ import { startDashboardServer } from '@/dashboard/server.ts'
 import { createLogger } from '@/logger/logger.ts'
 import { createRedactor } from '@/logger/redactor.ts'
 import { loadWorkspaceEnv } from '@/workspace/loadEnv.ts'
+import { resolveWorkspacePaths } from '@/workspace/paths.ts'
+import { loadWorkspaceContext } from '@/workspace/WorkspaceContext.ts'
+import { ensureDaemonDir, writeDashboardMeta, clearDashboardMeta } from '@/daemon/daemonFile.ts'
 
 export interface DashboardOpts {
   cwd: string
@@ -17,6 +20,13 @@ export interface DashboardOpts {
 
 export async function dashboardCommand(opts: DashboardOpts): Promise<void> {
   loadWorkspaceEnv({ workspaceDir: opts.cwd })
+
+  // 读取配置获取 daemon 端口，standalone dashboard 默认使用相同端口
+  const bootstrapLogger = createLogger({ level: 'warn', redactor: createRedactor([]) })
+  const ctx = await loadWorkspaceContext(opts.cwd, bootstrapLogger)
+  const defaultPort = ctx.config.daemon.port
+
+  const paths = resolveWorkspacePaths(opts.cwd)
 
   const configDir = path.join(opts.cwd, '.agent-slack')
   if (!existsSync(configDir)) {
@@ -40,25 +50,40 @@ export async function dashboardCommand(opts: DashboardOpts): Promise<void> {
 
   const server = await startDashboardServer({
     cwd: opts.cwd,
-    host: opts.host ?? '127.0.0.1',
-    ...(opts.port !== undefined ? { port: opts.port } : {}),
+    host: opts.host ?? ctx.config.daemon.host,
+    port: opts.port !== undefined && opts.port !== 0 ? opts.port : defaultPort,
     logger,
+  })
+
+  // 写 dashboard.json，供 daemon 检测
+  await ensureDaemonDir(paths)
+  await writeDashboardMeta(paths, {
+    pid: process.pid,
+    port: server.port,
+    host: server.host,
+    url: server.url,
+    startedAt: new Date().toISOString(),
+    cwd: path.resolve(opts.cwd),
   })
 
   consola.success(`dashboard running at ${server.url}`)
   consola.info('Ctrl+C 退出')
 
   if (opts.open) openInBrowser(server.url)
+  let shuttingDown = false
 
   const shutdown = async (signal: string): Promise<void> => {
+    if (shuttingDown) return
+    shuttingDown = true
     consola.info(`收到 ${signal}，关闭 dashboard…`)
     await server.stop()
+    await clearDashboardMeta(paths).catch(() => {})
     process.exit(0)
   }
-  process.on('SIGINT', () => {
+  process.once('SIGINT', () => {
     void shutdown('SIGINT')
   })
-  process.on('SIGTERM', () => {
+  process.once('SIGTERM', () => {
     void shutdown('SIGTERM')
   })
 }

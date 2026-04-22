@@ -447,28 +447,55 @@ const views = {
 
     // offline / stale 状态
     if (d.state === 'offline') {
+      const startMsg = el('div', { style: 'margin-top:8px;' })
+      const startBtn = el('button', { onclick: async () => {
+        startBtn.disabled = true
+        startMsg.textContent = '正在启动 daemon…'; startMsg.className = 'muted'
+        try {
+          const r = await fetch('/api/daemon/start', { method: 'POST' })
+          const js = await r.json()
+          if (!r.ok || !js.ok) throw new Error(js.error || 'HTTP ' + r.status)
+          startMsg.textContent = '已启动 pid=' + js.pid; startMsg.className = 'pill ok'
+          setTimeout(render, 1000)
+        } catch (err) {
+          startMsg.textContent = '启动失败：' + (err.message || err); startMsg.className = 'err-box'
+          startBtn.disabled = false
+        }
+      }}, '启动 Daemon')
       return el('section', {}, [
         el('h2', {}, 'Daemon'),
         el('div', {}, pill('offline', 'warn')),
         el('p', { class: 'muted', style: 'margin-top:10px;' }, d.note || '未启动'),
-        el('div', { class: 'card' }, [
-          el('div', { class: 'k' }, '如何启动'),
-          el('pre', { style: 'margin:6px 0 0;' }, 'agent-slack daemon start'),
-          el('div', { class: 'muted', style: 'margin-top:6px;' },
-            '启动后 daemon 会内建 dashboard（当前页面即可指向 daemon 的 URL）。'),
-        ]),
+        el('div', { class: 'actions' }, [startBtn]),
+        startMsg,
       ])
     }
     if (d.state === 'stale') {
+      const staleMsg = el('div', { style: 'margin-top:8px;' })
+      const cleanBtn = el('button', { onclick: async () => {
+        cleanBtn.disabled = true
+        staleMsg.textContent = '正在清理并启动…'; staleMsg.className = 'muted'
+        try {
+          // 先停止清理 stale
+          await fetch('/api/daemon/stop', { method: 'POST' })
+          // 再启动
+          const r = await fetch('/api/daemon/start', { method: 'POST' })
+          const js = await r.json()
+          if (!r.ok || !js.ok) throw new Error(js.error || 'HTTP ' + r.status)
+          staleMsg.textContent = '已启动 pid=' + js.pid; staleMsg.className = 'pill ok'
+          setTimeout(render, 1000)
+        } catch (err) {
+          staleMsg.textContent = '操作失败：' + (err.message || err); staleMsg.className = 'err-box'
+          cleanBtn.disabled = false
+        }
+      }}, '清理并启动 Daemon')
       return el('section', {}, [
         el('h2', {}, 'Daemon'),
         el('div', {}, pill('stale', 'err')),
         el('p', { class: 'muted' }, d.note || ''),
         el('pre', {}, JSON.stringify(d.meta, null, 2)),
-        el('div', { class: 'card' }, [
-          el('div', { class: 'k' }, '清理'),
-          el('pre', { style: 'margin:6px 0 0;' }, 'agent-slack daemon stop'),
-        ]),
+        el('div', { class: 'actions' }, [cleanBtn]),
+        staleMsg,
       ])
     }
 
@@ -484,6 +511,7 @@ const views = {
 
     const metaRow = el('div', { class: 'row' }, [
       el('div', { class: 'card' }, [el('div', { class: 'k' }, 'Status'), el('div', { class: 'v' }, pill('running', 'ok'))]),
+      el('div', { class: 'card' }, [el('div', { class: 'k' }, 'Mode'), el('div', { class: 'v small' }, meta.mode || 'embedded')]),
       el('div', { class: 'card' }, [el('div', { class: 'k' }, 'PID'), el('div', { class: 'v' }, String(meta.pid))]),
       el('div', { class: 'card' }, [el('div', { class: 'k' }, 'Uptime'), el('div', { class: 'v' }, live ? uptimeStr : '-')]),
       el('div', { class: 'card' }, [el('div', { class: 'k' }, 'Inflight'), el('div', { class: 'v' }, live ? String(live.inflight.count) : '-')]),

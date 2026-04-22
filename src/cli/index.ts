@@ -105,15 +105,17 @@ daemon
 
 daemon
   .command('logs')
-  .description('查看 daemon 日志（D4 实现）')
+  .description('查看 daemon 日志（末尾 N 行，-f 持续跟随）')
   .option('--cwd <dir>', 'workspace 目录', process.cwd())
-  .action(async (opts: { cwd: string }) => {
-    await daemonLogsCommand({ cwd: opts.cwd })
+  .option('-n, --tail <n>', '末尾行数', (v) => Number(v), 200)
+  .option('-f, --follow', '持续跟随（tail -f）', false)
+  .action(async (opts: { cwd: string; tail: number; follow: boolean }) => {
+    await daemonLogsCommand({ cwd: opts.cwd, tail: opts.tail, follow: opts.follow })
   })
 
 daemon
   .command('attach')
-  .description('连接 daemon 实时事件流（D4 实现）')
+  .description('连接 daemon 实时事件流（SSE），Ctrl+C 断开但 daemon 不停')
   .option('--cwd <dir>', 'workspace 目录', process.cwd())
   .action(async (opts: { cwd: string }) => {
     await daemonAttachCommand({ cwd: opts.cwd })
@@ -124,8 +126,9 @@ program
   .command('__daemon-run', { hidden: true })
   .description('（内部）daemon 子进程入口，勿直接使用')
   .option('--cwd <dir>', 'workspace 目录', process.cwd())
-  .action(async (opts: { cwd: string }) => {
-    await runDaemonEntry({ cwd: opts.cwd })
+  .option('--headless', '无头模式（不启动内建 dashboard）', false)
+  .action(async (opts: { cwd: string; headless: boolean }) => {
+    await runDaemonEntry({ cwd: opts.cwd, headless: opts.headless })
   })
 
 program.parseAsync().catch((err: unknown) => {
