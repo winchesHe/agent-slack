@@ -12,6 +12,7 @@ import type { Skill } from '@/workspace/WorkspaceContext.ts'
 import type { Logger } from '@/logger/logger.ts'
 import type { SessionMeta } from '@/store/SessionStore.ts'
 import { validateSlack } from '@/cli/validators.ts'
+import { readDaemonStatus } from '@/daemon/daemonFile.ts'
 
 export interface DashboardEnvStatus {
   hasSlackBotToken: boolean
@@ -419,12 +420,95 @@ export function createDashboardApi(cwd: string, logger: Logger) {
       return result
     },
 
-    // daemon 预留：后续由 daemon 写状态文件 / 暴露本地 socket 后，这里读其状态返回
-    async daemon(): Promise<{ status: 'unknown'; note: string }> {
-      return {
-        status: 'unknown',
-        note: 'daemon 模块尚未接入。后续由 daemon 写 .agent-slack/daemon/state.json 后在此聚合。',
+    // daemon 面板：读 daemon.json → 判 running/stale/offline → 若 running 尝试 fetch state
+    async daemon(): Promise<{
+      state: 'running' | 'stale' | 'offline'
+      meta?: {
+        pid: number
+        url: string
+        dashboardUrl: string
+        host: string
+        port: number
+        startedAt: string
+        version: string
+        cwd: string
       }
+      live?: {
+        uptimeMs: number
+        inflight: { count: number; keys: string[] }
+      }
+      note?: string
+    }> {
+      const status = await readDaemonStatus(paths)
+      if (status.state === 'offline') {
+        return {
+          state: 'offline',
+          note: '未启动。使用 `agent-slack daemon start` 启动。',
+        }
+      }
+      if (status.state === 'stale') {
+        return {
+          state: 'stale',
+          meta: {
+            pid: status.meta.pid,
+            url: status.meta.url,
+            dashboardUrl: status.meta.dashboardUrl,
+            host: status.meta.host,
+            port: status.meta.port,
+            startedAt: status.meta.startedAt,
+            version: status.meta.version,
+            cwd: status.meta.cwd,
+          },
+          note: 'daemon.json 存在但进程已不在；请执行 `agent-slack daemon stop` 清理。',
+        }
+      }
+
+      // running：尝试 fetch /api/daemon/state（2s 超时）
+      let live: { uptimeMs: number; inflight: { count: number; keys: string[] } } | undefined
+      try {
+        const ctrl = new AbortController()
+        const to = setTimeout(() => ctrl.abort(), 2000)
+        const resp = await fetch(`${status.meta.url}/api/daemon/state`, { signal: ctrl.signal })
+        clearTimeout(to)
+        if (resp.ok) {
+          const js = (await resp.json()) as {
+            uptimeMs: number
+            inflight: { count: number; keys: string[] }
+          }
+          live = { uptimeMs: js.uptimeMs, inflight: js.inflight }
+        }
+      } catch {
+        // fetch 失败就不返回 live，UI 自己按 offline-ish 处理
+      }
+
+      const result: {
+        state: 'running'
+        meta: {
+          pid: number
+          url: string
+          dashboardUrl: string
+          host: string
+          port: number
+          startedAt: string
+          version: string
+          cwd: string
+        }
+        live?: { uptimeMs: number; inflight: { count: number; keys: string[] } }
+      } = {
+        state: 'running',
+        meta: {
+          pid: status.meta.pid,
+          url: status.meta.url,
+          dashboardUrl: status.meta.dashboardUrl,
+          host: status.meta.host,
+          port: status.meta.port,
+          startedAt: status.meta.startedAt,
+          version: status.meta.version,
+          cwd: status.meta.cwd,
+        },
+      }
+      if (live) result.live = live
+      return result
     },
 
     // --- 写操作：Config / System Prompt 的新增/编辑/删除 ---

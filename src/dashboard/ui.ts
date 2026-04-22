@@ -444,10 +444,108 @@ const views = {
   async daemon() {
     const d = await api('/api/daemon')
     renderTabs()
+
+    // offline / stale 状态
+    if (d.state === 'offline') {
+      return el('section', {}, [
+        el('h2', {}, 'Daemon'),
+        el('div', {}, pill('offline', 'warn')),
+        el('p', { class: 'muted', style: 'margin-top:10px;' }, d.note || '未启动'),
+        el('div', { class: 'card' }, [
+          el('div', { class: 'k' }, '如何启动'),
+          el('pre', { style: 'margin:6px 0 0;' }, 'agent-slack daemon start'),
+          el('div', { class: 'muted', style: 'margin-top:6px;' },
+            '启动后 daemon 会内建 dashboard（当前页面即可指向 daemon 的 URL）。'),
+        ]),
+      ])
+    }
+    if (d.state === 'stale') {
+      return el('section', {}, [
+        el('h2', {}, 'Daemon'),
+        el('div', {}, pill('stale', 'err')),
+        el('p', { class: 'muted' }, d.note || ''),
+        el('pre', {}, JSON.stringify(d.meta, null, 2)),
+        el('div', { class: 'card' }, [
+          el('div', { class: 'k' }, '清理'),
+          el('pre', { style: 'margin:6px 0 0;' }, 'agent-slack daemon stop'),
+        ]),
+      ])
+    }
+
+    // running
+    const meta = d.meta
+    const live = d.live
+    const uptimeSec = live ? Math.floor(live.uptimeMs / 1000) : 0
+    const uptimeStr = uptimeSec < 60
+      ? (uptimeSec + 's')
+      : uptimeSec < 3600
+        ? (Math.floor(uptimeSec / 60) + 'm' + (uptimeSec % 60) + 's')
+        : (Math.floor(uptimeSec / 3600) + 'h' + Math.floor((uptimeSec % 3600) / 60) + 'm')
+
+    const metaRow = el('div', { class: 'row' }, [
+      el('div', { class: 'card' }, [el('div', { class: 'k' }, 'Status'), el('div', { class: 'v' }, pill('running', 'ok'))]),
+      el('div', { class: 'card' }, [el('div', { class: 'k' }, 'PID'), el('div', { class: 'v' }, String(meta.pid))]),
+      el('div', { class: 'card' }, [el('div', { class: 'k' }, 'Uptime'), el('div', { class: 'v' }, live ? uptimeStr : '-')]),
+      el('div', { class: 'card' }, [el('div', { class: 'k' }, 'Inflight'), el('div', { class: 'v' }, live ? String(live.inflight.count) : '-')]),
+    ])
+
+    const infoRow = el('div', { class: 'row' }, [
+      el('div', { class: 'card' }, [el('div', { class: 'k' }, 'URL'), el('div', { class: 'v small' }, meta.url)]),
+      el('div', { class: 'card' }, [el('div', { class: 'k' }, 'Version'), el('div', { class: 'v small' }, meta.version)]),
+      el('div', { class: 'card' }, [el('div', { class: 'k' }, 'Started'), el('div', { class: 'v small' }, fmtTs(meta.startedAt))]),
+      el('div', { class: 'card' }, [el('div', { class: 'k' }, 'CWD'), el('div', { class: 'v small' }, meta.cwd)]),
+    ])
+
+    const actionMsg = el('div', { style: 'margin-top:8px;' })
+    const postDaemon = async (sub, confirmMsg) => {
+      if (confirmMsg && !confirm(confirmMsg)) return
+      actionMsg.textContent = '执行中…'; actionMsg.className = 'muted'
+      try {
+        const r = await fetch('/api/daemon/' + sub, { method: 'POST' })
+        if (!r.ok) throw new Error('HTTP ' + r.status)
+        const js = await r.json()
+        actionMsg.textContent = '已发送：' + JSON.stringify(js); actionMsg.className = 'pill ok'
+        setTimeout(render, 1200)
+      } catch (err) {
+        actionMsg.textContent = '失败：' + (err.message || err); actionMsg.className = 'err-box'
+      }
+    }
+
+    const actions = el('div', { class: 'actions' }, [
+      el('button', { onclick: () => postDaemon('stop', '确认停止 daemon？\\n（所有活跃 session 会被中止）') }, 'Stop'),
+    ])
+
+    // inflight session 列表 + Abort
+    const inflightBox = live && live.inflight.count > 0
+      ? el('table', {}, [
+          el('thead', {}, el('tr', {}, ['Session Key', 'Action'].map(h => el('th', {}, h)))),
+          el('tbody', {}, live.inflight.keys.map(k => el('tr', {}, [
+            el('td', {}, el('code', {}, k)),
+            el('td', {}, el('button', {
+              onclick: async () => {
+                if (!confirm('确认中止此 session？\\n' + k)) return
+                try {
+                  const r = await fetch('/api/daemon/abort/' + encodeURIComponent(k), { method: 'POST' })
+                  if (!r.ok) throw new Error('HTTP ' + r.status)
+                  actionMsg.textContent = '已 abort ' + k; actionMsg.className = 'pill ok'
+                  setTimeout(render, 800)
+                } catch (err) {
+                  actionMsg.textContent = 'abort 失败：' + (err.message || err); actionMsg.className = 'err-box'
+                }
+              }
+            }, 'Abort')),
+          ])))
+        ])
+      : el('div', { class: 'muted' }, '当前无 inflight session')
+
     return el('section', {}, [
       el('h2', {}, 'Daemon'),
-      el('div', {}, pill('status: ' + d.status, 'warn')),
-      el('p', { class: 'muted' }, d.note),
+      metaRow,
+      infoRow,
+      actions,
+      actionMsg,
+      el('h3', {}, 'Inflight Sessions'),
+      inflightBox,
     ])
   },
 }
