@@ -1,0 +1,79 @@
+// dashboard 命令：启动本地 HTTP server + 前端 SPA，用于观察 context / sessions / messages / skills / logs / config / health / daemon
+import { consola } from 'consola'
+import { existsSync } from 'node:fs'
+import { spawn } from 'node:child_process'
+import path from 'node:path'
+import { startDashboardServer } from '@/dashboard/server.ts'
+import { createLogger } from '@/logger/logger.ts'
+import { createRedactor } from '@/logger/redactor.ts'
+import { loadWorkspaceEnv } from '@/workspace/loadEnv.ts'
+
+export interface DashboardOpts {
+  cwd: string
+  host?: string
+  port?: number
+  open?: boolean
+}
+
+export async function dashboardCommand(opts: DashboardOpts): Promise<void> {
+  loadWorkspaceEnv({ workspaceDir: opts.cwd })
+
+  const configDir = path.join(opts.cwd, '.agent-slack')
+  if (!existsSync(configDir)) {
+    consola.warn(`未找到 ${configDir}，仍会启动 dashboard（各分区将显示为空或提示缺失）`)
+    consola.info('如需完整数据，请先运行 agent-slack onboard')
+  }
+
+  // redactor 接收主要凭证，防止日志中泄漏
+  const secrets = [
+    process.env.SLACK_BOT_TOKEN,
+    process.env.SLACK_SIGNING_SECRET,
+    process.env.SLACK_APP_TOKEN,
+    process.env.LITELLM_API_KEY,
+    process.env.ANTHROPIC_API_KEY,
+  ].filter((v): v is string => Boolean(v))
+
+  const logger = createLogger({
+    level: (process.env.LOG_LEVEL as 'trace' | 'debug' | 'info' | 'warn' | 'error') ?? 'info',
+    redactor: createRedactor(secrets),
+  })
+
+  const server = await startDashboardServer({
+    cwd: opts.cwd,
+    host: opts.host ?? '127.0.0.1',
+    ...(opts.port !== undefined ? { port: opts.port } : {}),
+    logger,
+  })
+
+  consola.success(`dashboard running at ${server.url}`)
+  consola.info('Ctrl+C 退出')
+
+  if (opts.open) openInBrowser(server.url)
+
+  const shutdown = async (signal: string): Promise<void> => {
+    consola.info(`收到 ${signal}，关闭 dashboard…`)
+    await server.stop()
+    process.exit(0)
+  }
+  process.on('SIGINT', () => {
+    void shutdown('SIGINT')
+  })
+  process.on('SIGTERM', () => {
+    void shutdown('SIGTERM')
+  })
+}
+
+function openInBrowser(url: string): void {
+  const cmd =
+    process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open'
+  try {
+    const child = spawn(cmd, [url], {
+      stdio: 'ignore',
+      detached: true,
+      shell: process.platform === 'win32',
+    })
+    child.unref()
+  } catch {
+    // 打开失败不阻塞 server，静默即可
+  }
+}

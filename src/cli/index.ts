@@ -6,6 +6,7 @@ import { startCommand } from './commands/start.ts'
 import { doctorCommand } from './commands/doctor.ts'
 import { statusCommand } from './commands/status.ts'
 import { onboardCommand } from './commands/onboard.ts'
+import { dashboardCommand } from './commands/dashboard.ts'
 import pkg from '../../package.json' with { type: 'json' }
 
 const program = new Command()
@@ -36,6 +37,16 @@ program
   .option('--cwd <dir>', 'workspace 目录', process.cwd())
   .action(async (opts: { cwd: string }) => {
     await statusCommand({ cwd: opts.cwd })
+  })
+
+program
+  .command('dashboard')
+  .description('启动本地 web dashboard 观察 context/sessions/messages/skills/logs/config/health')
+  .option('--cwd <dir>', 'workspace 目录', process.cwd())
+  .option('--host <host>', '监听地址', '127.0.0.1')
+  .option('--port <port>', '监听端口（0 自动分配）', (v) => Number(v), 0)
+  .action(async (opts: { cwd: string; host: string; port: number }) => {
+    await dashboardCommand({ cwd: opts.cwd, host: opts.host, port: opts.port, open: true })
   })
 
 program

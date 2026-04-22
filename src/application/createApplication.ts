@@ -1,8 +1,10 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { createAnthropic } from '@ai-sdk/anthropic'
+import path from 'node:path'
 import type { LanguageModel } from 'ai'
 import { loadWorkspaceContext } from '@/workspace/WorkspaceContext.ts'
 import { loadWorkspaceEnv } from '@/workspace/loadEnv.ts'
+import { resolveWorkspacePaths } from '@/workspace/paths.ts'
 import { createSessionStore } from '@/store/SessionStore.ts'
 import { createMemoryStore } from '@/store/MemoryStore.ts'
 import { createLogger } from '@/logger/logger.ts'
@@ -34,9 +36,12 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
   const slackSigningSecret = requireEnv('SLACK_SIGNING_SECRET')
   const logLevel = parseLogLevel(process.env.LOG_LEVEL)
 
+  // 日志文件路径：.agent-slack/logs/agent-YYYY-MM-DD.log；由 Dashboard Logs tab 消费
+  const logFile = resolveDailyLogFile(args.workspaceDir)
+
   // 先用 bootstrap logger 加载 workspace context（此时尚未知晓 provider secrets）
   const bootstrapRedactor = createRedactor([slackBotToken, slackAppToken, slackSigningSecret])
-  const bootstrapLogger = createLogger({ level: logLevel, redactor: bootstrapRedactor })
+  const bootstrapLogger = createLogger({ level: logLevel, redactor: bootstrapRedactor, logFile })
 
   const ctx = await loadWorkspaceContext(args.workspaceDir, bootstrapLogger)
 
@@ -50,7 +55,7 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
     slackSigningSecret,
     ...providerEnv.secrets,
   ])
-  const logger = createLogger({ level: logLevel, redactor })
+  const logger = createLogger({ level: logLevel, redactor, logFile })
   logger.withTag('agent').info(`provider=${provider}`)
 
   const sessionStore = createSessionStore(ctx.paths)
@@ -216,4 +221,10 @@ function parseLogLevel(v: string | undefined): LogLevel {
 
   // 历史上这里是宽松回退；保留该兼容性，避免旧环境值导致启动失败。
   return 'info'
+}
+
+function resolveDailyLogFile(workspaceDir: string): string {
+  const paths = resolveWorkspacePaths(workspaceDir)
+  const date = new Date().toISOString().slice(0, 10)
+  return path.join(paths.logsDir, `agent-${date}.log`)
 }

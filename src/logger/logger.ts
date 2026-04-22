@@ -1,4 +1,6 @@
 import { consola, type ConsolaInstance } from 'consola'
+import fs from 'node:fs'
+import path from 'node:path'
 import type { Redactor } from './redactor.ts'
 
 export interface Logger {
@@ -13,12 +15,51 @@ export interface Logger {
   error(msg: string, meta?: unknown): void
 }
 
-export function createLogger(opts: {
+export interface CreateLoggerOpts {
   level?: 'trace' | 'debug' | 'info' | 'warn' | 'error'
   redactor: Redactor
-}): Logger {
+  /**
+   * 可选：若提供文件路径，日志会同时 append 写入（不影响 stdout）。
+   * 父目录不存在会自动创建。用于 dashboard Logs tab 离线查看。
+   */
+  logFile?: string
+}
+
+export function createLogger(opts: CreateLoggerOpts): Logger {
   const root = consola.create({ level: levelToNumeric(opts.level ?? 'info') })
+  if (opts.logFile) {
+    attachFileReporter(root, opts.logFile, opts.redactor)
+  }
   return wrap(root, opts.redactor)
+}
+
+function attachFileReporter(inst: ConsolaInstance, filePath: string, redact: Redactor): void {
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true })
+  } catch {
+    // 目录创建失败时静默关闭 file reporter，避免阻塞 stdout logger 的正常工作
+    return
+  }
+  inst.addReporter({
+    log(logObj) {
+      const ts = new Date().toISOString()
+      const level = (logObj as { type?: string }).type ?? 'log'
+      const tag = (logObj as { tag?: string }).tag
+      const rawArgs = (logObj as { args?: unknown[] }).args ?? []
+      const parts = rawArgs.map((a) => {
+        if (typeof a === 'string') return a
+        try {
+          return JSON.stringify(a)
+        } catch {
+          return String(a)
+        }
+      })
+      const line = `[${ts}] [${level}]${tag ? ` [${tag}]` : ''} ${redact(parts.join(' '))}\n`
+      fs.appendFile(filePath, line, () => {
+        // 写失败不抛错，避免影响主流程
+      })
+    },
+  })
 }
 
 function levelToNumeric(level: string): number {
