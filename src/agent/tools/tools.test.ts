@@ -101,4 +101,25 @@ describe('edit_file', () => {
       }),
     ).rejects.toThrow(/not found/)
   })
+
+  it('old_string 和 new_string 相同报错', async () => {
+    writeFileSync(path.join(cwd, 'a.txt'), 'abc')
+    await expect(
+      invoke(asInvokable(editFileTool(stubCtx())), {
+        path: 'a.txt',
+        old_string: 'abc',
+        new_string: 'abc',
+      }),
+    ).rejects.toThrow(/identical/)
+  })
+
+  it('可用直引号匹配文件中的弯引号，并保持原有风格', async () => {
+    writeFileSync(path.join(cwd, 'a.txt'), 'const title = “hello”')
+    await invoke(asInvokable(editFileTool(stubCtx())), {
+      path: 'a.txt',
+      old_string: '"hello"',
+      new_string: '"world"',
+    })
+    expect(readFileSync(path.join(cwd, 'a.txt'), 'utf8')).toBe('const title = “world”')
+  })
 })
