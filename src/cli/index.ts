@@ -7,6 +7,15 @@ import { doctorCommand } from './commands/doctor.ts'
 import { statusCommand } from './commands/status.ts'
 import { onboardCommand } from './commands/onboard.ts'
 import { dashboardCommand } from './commands/dashboard.ts'
+import {
+  daemonStartCommand,
+  daemonStopCommand,
+  daemonRestartCommand,
+  daemonStatusCommand,
+  daemonLogsCommand,
+  daemonAttachCommand,
+} from './commands/daemon.ts'
+import { runDaemonEntry } from '@/daemon/entry.ts'
 import pkg from '../../package.json' with { type: 'json' }
 
 const program = new Command()
@@ -55,6 +64,68 @@ program
   .option('--cwd <dir>', 'workspace 目录', process.cwd())
   .action(async (opts: { cwd: string }) => {
     await doctorCommand({ cwd: opts.cwd })
+  })
+
+// ---------- daemon 子命令集 ----------
+const daemon = program
+  .command('daemon')
+  .description('后台常驻进程控制（start/stop/restart/status/logs/attach）')
+
+daemon
+  .command('start')
+  .description('启动 daemon（detached 后台运行）')
+  .option('--cwd <dir>', 'workspace 目录', process.cwd())
+  .action(async (opts: { cwd: string }) => {
+    await daemonStartCommand({ cwd: opts.cwd })
+  })
+
+daemon
+  .command('stop')
+  .description('停止 daemon')
+  .option('--cwd <dir>', 'workspace 目录', process.cwd())
+  .action(async (opts: { cwd: string }) => {
+    await daemonStopCommand({ cwd: opts.cwd })
+  })
+
+daemon
+  .command('restart')
+  .description('重启 daemon')
+  .option('--cwd <dir>', 'workspace 目录', process.cwd())
+  .action(async (opts: { cwd: string }) => {
+    await daemonRestartCommand({ cwd: opts.cwd })
+  })
+
+daemon
+  .command('status')
+  .description('查看 daemon 运行状态')
+  .option('--cwd <dir>', 'workspace 目录', process.cwd())
+  .action(async (opts: { cwd: string }) => {
+    await daemonStatusCommand({ cwd: opts.cwd })
+  })
+
+daemon
+  .command('logs')
+  .description('查看 daemon 日志（D4 实现）')
+  .option('--cwd <dir>', 'workspace 目录', process.cwd())
+  .action(async (opts: { cwd: string }) => {
+    await daemonLogsCommand({ cwd: opts.cwd })
+  })
+
+daemon
+  .command('attach')
+  .description('连接 daemon 实时事件流（D4 实现）')
+  .option('--cwd <dir>', 'workspace 目录', process.cwd())
+  .action(async (opts: { cwd: string }) => {
+    await daemonAttachCommand({ cwd: opts.cwd })
+  })
+
+// 隐藏子命令：被 `daemon start` spawn 出的子进程调用
+program
+  .command('__daemon-run', { hidden: true })
+  .description('（内部）daemon 子进程入口，勿直接使用')
+  .option('--cwd <dir>', 'workspace 目录', process.cwd())
+  .action(async (opts: { cwd: string }) => {
+    await runDaemonEntry({ cwd: opts.cwd })
   })
 
 program.parseAsync().catch((err: unknown) => {

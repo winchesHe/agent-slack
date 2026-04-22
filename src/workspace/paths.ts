@@ -10,6 +10,10 @@ export interface WorkspacePaths {
   memoryDir: string
   skillsDir: string
   logsDir: string
+  daemonDir: string
+  daemonFile: string
+  daemonPidFile: string
+  daemonLockFile: string
   globalRoot: string
   globalEnv: string
   globalConfig: string
@@ -18,6 +22,7 @@ export interface WorkspacePaths {
 export function resolveWorkspacePaths(cwd: string): WorkspacePaths {
   const root = path.join(cwd, '.agent-slack')
   const globalRoot = path.join(os.homedir(), '.agent-slack')
+  const daemonDir = path.join(root, 'daemon')
   return {
     cwd,
     root,
@@ -27,6 +32,10 @@ export function resolveWorkspacePaths(cwd: string): WorkspacePaths {
     memoryDir: path.join(root, 'memory'),
     skillsDir: path.join(root, 'skills'),
     logsDir: path.join(root, 'logs'),
+    daemonDir,
+    daemonFile: path.join(daemonDir, 'daemon.json'),
+    daemonPidFile: path.join(daemonDir, 'daemon.pid'),
+    daemonLockFile: path.join(daemonDir, 'daemon.lock'),
     globalRoot,
     globalEnv: path.join(globalRoot, '.env'),
     globalConfig: path.join(globalRoot, 'global.yaml'),

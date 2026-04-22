@@ -17,6 +17,13 @@ export const ConfigSchema = z.object({
       slack: z.object({ resolveChannelName: z.boolean().default(true) }).default({}),
     })
     .default({}),
+  daemon: z
+    .object({
+      // daemon + dashboard 共用的 HTTP 端口（127.0.0.1 固定监听）
+      port: z.number().int().min(0).max(65535).default(51732),
+      host: z.string().default('127.0.0.1'),
+    })
+    .default({}),
 })
 
 export type WorkspaceConfig = z.infer<typeof ConfigSchema>
