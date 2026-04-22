@@ -40,7 +40,8 @@ export async function loadSkills(
         continue
       }
 
-      const whenToUse = extractString(parsed.data, 'whenToUse')
+      const whenToUse =
+        extractString(parsed.data, 'whenToUse') ?? extractWhenToUseFromContent(parsed.content)
 
       // 只在 whenToUse 有值时才写入该字段，避免 optional property 类型风险
       const skill: Skill = {
@@ -70,6 +71,64 @@ function extractString(data: unknown, key: string): string | undefined {
   if (typeof data !== 'object' || data === null) return undefined
   const val = (data as Record<string, unknown>)[key]
   return typeof val === 'string' ? val : undefined
+}
+
+function extractWhenToUseFromContent(content: string): string | undefined {
+  const lines = content.split(/\r?\n/)
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const headingMatch = /^(#{2,3})\s+(.+?)\s*$/.exec(lines[index] ?? '')
+    if (!headingMatch) {
+      continue
+    }
+
+    const headingHashes = headingMatch[1]
+    const rawHeadingText = headingMatch[2]
+    if (!headingHashes || !rawHeadingText) {
+      continue
+    }
+
+    const level = headingHashes.length
+    const headingText = normalizeHeadingText(rawHeadingText)
+    if (headingText !== 'whentouse') {
+      continue
+    }
+
+    let endIndex = lines.length
+    for (let nextIndex = index + 1; nextIndex < lines.length; nextIndex += 1) {
+      const nextHeadingMatch = /^(#{1,6})\s+(.+?)\s*$/.exec(lines[nextIndex] ?? '')
+      if (!nextHeadingMatch) {
+        continue
+      }
+
+      const nextHeadingHashes = nextHeadingMatch[1]
+      if (!nextHeadingHashes) {
+        continue
+      }
+
+      if (nextHeadingHashes.length <= level) {
+        endIndex = nextIndex
+        break
+      }
+    }
+
+    const section = lines
+      .slice(index + 1, endIndex)
+      .join('\n')
+      .trim()
+    return section || undefined
+  }
+
+  return undefined
+}
+
+function normalizeHeadingText(text: string): string {
+  return text
+    .trim()
+    .replace(/\s+#+\s*$/, '')
+    .replace(/[:：]+$/, '')
+    .toLowerCase()
+    .replace(/[\s_-]+/g, '')
 }
 
 function applyEnabledFilter(skills: Skill[], enabled: string[]): Skill[] {
