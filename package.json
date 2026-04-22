@@ -17,6 +17,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "cli": "tsx src/cli/index.ts",
+    "dashboard:dev": "tsx watch src/cli/index.ts dashboard",
     "build": "tsdown",
     "build:dev": "tsdown --watch",
     "prepublishOnly": "pnpm build",
