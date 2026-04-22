@@ -61,56 +61,60 @@ describe('bash', () => {
 describe('edit_file', () => {
   it('唯一 old_string 替换', async () => {
     writeFileSync(path.join(cwd, 'a.txt'), 'foo bar baz')
-    await invoke(asInvokable(editFileTool(stubCtx())), {
+    const result = (await invoke(asInvokable(editFileTool(stubCtx())), {
       path: 'a.txt',
       old_string: 'bar',
       new_string: 'BAR',
-    })
+    })) as { ok: boolean; replaced: number }
+    expect(result).toMatchObject({ ok: true, replaced: 1 })
     expect(readFileSync(path.join(cwd, 'a.txt'), 'utf8')).toBe('foo BAR baz')
   })
 
-  it('old_string 不唯一报错', async () => {
+  it('old_string 不唯一时返回结构化失败结果', async () => {
     writeFileSync(path.join(cwd, 'a.txt'), 'xx xx xx')
-    await expect(
-      invoke(asInvokable(editFileTool(stubCtx())), {
-        path: 'a.txt',
-        old_string: 'xx',
-        new_string: 'yy',
-      }),
-    ).rejects.toThrow(/not unique/)
+    const result = (await invoke(asInvokable(editFileTool(stubCtx())), {
+      path: 'a.txt',
+      old_string: 'xx',
+      new_string: 'yy',
+    })) as { ok: boolean; error: string; matches: number }
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'old_string_not_unique',
+      matches: 3,
+    })
+    expect(readFileSync(path.join(cwd, 'a.txt'), 'utf8')).toBe('xx xx xx')
   })
 
   it('replace_all 放行', async () => {
     writeFileSync(path.join(cwd, 'a.txt'), 'xx xx xx')
-    await invoke(asInvokable(editFileTool(stubCtx())), {
+    const result = (await invoke(asInvokable(editFileTool(stubCtx())), {
       path: 'a.txt',
       old_string: 'xx',
       new_string: 'yy',
       replace_all: true,
-    })
+    })) as { ok: boolean; replaced: number }
+    expect(result).toMatchObject({ ok: true, replaced: 3 })
     expect(readFileSync(path.join(cwd, 'a.txt'), 'utf8')).toBe('yy yy yy')
   })
 
-  it('未找到 old_string 报错', async () => {
+  it('未找到 old_string 时返回结构化失败结果', async () => {
     writeFileSync(path.join(cwd, 'a.txt'), 'abc')
-    await expect(
-      invoke(asInvokable(editFileTool(stubCtx())), {
-        path: 'a.txt',
-        old_string: 'xyz',
-        new_string: 'q',
-      }),
-    ).rejects.toThrow(/not found/)
+    const result = (await invoke(asInvokable(editFileTool(stubCtx())), {
+      path: 'a.txt',
+      old_string: 'xyz',
+      new_string: 'q',
+    })) as { ok: boolean; error: string }
+    expect(result).toMatchObject({ ok: false, error: 'old_string_not_found' })
   })
 
-  it('old_string 和 new_string 相同报错', async () => {
+  it('old_string 和 new_string 相同时返回结构化失败结果', async () => {
     writeFileSync(path.join(cwd, 'a.txt'), 'abc')
-    await expect(
-      invoke(asInvokable(editFileTool(stubCtx())), {
-        path: 'a.txt',
-        old_string: 'abc',
-        new_string: 'abc',
-      }),
-    ).rejects.toThrow(/identical/)
+    const result = (await invoke(asInvokable(editFileTool(stubCtx())), {
+      path: 'a.txt',
+      old_string: 'abc',
+      new_string: 'abc',
+    })) as { ok: boolean; error: string }
+    expect(result).toMatchObject({ ok: false, error: 'old_string_identical' })
   })
 
   it('可用直引号匹配文件中的弯引号，并保持原有风格', async () => {
