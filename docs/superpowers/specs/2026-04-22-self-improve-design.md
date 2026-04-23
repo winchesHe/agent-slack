@@ -357,28 +357,38 @@ app.action(/^confirm:/, async ({ action, ack, client, body }) => {
 
 #### 5.5.5 self-improve 使用示例
 
-```typescript
-// selfImprove.ts tool 内部
-const rules: CandidateRule[] = await generateRules(...)
+> **透传方式**：tool 层不直接持有 `WebClient`。`ConfirmSender` 作为 IM-agnostic proxy 通过 `ToolContext.confirm` 注入。Slack 场景下由 SlackAdapter 在 `app_mention` 回调里构造一个绑定了 `web`/`channelId`/`threadTs` 的 `ConfirmSender` 实现，经 `InboundMessage.confirmSender` 流入 `ConversationOrchestrator.handle()`，再经 `ToolsBuilder` 带到 ToolContext。
 
-await slackConfirm.send({
-  web: deps.web,
-  channelId: ctx.channelId,
-  threadTs: ctx.threadTs,
+```typescript
+// IM-agnostic proxy，定义在 src/im/types.ts（或 src/agent/tools/bash.ts 的 ToolContext 旁边）
+export interface ConfirmSender {
+  send(opts: {
+    items: ConfirmItem[]
+    namespace: string
+    labels?: ConfirmLabels
+    onDecision: ConfirmCallback
+  }): Promise<void>
+}
+
+// selfImproveConfirm.ts tool 内部
+await ctx.confirm?.send({
   items: rules.map((r, i) => ({
     id: r.id,
     body: `*📝 候选规则 (${i + 1}/${rules.length})*\n分类：\`${r.category}\` · 置信度：${r.confidence === 'high' ? '🟢' : '🟡'} ${r.confidence}\n\n> ${r.content}`,
     context: `📎 *证据*：${r.evidence}`,
   })),
+  namespace: 'self_improve',
   labels: { accept: '✅ 采纳', reject: '❌ 跳过' },
   onDecision: async (ruleId, decision) => {
     if (decision === 'accept') {
       const rule = rules.find(r => r.id === ruleId)
-      if (rule) await appendToSystemMd(paths, rule.content)
+      if (rule) await appendToSystemMd(paths, rule)
     }
   },
 })
 ```
+
+`ctx.confirm` 为 optional：当 agent 运行在 IM 之外（如 CLI 测试、非 slack adapter）时，tool 直接 short-circuit 返回 `{ skipped: rules.length, reason: 'no_confirm_channel' }`。
 
 #### 5.5.6 其他场景复用示例
 
@@ -428,8 +438,12 @@ export function buildBuiltinTools(ctx: ToolContext, deps: BuiltinToolDeps): Tool
 | `paths: WorkspacePaths` | `ctx.paths` | 定位 sessions/memory/system.md 目录 |
 | `selfImproveCollector` | `createSelfImproveCollector({ paths, logger })` | 数据采集 |
 | `selfImproveGenerator` | `createSelfImproveGenerator()` | 候选规则后处理（去重/排序/过滤） |
-| `slackConfirm: SlackConfirm` | SlackAdapter 共享实例 | 通用确认交互 |
+| `ctx.confirm?: ConfirmSender` | 每次 handle 由 SlackAdapter 绑定 web/channel/thread 构造，沿 `InboundMessage → Orchestrator → ToolsBuilder → ToolContext` 透传 | 通用确认交互 proxy（tool 层不接触 WebClient） |
 | `logger` | ctx | 日志 |
+
+> **透传链**：`SlackAdapter.app_mention` → 构造 `ConfirmSender` 实现 → 填入 `InboundMessage.confirmSender` → `ConversationOrchestrator.handle()` 转给 `toolsBuilder(currentUser, { confirm })` → 写入 `ToolContext.confirm` → `self_improve_confirm` 调 `ctx.confirm.send()`。
+>
+> `ConfirmSender` 在 `src/im/types.ts` 定义（IM-agnostic），Slack 具体实现在 `SlackAdapter.ts` 内部构造；未来其他 IM 可提供自己的 `ConfirmSender` 实现。
 
 > **注意**：candidate rule 的生成由**主 Agent** 在自己的 assistant 回合里完成，**不**在 tool 内调 LLM。tool 只做纯代码处理与 IO。
 

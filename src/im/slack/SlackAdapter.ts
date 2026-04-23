@@ -5,6 +5,7 @@ import type { ConversationOrchestrator } from '@/orchestrator/ConversationOrches
 import type { Logger } from '@/logger/logger.ts'
 import type { AbortRegistry } from '@/orchestrator/AbortRegistry.ts'
 import type { SessionRunQueue } from '@/orchestrator/SessionRunQueue.ts'
+import type { ConfirmSender } from '@/im/types.ts'
 import type { SlackRenderer } from './SlackRenderer.ts'
 import { createSlackEventSink } from './SlackEventSink.ts'
 import {
@@ -138,6 +139,22 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
 
       const cleanText = (event.text ?? '').replace(/<@[^>]+>/g, '').trim()
 
+      // 构造 IM-agnostic 确认发送器，绑定本次会话的 web/channel/thread。
+      // tool 层通过 ToolContext.confirm 调用；不感知 WebClient。
+      const confirmSender: ConfirmSender = {
+        async send({ items, namespace, labels, onDecision }) {
+          await deps.slackConfirm.send({
+            web: client as unknown as WebClient,
+            channelId,
+            threadTs,
+            items,
+            namespace,
+            ...(labels ? { labels } : {}),
+            onDecision,
+          })
+        },
+      }
+
       if (deps.runQueue.queueDepth(sessionId) > 0) {
         try {
           await client.reactions.add({
@@ -160,6 +177,7 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
           userName,
           text: cleanText,
           messageTs,
+          confirmSender,
         },
         sink,
       )

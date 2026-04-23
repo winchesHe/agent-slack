@@ -1,7 +1,7 @@
 import type { AgentExecutor } from '@/agent/AgentExecutor.ts'
 import type { SessionStore, Session } from '@/store/SessionStore.ts'
 import type { MemoryStore } from '@/store/MemoryStore.ts'
-import type { InboundMessage, EventSink } from '@/im/types.ts'
+import type { InboundMessage, EventSink, ConfirmSender } from '@/im/types.ts'
 import type { Logger } from '@/logger/logger.ts'
 import type { ToolSet, CoreMessage } from 'ai'
 import type { SessionRunQueue } from './SessionRunQueue.ts'
@@ -13,8 +13,14 @@ export interface CurrentUser {
   userId: string
 }
 
-/** tools 根据当前用户动态构造。 */
-export type ToolsBuilder = (currentUser: CurrentUser) => ToolSet
+/** 当次 handle 的 IM 级透传信息（IM-agnostic） */
+export interface IMContext {
+  /** 当前会话的确认发送器；无 IM 或 IM 不支持确认按钮时为 undefined。 */
+  confirm?: ConfirmSender
+}
+
+/** tools 根据当前用户和 IM 上下文动态构造。 */
+export type ToolsBuilder = (currentUser: CurrentUser, imContext: IMContext) => ToolSet
 
 /** 给定 tools 返回 executor；executor 状态为 per-handle。 */
 export type ExecutorFactory = (tools: ToolSet) => AgentExecutor
@@ -109,7 +115,10 @@ export function createConversationOrchestrator(
             log.trace(`最终 system prompt 正文：\n${systemPromptWithMemory}`)
 
             // 每次 handle 新建 tools + executor，闭包安全持有 currentUser
-            const tools = deps.toolsBuilder(currentUser)
+            const imContext: IMContext = {
+              ...(input.confirmSender ? { confirm: input.confirmSender } : {}),
+            }
+            const tools = deps.toolsBuilder(currentUser, imContext)
             const executor = deps.executorFactory(tools)
             const ctrl = deps.abortRegistry.create(input.messageTs)
 

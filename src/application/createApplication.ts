@@ -2,6 +2,7 @@ import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { createAnthropic } from '@ai-sdk/anthropic'
 import path from 'node:path'
 import type { LanguageModel } from 'ai'
+import type { ConfirmSender } from '@/im/types.ts'
 import { loadWorkspaceContext } from '@/workspace/WorkspaceContext.ts'
 import { loadWorkspaceEnv } from '@/workspace/loadEnv.ts'
 import { resolveWorkspacePaths } from '@/workspace/paths.ts'
@@ -17,6 +18,8 @@ import { AbortRegistry } from '@/orchestrator/AbortRegistry.ts'
 import { createSlackAdapter } from '@/im/slack/SlackAdapter.ts'
 import { createSlackRenderer } from '@/im/slack/SlackRenderer.ts'
 import { createSlackConfirm } from '@/im/slack/SlackConfirm.ts'
+import { createSelfImproveCollector } from '@/agent/tools/selfImprove.collector.ts'
+import { createSelfImproveGenerator } from '@/agent/tools/selfImprove.generator.ts'
 import { ConfigError } from '@/core/errors.ts'
 import type { Application } from './types.ts'
 
@@ -61,14 +64,33 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
 
   const sessionStore = createSessionStore(ctx.paths)
   const memoryStore = createMemoryStore(ctx.paths)
+  const selfImproveCollector = createSelfImproveCollector({ paths: ctx.paths, logger })
+  const selfImproveGenerator = createSelfImproveGenerator()
   const runQueue = new SessionRunQueue()
   const abortRegistry = new AbortRegistry<string>()
 
   const modelName = ctx.config.agent.model
   const runtime = buildProviderRuntime(provider, providerEnv, modelName)
 
-  const toolsBuilder = (currentUser: { userName: string; userId: string }) =>
-    buildBuiltinTools({ cwd: ctx.cwd, logger, currentUser }, { memoryStore })
+  const toolsBuilder = (
+    currentUser: { userName: string; userId: string },
+    imContext: { confirm?: ConfirmSender },
+  ) =>
+    buildBuiltinTools(
+      {
+        cwd: ctx.cwd,
+        logger,
+        currentUser,
+        ...(imContext.confirm ? { confirm: imContext.confirm } : {}),
+      },
+      {
+        memoryStore,
+        selfImproveCollector,
+        selfImproveGenerator,
+        paths: ctx.paths,
+        logger,
+      },
+    )
 
   const executorFactory = (tools: ReturnType<typeof toolsBuilder>) =>
     createAiSdkExecutor({

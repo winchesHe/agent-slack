@@ -1,29 +1,14 @@
 import type { WebClient } from '@slack/web-api'
 import type { Logger } from '@/logger/logger.ts'
+import type {
+  ConfirmCallback,
+  ConfirmDecision,
+  ConfirmItem,
+  ConfirmLabels,
+} from '@/im/types.ts'
 
-// ── 通用类型 ──────────────────────────────────────────
-
-/** 一个待确认条目（业务无关） */
-export interface ConfirmItem {
-  /** 唯一 ID，用于 action_id 路由 */
-  id: string
-  /** Section 区块的 mrkdwn 正文 */
-  body: string
-  /** 可选 context 区块（如证据、来源说明） */
-  context?: string
-}
-
-/** 确认按钮文案，可由调用方自定义 */
-export interface ConfirmLabels {
-  accept?: string // 默认 "✅ 采纳"
-  reject?: string // 默认 "❌ 跳过"
-}
-
-/** 用户点击后的决策 */
-export type ConfirmDecision = 'accept' | 'reject'
-
-/** 用户点击后的回调 */
-export type ConfirmCallback = (itemId: string, decision: ConfirmDecision) => Promise<void>
+// 向后兼容：从 im/types.ts re-export，保持原有调用方不受影响
+export type { ConfirmCallback, ConfirmDecision, ConfirmItem, ConfirmLabels }
 
 // ── SlackConfirm 接口与工厂 ──────────────────────────
 

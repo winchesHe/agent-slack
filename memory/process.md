@@ -9,7 +9,7 @@
 - [x] P2 规则编写常量 (`selfImprove.constants.ts`) ✅ 2026-04-23
 - [x] P3 数据收集器 (`selfImprove.collector.ts`) ✅ 2026-04-23（未写测试文件，用户约束）
 - [x] P4 规则后处理器 (`selfImprove.generator.ts`) ✅ 2026-04-23（纯代码，无 LLM 调用；同步更新 design doc）
-- [ ] P5 双 tool 定义 + 注册 + SlackAdapter confirm 回调写 system.md + 端到端联调
+- [x] P5 双 tool 定义 + 注册 + ConfirmSender 透传 + system.md 追加 ✅ 2026-04-23（待用户端到端联调）
 - [ ] P4 规则生成器 (`selfImprove.generator.ts`) + 测试
 - [ ] P5 Tool 定义 + 注册 + 端到端联调
 
@@ -151,4 +151,48 @@
 
 **未验证**：未运行 `pnpm vitest` / `pnpm lint` / `tsc`（用户要求）。
 
+### P5 完成（2026-04-23）
+
+**设计文档补丁**：
+- §5.5.5 / §6.2 补充 ConfirmSender 透传链：`SlackAdapter → InboundMessage.confirmSender → Orchestrator → ToolsBuilder(currentUser, imContext) → ToolContext.confirm`
+- tool 层不感知 WebClient；Slack 具体实现封装在 SlackAdapter.app_mention 闭包内
+
+**新增文件**：
+- `src/agent/tools/selfImproveCollect.ts`
+  - `self_improve_collect` tool：调 `collector.collect(scope)`；附带 `AGENTS_RULE_WRITING_GUIDE` + `focus` 字段返回
+  - `scope: 'all' | 'recent'` 默认 recent
+- `src/agent/tools/selfImproveConfirm.ts`
+  - `self_improve_confirm` tool：接收 `rules: CandidateRule[]`
+  - 读 `paths.systemFile` → `generator.process(rules, existingRules)` → 经 `ctx.confirm.send()` 发送
+  - `onDecision` accept → `appendAcceptedRuleToSystemMd`：在 `## 由 self_improve 产生的规则` 标题下追加；不存在则创建；完全匹配文本去重
+  - 规则 entry 格式：HTML 注释元数据行（id / category / confidence / ISO timestamp）+ content
+  - 返回 `{ sent, skipped, reason? }`（reason ∈ `'no_confirm_channel' | 'all_filtered'`）
+
+**架构级变更（沿 ConfirmSender 透传链）**：
+- `src/im/types.ts`：新增 `ConfirmSender` / `ConfirmItem` / `ConfirmLabels` / `ConfirmCallback` / `ConfirmDecision` 共享类型；`InboundMessage` 新增 optional `confirmSender`
+- `src/im/slack/SlackConfirm.ts`：上述 5 个类型改为从 `@/im/types.ts` 导入 + re-export，保持向后兼容
+- `src/agent/tools/bash.ts`：`ToolContext` 新增 optional `confirm?: ConfirmSender`
+- `src/orchestrator/ConversationOrchestrator.ts`：新增 `IMContext` 接口；`ToolsBuilder` 签名改为 `(currentUser, imContext) => ToolSet`；handle 里构造 `imContext` 并透传
+- `src/im/slack/SlackAdapter.ts`：`app_mention` 构造 Slack 版 `ConfirmSender`（绑定 web/channelId/threadTs，内部委托 `deps.slackConfirm.send`），填入 InboundMessage.confirmSender
+- `src/application/createApplication.ts`：
+  - 新增 `createSelfImproveCollector` / `createSelfImproveGenerator` 装配
+  - `toolsBuilder` 签名扩展，透传 `ctx.confirm`
+  - `buildBuiltinTools` deps 扩展（memoryStore / selfImproveCollector / selfImproveGenerator / paths / logger）
+- `src/agent/tools/index.ts`：注册 `self_improve_collect` + `self_improve_confirm`；`BuiltinToolDeps` 接口化
+- `scripts/smoke.ts`：同步补齐新依赖
+
+**未实施**：
+- 未写 `selfImproveCollect.test.ts` / `selfImproveConfirm.test.ts`（用户约束"不要生成测试脚本"）
+- 端到端联调（真实 Slack 发送 @mention → 按钮 → system.md 写入）由用户自己验证
+
+**已知兼容点**：
+- `ToolsBuilder` 由 1 参改 2 参：`(currentUser) => {}` 形式仍兼容（TS 允许参数少于签名）；`ConversationOrchestrator.test.ts` / 集成测试的 `toolsBuilder: () => ({})` 无需改动
+- `buildBuiltinTools` 必填 deps 增多：`createApplication.test.ts` mock 返回值不受影响；`scripts/smoke.ts` 已同步
+
 **未验证**：未运行 `pnpm vitest` / `pnpm lint` / `tsc`（用户要求）。
+
+测试建议（口头）：
+1. `pnpm exec tsc --noEmit`
+2. `pnpm lint`
+3. `pnpm vitest run` 观察 SlackAdapter / Orchestrator 相关套件
+4. 真实 Slack：@bot 总结最近经验 → 观察两次 tool 调用 → 点击按钮 → 检查 `.agent-slack/system.md` 出现 `## 由 self_improve 产生的规则` + 采纳条目
