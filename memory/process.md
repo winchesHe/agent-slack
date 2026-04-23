@@ -2,6 +2,8 @@
 
 对应设计：`docs/superpowers/specs/2026-04-22-self-improve-design.md`
 
+衍生设计：`docs/superpowers/specs/2026-04-23-ask-confirm-design.md`（ask_confirm 阻塞按钮确认 tool）
+
 ## 实施计划
 
 - [x] P0 通用 SlackConfirm 模块 ✅ 2026-04-23
@@ -10,8 +12,14 @@
 - [x] P3 数据收集器 (`selfImprove.collector.ts`) ✅ 2026-04-23（未写测试文件，用户约束）
 - [x] P4 规则后处理器 (`selfImprove.generator.ts`) ✅ 2026-04-23（纯代码，无 LLM 调用；同步更新 design doc）
 - [x] P5 双 tool 定义 + 注册 + ConfirmSender 透传 + system.md 追加 ✅ 2026-04-23（待用户端到端联调）
-- [ ] P4 规则生成器 (`selfImprove.generator.ts`) + 测试
-- [ ] P5 Tool 定义 + 注册 + 端到端联调
+
+## ask_confirm 衍生任务（2026-04-23 开始）
+
+- [x] design doc 落地（ask-confirm-design.md）✅ 2026-04-23
+- [ ] Q0 ConfirmBridge 类
+- [ ] Q1 askConfirm tool
+- [ ] Q2 接入 createApplication / SlackAdapter / tools/index.ts
+- [ ] Q3 端到端联调
 
 ## 进度记录
 
@@ -273,3 +281,34 @@
   - 默认 `scope ?? '--all'`
   - describe 引导：用户说"最近经验"→传 7；指定天数→传对应数字；"全部"或未指定→默认 `--all`
 - `docs/superpowers/specs/2026-04-22-self-improve-design.md`：同步 §5 / §11 代码示例
+
+---
+
+## ask_confirm 衍生任务记录
+
+### 背景（2026-04-23）
+
+用户接了"开白名单"业务 skill，里面的用户确认当前用 LLM 大白话询问→用户文字回复，希望改为 Slack 按钮 + 阻塞等待。
+借鉴 `kagura/src/slack/interaction/user-input-bridge.ts` 的 Promise 桥模型，合并到 agent-slack 现有 SlackConfirm 按钮方案。
+
+与 `self_improve_confirm` 的区别：
+- `self_improve_confirm`：发完即返，副作用在 onDecision（写 system.md）
+- `ask_confirm`：阻塞 tool，用户点完才 return decisions，LLM 拿结果继续业务逻辑
+
+### design doc 5 个关键决策（已与用户讨论）
+
+1. 新增 `ask_confirm` tool，不扩展 `self_improve_confirm`（语义不同）
+2. 同 thread 单 pending（kagura 风格）
+3. 默认超时 10 分钟（可 timeoutMs 覆盖）
+4. 点击后 thread 回帖反馈（"✅ 已采纳 xxx / ❌ 已忽略 xxx / ⏱ 超时未决 xxx"）
+5. 超时后按钮 fallback：方案 C —— adapter 分支 + ephemeral 提示（代价最小，点击者有感知）
+
+### 实施计划
+
+| 阶段 | 内容 |
+|---|---|
+| Q0 | `src/im/slack/ConfirmBridge.ts`：Promise 桥 + 超时 + 单 pending + AbortSignal |
+| Q1 | `src/agent/tools/askConfirm.ts`：tool 定义 + postDecisionFeedback |
+| Q2 | 接入：createApplication 装配 / SlackAdapter action handler 加 `ask:*` 超时 fallback / tools/index.ts 注册 |
+| Q3 | 端到端联调 |
+
