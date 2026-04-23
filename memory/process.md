@@ -197,6 +197,36 @@
 3. `pnpm vitest run` 观察 SlackAdapter / Orchestrator 相关套件
 4. 真实 Slack：@bot 总结最近经验 → 观察两次 tool 调用 → 点击按钮 → 检查 `.agent-slack/system.md` 出现 `## 由 self_improve 产生的规则` + 采纳条目
 
+### P4 补记：generator 5 个子决策的权衡（2026-04-23 讨论同步）
+
+**架构 #1（走向）**：选"A + 双 tool + generator 纯代码"。核心洞察：主 Agent 已经在一轮 LLM 里跑，让它顺手做"提炼"（SessionRound → CandidateRule），generator 只做"机械清洗"纯函数。双 tool 让主 Agent 在 collect 和 confirm 中间可决策（例如"本次没啥可提炼"直接不调 confirm）。
+
+**架构 #2（generator 5 个子决策）**：
+
+1. **去重算法：Jaccard token 重叠 + 0.6**
+   - 拒 a. 精确哈希：改写即失效（"禁止使用 any，改用 unknown" ≠ "不要用 any，用 unknown"）
+   - 拒 c. 编辑距离：O(n²) 慢，对语序不免疫
+   - tokenize 每步的原因：
+     - `toLowerCase`：避免 "Any" ≠ "any"
+     - 去 Markdown 标点（\` \* _ > # [ ] ( ) ~）：避免 `**any**` ≠ `any`
+     - `\p{L}\p{N}` Unicode 切分：`\w` 不含中文
+     - `length ≥ 2`：剔除 "的" "a" 之类单字符噪音
+   - 阈值 0.6：0.5 太松（"禁止 any" 和 "禁止 unknown" 误判重），0.7 太严（近义改写漏判）。兜底靠用户点按钮，Jaccard 只做粗筛。
+
+2. **tool 返回 `{ sent, skipped, reason? }`**
+   - 拒 a. number：主 Agent 无法解释"为什么 0 条"
+   - 拒 c. 完整 CandidateRule[]：污染主 Agent context，浪费 token，可能幻觉出"再告诉用户规则内容"
+   - `reason` 枚举仅 2 个：`'no_confirm_channel'`（非 Slack 环境无 ConfirmSender）/ `'all_filtered'`（全部候选被 generator 过滤）；reason optional，正常路径不携带
+
+3. **排序：confidence + category.localeCompare（稳定）**
+   - 拒 a. 仅 confidence：组内顺序依赖上游 LLM，不可预期
+   - 拒 c. 保留原序：LLM 输出顺序依赖 few-shot + prompt
+   - 稳定性让测试可断言、截图可复现；同 category 连排是附带体验收益
+
+4. **tool 命名 snake_case**：`self_improve_collect` / `self_improve_confirm`。与 `bash` / `read_file` 一致，降低主 Agent 选 tool 的认知负担
+
+5. **导出 tokenize + jaccard**：纯函数 + 算法基石；导出后可直接 `import { tokenize, jaccard }` 做白盒单测（空串、纯 Markdown、中英混合、阈值 0.59/0.60/0.61 边界），不导出需通过构造 CandidateRule[] 间接触发，测试数据冗余 10 倍。代价是暴露内部 API，但两者语义极稳不会乱改。
+
 ### P5.1 `self_improve_collect` scope 改为 `'--all' | number`（2026-04-23）
 
 **起因**：用户 review 后指出 P3 收集器写死"最近 7 天"不合理，应允许模型按用户意图选择范围。
