@@ -62,7 +62,7 @@ export function createSlackConfirm(deps: { logger: Logger }): SlackConfirm {
             thread_ts: threadTs,
             blocks: buildConfirmBlocks(item, namespace, labels),
             text: item.body,
-          })
+          } as Parameters<WebClient['chat']['postMessage']>[0])
         } catch (err) {
           log.warn('发送确认消息失败', { itemId: item.id, err })
         }
@@ -93,9 +93,9 @@ export function parseConfirmActionId(
   const match = actionId.match(/^confirm:([^:]+):(accept|reject):(.+)$/)
   if (!match) return undefined
   return {
-    namespace: match[1],
+    namespace: match[1]!,
     decision: match[2] as ConfirmDecision,
-    itemId: match[3],
+    itemId: match[3]!,
   }
 }
 
