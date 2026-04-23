@@ -54,9 +54,29 @@ export interface SessionStore {
   getMeta(id: string): Promise<SessionMeta | undefined>
   loadMessages(id: string): Promise<CoreMessage[]>
   appendMessage(id: string, msg: CoreMessage): Promise<void>
+  /** 追加一条非对话型运行事件到 <sessionDir>/events.jsonl（目录不存在则跳过） */
+  appendEvent(
+    args: { channelName: string; channelId: string; threadTs: string },
+    event: SessionEvent,
+  ): Promise<void>
   accumulateUsage(id: string, step: StepUsage): Promise<void>
   accumulateCost(id: string, usd: number): Promise<void>
   setStatus(id: string, status: SessionMeta['status']): Promise<void>
+}
+
+// ── 运行事件（非 CoreMessage）────────────────────────────
+export type SessionEvent = ConfirmActionEvent
+
+export interface ConfirmActionEvent {
+  type: 'confirm_action'
+  timestamp: string
+  namespace: string
+  itemId: string
+  decision: 'accept' | 'reject'
+  userId?: string
+  channelId: string
+  messageTs: string
+  callbackError?: string
 }
 
 export function createSessionStore(paths: WorkspacePaths): SessionStore {
@@ -130,6 +150,12 @@ export function createSessionStore(paths: WorkspacePaths): SessionStore {
 
     async appendMessage(id, msg) {
       await appendFile(path.join(resolveDir(id), 'messages.jsonl'), JSON.stringify(msg) + '\n')
+    },
+
+    async appendEvent(args, event) {
+      const dir = slackSessionDir(paths, args.channelName, args.channelId, args.threadTs)
+      if (!existsSync(path.join(dir, 'meta.json'))) return
+      await appendFile(path.join(dir, 'events.jsonl'), JSON.stringify(event) + '\n')
     },
 
     async accumulateUsage(id, step) {

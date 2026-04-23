@@ -755,6 +755,7 @@ describe('ConversationOrchestrator 粗事件消费', () => {
         messages.push(msg)
         messagesBySession.set(id, messages)
       },
+      async appendEvent() {},
       async accumulateUsage() {},
       async accumulateCost() {},
       async setStatus(id, status) {
