@@ -25,10 +25,22 @@ interface MockSlackClient {
 
 const boltMock = vi.hoisted(() => {
   const handlers = new Map<string, SlackEventHandler>()
+  const actionHandlers: Array<{
+    pattern: string | RegExp
+    handler: (args: Record<string, unknown>) => Promise<void>
+  }> = []
   const app = {
     event: vi.fn((name: string, handler: SlackEventHandler) => {
       handlers.set(name, handler)
     }),
+    action: vi.fn(
+      (
+        pattern: string | RegExp,
+        handler: (args: Record<string, unknown>) => Promise<void>,
+      ) => {
+        actionHandlers.push({ pattern, handler })
+      },
+    ),
     start: vi.fn(async () => {}),
     stop: vi.fn(async () => {}),
   }
@@ -37,6 +49,7 @@ const boltMock = vi.hoisted(() => {
     App: vi.fn(() => app),
     app,
     handlers,
+    actionHandlers,
   }
 })
 
@@ -110,6 +123,10 @@ function createDeps(
     abortRegistry: overrides.abortRegistry ?? new AbortRegistry<string>(),
     runQueue: overrides.runQueue ?? new SessionRunQueue(),
     renderer: stubRenderer(),
+    slackConfirm: {
+      send: vi.fn(async () => {}),
+      getCallback: vi.fn(() => undefined),
+    },
     logger: overrides.logger ?? stubLogger(),
     botToken: 'xoxb-test-token',
     appToken: 'xapp-test-token',
@@ -128,6 +145,7 @@ function getRegisteredHandler(name: string): SlackEventHandler {
 describe('SlackAdapter', () => {
   beforeEach(() => {
     boltMock.handlers.clear()
+    boltMock.actionHandlers.length = 0
     vi.clearAllMocks()
   })
 

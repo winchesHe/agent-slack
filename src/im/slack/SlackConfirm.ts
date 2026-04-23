@@ -100,7 +100,7 @@ export function parseConfirmActionId(
 }
 
 // 使用 Record<string, unknown> 来表示 Slack Block，与项目中 SlackRenderer.ts 风格一致
-type SlackBlock = Record<string, unknown>
+export type SlackBlock = Record<string, unknown>
 
 export function buildConfirmBlocks(
   item: ConfirmItem,

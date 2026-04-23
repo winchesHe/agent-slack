@@ -16,6 +16,7 @@ import { SessionRunQueue } from '@/orchestrator/SessionRunQueue.ts'
 import { AbortRegistry } from '@/orchestrator/AbortRegistry.ts'
 import { createSlackAdapter } from '@/im/slack/SlackAdapter.ts'
 import { createSlackRenderer } from '@/im/slack/SlackRenderer.ts'
+import { createSlackConfirm } from '@/im/slack/SlackConfirm.ts'
 import { ConfigError } from '@/core/errors.ts'
 import type { Application } from './types.ts'
 
@@ -91,12 +92,14 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
   })
 
   const renderer = createSlackRenderer({ logger })
+  const slackConfirm = createSlackConfirm({ logger })
 
   const slack = createSlackAdapter({
     orchestrator,
     abortRegistry,
     runQueue,
     renderer,
+    slackConfirm,
     logger,
     botToken: slackBotToken,
     appToken: slackAppToken,
