@@ -8,7 +8,8 @@
 - [x] P1 SlackAdapter 接入 `app.action(/^confirm:/)` 通用处理器 ✅ 2026-04-23
 - [x] P2 规则编写常量 (`selfImprove.constants.ts`) ✅ 2026-04-23
 - [x] P3 数据收集器 (`selfImprove.collector.ts`) ✅ 2026-04-23（未写测试文件，用户约束）
-- [ ] P4 规则生成器 (`selfImprove.generator.ts`) + 测试
+- [x] P4 规则后处理器 (`selfImprove.generator.ts`) ✅ 2026-04-23（纯代码，无 LLM 调用；同步更新 design doc）
+- [ ] P5 双 tool 定义 + 注册 + SlackAdapter confirm 回调写 system.md + 端到端联调
 - [ ] P4 规则生成器 (`selfImprove.generator.ts`) + 测试
 - [ ] P5 Tool 定义 + 注册 + 端到端联调
 
@@ -114,5 +115,40 @@
 - 未改 `tools/index.ts`（collector 还没有调用处，P5 再接入）。
 
 **补丁**：`analyzeMessages` 改为 `export function`（零行为变更），便于 P4 复用与未来单测。
+
+### P4 完成（2026-04-23）
+
+**设计文档更新**（架构级决策同步）：
+- `docs/superpowers/specs/2026-04-22-self-improve-design.md`
+  - §5.1 改为**双 tool 模式**（`self_improve_collect` + `self_improve_confirm`），替代原单一 `self_improve` tool
+  - §5.4 规则生成器 → **规则后处理器**：职责改为纯代码去重/排序/过滤，**不调 LLM**
+  - §6.1 `buildBuiltinTools` 注册两个 tool
+  - §6.2 依赖表移除 `model: LanguageModel`；新增 `selfImproveCollector` / `selfImproveGenerator`
+  - §7 文件清单：拆出 `selfImproveCollect.ts` / `selfImproveConfirm.ts`；generator 标注为"纯代码"
+  - §8 交互流程改为"主 Agent 生成 JSON → confirm tool 后处理 + 发送"
+  - §9.1 明确最终结论：采用双 tool 方案，tool 不调 LLM
+  - §10 勾掉 #3 #4 两个未解决问题（已决）
+  - §11 实施计划更新 P4/P5 描述
+
+**产出文件**：
+- `src/agent/tools/selfImprove.generator.ts`
+  - 导出 `CandidateRule` / `SelfImproveGenerator`
+  - 工厂 `createSelfImproveGenerator()` → `{ process(rules, existingRules) }`
+  - 校验：`isValidRule` 剔除字段缺失 / content 空串的条目（使用 type guard 形态）
+  - 去重：`tokenize` 归一化（lowercase、去 Markdown 标点、按非字母数字切分、过滤长度 <2 的 token）；`jaccard` 相似度阈值 `JACCARD_THRESHOLD = 0.6`
+  - `splitExistingRules` 对 `.agent-slack/system.md` 原文按 Markdown 标题 / 列表项切片，得到对比用的"规则单元"集合
+  - 保留顺序做组内两两查重，优先保留首条
+  - 排序：confidence（high 在前）→ category 字典序，稳定
+  - 完全纯函数：相同输入 → 相同输出
+
+**边界**：
+- 不调 LLM、不读写任何文件
+- JACCARD_THRESHOLD / tokenize 规则为保守的一期实现；后续可替换为 embedding
+
+**未实施**：
+- 未写 `selfImprove.generator.test.ts`（用户约束"不要生成测试脚本"）。测试方案另文口头说明。
+- 未接入 `tools/index.ts` / `createApplication.ts`（P5 再集成）。
+
+**未验证**：未运行 `pnpm vitest` / `pnpm lint` / `tsc`（用户要求）。
 
 **未验证**：未运行 `pnpm vitest` / `pnpm lint` / `tsc`（用户要求）。

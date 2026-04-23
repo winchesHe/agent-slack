@@ -54,24 +54,45 @@
 
 ## 5. 核心模块设计
 
-### 5.1 Tool 定义：`src/agent/tools/selfImprove.ts`
+### 5.1 Tool 定义（双 tool 模式）
+
+按 §9.1 结论，不在 tool 内调 LLM。拆成两个 tool：主 Agent 先调 `self_improve_collect` 拿数据，在自己的 assistant 回合里按 `AGENTS_RULE_WRITING_GUIDE` 生成候选规则 JSON，再调 `self_improve_confirm` 做后处理 + 发送确认。
 
 ```typescript
-import { tool } from 'ai'
-import { z } from 'zod'
-
-export function selfImproveTool(ctx: ToolContext, deps: SelfImproveDeps) {
+// src/agent/tools/selfImproveCollect.ts
+export function selfImproveCollectTool(ctx: ToolContext, deps: SelfImproveCollectDeps) {
   return tool({
     description:
-      '分析工作区的历史对话和记忆，提取反复出现的模式和经验教训，生成高质量规则。生成后会逐条发给用户确认。',
+      '收集当前工作区的 session 历史与 memory，返回摘要数据与 AGENTS.md 规则编写指南。调用后你需要基于返回的数据自行提炼候选规则，再调用 self_improve_confirm 做发送。',
     parameters: z.object({
       scope: z.enum(['all', 'recent']).optional().describe('分析范围：all=全部历史，recent=最近 7 天。默认 recent'),
-      focus: z.string().optional().describe('聚焦分析的主题，如 "代码风格"、"错误处理"'),
+      focus: z.string().optional().describe('聚焦主题提示，仅透传到返回值的 focus 字段，供你自行参考'),
     }),
     async execute({ scope, focus }) {
-      // 1. 收集数据源
-      // 2. 调用 LLM 分析生成候选规则
-      // 3. 返回规则列表（由 Agent 逐条发 Block Kit 消息）
+      const data = await collector.collect(scope ?? 'recent')
+      return { ...data, guide: AGENTS_RULE_WRITING_GUIDE, focus: focus ?? null }
+    },
+  })
+}
+
+// src/agent/tools/selfImproveConfirm.ts
+export function selfImproveConfirmTool(ctx: ToolContext, deps: SelfImproveConfirmDeps) {
+  return tool({
+    description:
+      '将你已生成的候选规则发送到 Slack 供用户逐条点击确认。tool 会做去重、排序、过滤后，再以按钮消息发送。',
+    parameters: z.object({
+      rules: z.array(z.object({
+        id: z.string(),
+        content: z.string(),
+        category: z.string(),
+        confidence: z.enum(['high', 'medium']),
+        evidence: z.string(),
+      })),
+    }),
+    async execute({ rules }) {
+      const processed = generator.process(rules, existingRules)
+      await slackConfirm.send({ ... })
+      return { sent: processed.length, skipped: rules.length - processed.length }
     },
   })
 }
@@ -117,23 +138,34 @@ export interface SessionSummary {
 - 读取现有 `system.md` 避免重复
 - **Token 控制**：对话内容不全量传入，只提取关键信号（错误、纠正、重复模式）
 
-### 5.4 规则生成器：`src/agent/tools/selfImprove.generator.ts`
+### 5.4 规则后处理器（generator）：`src/agent/tools/selfImprove.generator.ts`
+
+**职责已变更**：本模块**不调 LLM**，纯代码后处理。由 `self_improve_confirm` tool 调用，负责在主 Agent 生成候选规则后做：
+
+1. **字段校验 & 归一化**：剔除 `content` 为空、`id` 缺失的条目
+2. **与现有规则去重**：用简化文本匹配（规范化空白 + 小写后做 `includes` / Jaccard 比较），命中 existingRules 的候选丢弃
+3. **组内去重**：同一批候选里语义高度重复的合并保留首个
+4. **排序**：按 `confidence`（high > medium） + `category` 稳定排序
 
 ```typescript
 export interface CandidateRule {
-  id: string                      // uuid，用于 Block Kit action_id
-  content: string                 // 规则正文（Markdown）
-  category: string                // 分类：code-standards | behavior | guardrails | workflow
-  confidence: 'high' | 'medium'  // 置信度
-  evidence: string                // 来源证据摘要
+  id: string
+  content: string
+  category: string
+  confidence: 'high' | 'medium'
+  evidence: string
+}
+
+export interface SelfImproveGenerator {
+  /** 返回经过过滤/去重/排序的候选规则，供发送给用户确认 */
+  process(rules: CandidateRule[], existingRules: string): CandidateRule[]
 }
 ```
 
-职责：
-- 接收 `CollectedData` + 规则编写常量
-- 调用 LLM 分析数据，生成 `CandidateRule[]`
-- 过滤掉与现有规则重复的条目
-- 按置信度排序
+职责边界：
+- **不**调 LLM、不读文件；接收纯数据，返回纯数据
+- 一期去重用文本归一化 + `includes` / 简单 Jaccard（≥0.6 判重复）；语义级去重留待后续
+- 保证幂等：相同输入得到相同输出
 
 ### 5.5 通用 Slack 确认交互模块：`src/im/slack/SlackConfirm.ts`
 
@@ -371,28 +403,35 @@ await slackConfirm.send({
 ### 6.1 `src/agent/tools/index.ts`
 
 ```typescript
-export function buildBuiltinTools(ctx: ToolContext, deps: { memoryStore: MemoryStore }): ToolSet {
+export function buildBuiltinTools(ctx: ToolContext, deps: BuiltinToolDeps): ToolSet {
   return {
     bash: bashTool(ctx),
     edit_file: editFileTool(ctx),
     save_memory: saveMemoryTool(ctx, { memoryStore: deps.memoryStore }),
-    self_improve: selfImproveTool(ctx, { /* deps */ }),
+    self_improve_collect: selfImproveCollectTool(ctx, { collector: deps.selfImproveCollector }),
+    self_improve_confirm: selfImproveConfirmTool(ctx, {
+      generator: deps.selfImproveGenerator,
+      slackConfirm: deps.slackConfirm,
+      paths: ctx.paths,
+      logger: ctx.logger,
+    }),
   }
 }
 ```
 
 ### 6.2 依赖注入
 
-`selfImproveTool` 需要以下依赖（通过 `createApplication` 注入）：
+通过 `createApplication` 注入：
 
 | 依赖 | 来源 | 用途 |
 |---|---|---|
 | `paths: WorkspacePaths` | `ctx.paths` | 定位 sessions/memory/system.md 目录 |
-| `model: LanguageModel` | runtime | 规则生成的 LLM 调用 |
-| `slackConfirm: SlackConfirm` | SlackAdapter 共享 | 通用确认交互 |
+| `selfImproveCollector` | `createSelfImproveCollector({ paths, logger })` | 数据采集 |
+| `selfImproveGenerator` | `createSelfImproveGenerator()` | 候选规则后处理（去重/排序/过滤） |
+| `slackConfirm: SlackConfirm` | SlackAdapter 共享实例 | 通用确认交互 |
 | `logger` | ctx | 日志 |
 
-> **注意**：self_improve tool 需要自己调用 LLM 来分析数据并生成规则，这是一个 "tool 内部再调 LLM" 的模式。可通过 deps 注入 model 实现。
+> **注意**：candidate rule 的生成由**主 Agent** 在自己的 assistant 回合里完成，**不**在 tool 内调 LLM。tool 只做纯代码处理与 IO。
 
 ## 7. 文件清单
 
@@ -400,14 +439,15 @@ export function buildBuiltinTools(ctx: ToolContext, deps: { memoryStore: MemoryS
 |---|---|---|
 | `src/im/slack/SlackConfirm.ts` | **新增** | 通用 Block Kit 确认交互模块（IM 层，业务无关） |
 | `src/im/slack/SlackConfirm.test.ts` | **新增** | `buildConfirmBlocks` 纯函数单测 + callback 路由单测 |
-| `src/agent/tools/selfImprove.ts` | **新增** | Tool 定义 & 主流程编排 |
-| `src/agent/tools/selfImprove.constants.ts` | **新增** | AGENTS.md 编写规则常量 |
-| `src/agent/tools/selfImprove.collector.ts` | **新增** | 数据收集器（读 sessions/memory） |
-| `src/agent/tools/selfImprove.generator.ts` | **新增** | 规则生成器（调 LLM 分析） |
+| `src/agent/tools/selfImprove.constants.ts` | **新增** | AGENTS.md 编写规则常量（`AGENTS_RULE_WRITING_GUIDE`） |
+| `src/agent/tools/selfImprove.collector.ts` | **新增** | 数据收集器（读 sessions/memory/system.md） |
+| `src/agent/tools/selfImprove.generator.ts` | **新增** | 规则后处理（去重/排序/过滤，**纯代码**） |
+| `src/agent/tools/selfImproveCollect.ts` | **新增** | `self_improve_collect` tool 定义 |
+| `src/agent/tools/selfImproveConfirm.ts` | **新增** | `self_improve_confirm` tool 定义 |
 | `src/agent/tools/selfImprove.test.ts` | **新增** | 单元测试 |
-| `src/agent/tools/index.ts` | 修改 | 注册 self_improve tool |
+| `src/agent/tools/index.ts` | 修改 | 注册两个 tool |
 | `src/im/slack/SlackAdapter.ts` | 修改 | 注册通用 `app.action(/^confirm:/)` 处理器 |
-| `src/application/createApplication.ts` | 修改 | 创建 SlackConfirm 实例并注入 |
+| `src/application/createApplication.ts` | 修改 | 创建 SlackConfirm / collector / generator 并注入 |
 
 ## 8. 交互流程
 
@@ -415,20 +455,22 @@ export function buildBuiltinTools(ctx: ToolContext, deps: { memoryStore: MemoryS
 用户: @bot 帮我总结一下最近的经验，生成规则
   │
   ▼
-Agent: 调用 self_improve({ scope: 'recent' })
+Agent: 调用 self_improve_collect({ scope: 'recent' })
   │
   ▼
-Tool: 收集最近 7 天的 session 数据 + memory
+Tool: 收集最近 7 天的 session 数据 + memory + existingRules，
+      附带 AGENTS_RULE_WRITING_GUIDE 返回给 Agent
   │
   ▼
-Tool: 调用 LLM 分析，生成 5 条候选规则
+Agent: 基于返回数据 + guide，在自己的 assistant 回合里生成候选规则 JSON
   │
   ▼
-Tool: 返回规则列表给 Agent
+Agent: 调用 self_improve_confirm({ rules: [...] })
   │
   ▼
-Agent: "我分析了最近 12 个 session，发现以下 5 条可提炼的规则："
-       逐条发 Block Kit 消息（带 ✅采纳 / ❌跳过 按钮）
+Tool: generator.process() 去重/排序/过滤
+      → slackConfirm.send() 每条一张 Block Kit 消息（✅采纳 / ❌跳过）
+      → 返回 { sent, skipped }
   │
   ▼
 用户: 点击 ✅ 或 ❌
@@ -440,21 +482,22 @@ app.action(): 采纳 → 追加到 system.md，更新消息为 "✅ 已采纳"
 
 ## 9. 关键设计决策
 
-### 9.1 Tool 内部再调 LLM
+### 9.1 Tool 内部不调 LLM，拆双 tool（最终结论）
 
-self_improve 的核心工作是 "从对话历史中提取模式"，这必须由 LLM 完成。方案：通过 deps 注入 `model`，在 tool execute 内部使用 `generateText()` 做二次 LLM 调用。
+self_improve 的核心工作是 "从对话历史中提取模式"，由 LLM 完成。两种方案：
 
-**替代方案**：不在 tool 内调 LLM，而是 tool 只负责收集数据，然后返回给主 Agent，让主 Agent 用自身上下文生成规则。
+**方案 A（最初设想）**：tool 内部调用 `generateText()`，通过 deps 注入 `model`，一次性产出 CandidateRule[]。
+- 缺点：tool 新增 `model` 依赖，打破 "tool 只处理纯代码/IO" 的定位；可测性下降（单测要 mock LLM）。
 
-**选择**：采用替代方案更简单——tool 只做数据收集和规则写入，规则生成由主 Agent 完成。这样避免了 "tool 内部需要 model" 的依赖复杂度。
+**方案 B（最终采纳）**：拆两个 tool
+- `self_improve_collect`：只收集数据 + 返回 `AGENTS_RULE_WRITING_GUIDE` 给主 Agent
+- 主 Agent：在 assistant 回合里基于数据 + guide 生成候选规则 JSON
+- `self_improve_confirm`：接收主 Agent 产出的 rules，generator 做纯代码后处理（去重/排序/过滤），再 `slackConfirm.send` 发送
 
-最终拆分：
-- `self_improve_collect`：收集 session/memory 数据，返回摘要
-- Agent 自身：根据摘要 + 规则编写常量（注入 system prompt）生成规则
-- Agent 自身：调用 Slack API 发送 Block Kit 确认消息（或通过新 tool）
-- `self_improve_save`：将已确认规则写入 system.md
-
-> 但这样 Agent 需要多轮 tool call，且 Block Kit 消息的发送不属于 Agent 的职责。最终决策待 review 确定。
+**决策**：采用方案 B。理由：
+- tool 只做纯代码 + IO，单测不需要 mock LLM
+- 主 Agent 已有完整 LLM 能力 + session context + system prompt，生成规则质量更可信
+- 和 save_memory 风格一致：tool 只负责写入，"什么值得保存" 由主 Agent 判断
 
 ### 9.2 Block Kit 交互 vs 纯文本确认
 
@@ -478,10 +521,10 @@ Block Kit 按钮优势：
 
 ## 10. 未解决问题
 
-1. **Token 预算**：session 数据可能很大，如何控制传给 LLM 的 token 量？→ collector 只提取关键信号
-2. **规则去重**：如何检测新规则与现有规则的语义重复？→ 一期用简单文本匹配，后续可加 embedding
-3. **Tool 拆分 vs 单一 Tool**：是做一个 `self_improve` 还是拆成 `self_improve_collect` + `self_improve_save`？→ 待 review
-4. **LLM 调用方式**：tool 内部调 LLM 还是让主 Agent 生成规则？→ 待 review
+1. **Token 预算**：session 数据可能很大，如何控制传给 LLM 的 token 量？→ collector 只提取关键信号（已实施：highlights 6 条上限、单条 300 字符截断）
+2. **规则去重**：如何检测新规则与现有规则的语义重复？→ 一期用文本归一化 + `includes` / Jaccard，后续可加 embedding
+3. ~~Tool 拆分 vs 单一 Tool~~ → 已决：**双 tool**（`self_improve_collect` + `self_improve_confirm`）
+4. ~~LLM 调用方式：tool 内部调 LLM 还是让主 Agent 生成规则~~ → 已决：**主 Agent 生成**，tool 不调 LLM
 5. **Slack App 权限**：`app.action()` 需要在 Slack App 配置中开启 Interactivity，需确认 Socket Mode 下是否自动支持
 
 ## 11. 实施计划
@@ -492,5 +535,5 @@ Block Kit 按钮优势：
 | P1 | SlackAdapter 接入 `app.action(/^confirm:/)` | 注册通用处理器，P0 完成后即可验证按钮交互 |
 | P2 | 规则编写常量 (`selfImprove.constants.ts`) | 独立可交付，无代码依赖 |
 | P3 | 数据收集器 (`selfImprove.collector.ts`) + 测试 | 核心 |
-| P4 | 规则生成器 (`selfImprove.generator.ts`) + 测试 | 核心 |
-| P5 | Tool 定义 + 注册 + 端到端联调 | 集成 |
+| P4 | 规则后处理器 (`selfImprove.generator.ts`) + 测试 | **纯代码**，不调 LLM |
+| P5 | 双 tool 定义 + 注册 + SlackAdapter 的 confirm 回调接入 system.md 追加 + 端到端联调 | 集成 |
