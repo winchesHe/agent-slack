@@ -6,7 +6,7 @@
 
 - [x] P0 通用 SlackConfirm 模块 ✅ 2026-04-23
 - [x] P1 SlackAdapter 接入 `app.action(/^confirm:/)` 通用处理器 ✅ 2026-04-23
-- [ ] P2 规则编写常量 (`selfImprove.constants.ts`)
+- [x] P2 规则编写常量 (`selfImprove.constants.ts`) ✅ 2026-04-23
 - [ ] P3 数据收集器 (`selfImprove.collector.ts`) + 测试
 - [ ] P4 规则生成器 (`selfImprove.generator.ts`) + 测试
 - [ ] P5 Tool 定义 + 注册 + 端到端联调
@@ -61,3 +61,23 @@
 - 未在本 chunk 补 handleConfirmAction 的专用单测；按用户"不要生成测试脚本"约束跳过。
 
 **未验证**：未运行 `pnpm vitest` / `pnpm lint` / `tsc`（用户要求不编译/不运行，改由用户 review 后自行验证）。
+
+### P2 完成（2026-04-23）
+
+**产出文件**：
+- `src/agent/tools/selfImprove.constants.ts`：导出单一常量 `AGENTS_RULE_WRITING_GUIDE: string`
+  - 中文 Markdown 原文，将在 P4 generator 调用 LLM 时作为 system prompt 的一部分注入
+  - 内容覆盖设计文档 §5.2 要求的全部要素：
+    - §1 好规则的标准（命中 agent 回答安装/构建/测试/目录/约定/护栏/完成前检查等问题）
+    - §2 核心设计规则（最小完整操作文档 + 反例 / 正例对照）
+    - §3 编写原则 P0-P6（Token 成本 / 邻近性 / 具体性 / 护栏优先 / 密度 / 训练对齐 / 可验证性）
+    - §4 决策规则（具体事实 > 通用指导 / 短命令 > 解释 / 约束 > 愿望 / ≥2 证据）
+    - §5 自检清单（6 条，未通过则不输出）
+    - §6 输出格式约束（每条 1-3 行，Markdown 片段示例）
+  - 用 `as const` 收紧类型（字面量字符串）
+
+**设计边界**：
+- 文件**只含纯文本常量**，不含任何 IO / 逻辑 / 读写 AGENTS.md。
+- 不涉及调用处（generator 是 P4 范围），此 chunk 不改 `tools/index.ts`。
+
+**未验证**：未运行 `pnpm vitest` / `pnpm lint` / `tsc`（用户要求）。
