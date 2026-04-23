@@ -344,14 +344,18 @@ kagura 的 `SlackUserInputBridge` 也是单 pending。理由：
 
 ## 10. 实施计划
 
-| 阶段 | 内容 |
-|---|---|
-| Q0 | `ConfirmBridge` 类 + 单测（resolve/reject/timeout/abort/并发） |
-| Q1 | `askConfirm` tool（含 postDecisionFeedback） |
-| Q2 | 接入 createApplication + tools/index.ts |
-| Q3 | 端到端联调（真实 Slack）|
+| 阶段 | 内容 | 状态 |
+|---|---|---|
+| Q0 | `ConfirmBridge` 类 + 单测（resolve/reject/timeout/abort/并发） | ✅ |
+| Q1 | `askConfirm` tool | ✅ |
+| Q2 | 接入 createApplication + tools/index.ts | ✅ |
+| Q3 | 端到端联调（真实 Slack）| ✅ |
 
-完成标准：
+**联调结果**（2026-04-23）：
+- 发现 namespace 含冒号导致 `parseConfirmActionId` 拆错的 bug，已修（namespace 分隔符改 `-`）
+- 用户反馈 thread 回帖反馈多余，已去掉 `postFeedback`（接口 + 实现 + 调用 + helper 全删）
+
+完成标准（已验证）：
 - 主 Agent `@bot 帮我确认开白名单给 [A, B, C]` 能触发 ask_confirm，收到按钮卡片
-- 逐一点击后卡片分别更新，thread 出现反馈消息
+- 逐一点击后卡片分别更新
 - Tool 返回后 LLM 看到 decisions，继续执行后续业务

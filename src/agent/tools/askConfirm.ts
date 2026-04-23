@@ -34,14 +34,14 @@ export function askConfirmTool(ctx: ToolContext, deps: AskConfirmDeps) {
   return tool({
     description:
       '向用户发送 Slack 按钮请求确认并阻塞等待用户点击，返回每个 item 的 accept/reject 决定。' +
-      '当你需要用户对一组具体条目逐一确认（例如"这些人要开白名单，请确认"）时调用。' +
+      '当你需要询问用户是否同意或确认某个操作时（例如“是否同意执行开白的操作”）。' +
       'tool 会等用户全部点完或超时才返回，所以在拿到返回值前不要假设用户已同意。' +
       '返回 decisions 里每个条目可能是 accept / reject / timeout。',
     parameters: z.object({
       title: z
         .string()
         .min(1)
-        .describe('确认卡片顶部总标题（例如"以下 3 位用户即将开白名单，请逐一确认"）'),
+        .describe('确认卡片顶部总标题'),
       items: z.array(askConfirmItemSchema).min(1).max(20),
       timeoutMs: z
         .number()

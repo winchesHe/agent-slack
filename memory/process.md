@@ -366,3 +366,14 @@ chunk 2（完整）：
 - `pnpm test`：193 通过 + 5 失败（均为 baseline pre-existing，都在 createApplication.test.ts，与 ask_confirm 无关）
 - ❌ **未做**：端到端 Slack 联调（Q3）
 
+
+### Q3 完成（2026-04-23）
+
+**真实 Slack 联调结果**：
+- 发现 bug：namespace 含冒号（`ask:${toolCallId}`）导致 `parseConfirmActionId` 正则 `^confirm:([^:]+):(accept|reject):(.+)$` 拆错，按钮点了没反应 → 改分隔符为 `-`（`ask-${toolCallId}`），2 处同步：`askConfirm.ts` + `SlackAdapter.ts` 的 fallback 判定
+- 用户要求去掉 thread 回帖反馈：`ConfirmSender.postFeedback` 字段 + `SlackAdapter` 实现 + `askConfirm` 调用 + `buildFeedbackText` helper 全删
+- 正常点按钮路径已通过（用户确认）
+- 提交：`1a0a6d9` feat(ask-confirm): Q0-Q2 实现阻塞式按钮确认 tool（包含 Q3 发现的 bug 修复与反馈去除）
+
+**ask_confirm 整体完成** ✅
+
