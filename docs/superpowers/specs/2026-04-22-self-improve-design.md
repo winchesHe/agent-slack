@@ -34,6 +34,11 @@
                                   返回 JSON 规则列表给 Agent
                                             │
                                             ▼
+                           self_improve_confirm 内 LLM 语义去重
+                           （对照 experience.md + system.md 筛选 keep 集合；
+                            失败降级为 Jaccard generator）
+                                            │
+                                            ▼
                                   Agent 逐条发 Block Kit 消息
                                   （✅ 采纳 / ❌ 跳过 按钮）
                                             │
@@ -50,7 +55,7 @@
 | Session 对话记录 | `.agent-slack/sessions/slack/*/messages.jsonl` | 完整的 user/assistant/tool 消息 JSONL |
 | Session 元数据 | `.agent-slack/sessions/slack/*/meta.json` | 状态、用量、时间戳 |
 | 用户长期记忆 | `.agent-slack/memory/*.md` | agent 主动保存的用户偏好/知识 |
-| 现有规则 | `.agent-slack/system.md` 或项目 `AGENTS.md` | 避免生成重复规则 |
+| 现有规则 | `.agent-slack/experience.md`（以及 `system.md` / 项目 `AGENTS.md`，供去重参考） | 避免生成重复规则 |
 
 ## 5. 核心模块设计
 
@@ -118,7 +123,7 @@ export function selfImproveConfirmTool(ctx: ToolContext, deps: SelfImproveConfir
 export interface CollectedData {
   sessions: SessionSummary[]      // 从 messages.jsonl 提取的摘要
   memories: MemoryEntry[]         // 用户记忆内容
-  existingRules: string           // 现有 system.md / AGENTS.md 内容
+  existingRules: string           // 现有 experience.md + system.md + AGENTS.md 合并内容（去重参考）
 }
 
 export interface SessionSummary {
@@ -131,6 +136,8 @@ export interface SessionSummary {
   updatedAt: string
   // 结构化按 API round 保留，借鉴 Claude Code compact 思路：user→assistant→tool 为一组
   rounds: SessionRound[]
+  // confirm 按钮决策审计，来自 events.jsonl（自 P7 起）
+  confirmActions: ConfirmActionSummary[]
 }
 
 export interface SessionRound {
@@ -138,19 +145,29 @@ export interface SessionRound {
   assistantTexts: string[]                           // 每条截 1000 字
   toolCalls: { name: string; error?: string }[]     // 成功只记 name，失败保留 error 片段
 }
+
+export interface ConfirmActionSummary {
+  namespace: string                                  // ask-<toolCallId> | self_improve
+  itemId: string
+  decision: 'accept' | 'reject'
+  timestamp: string
+  callbackError?: string                             // 点击成功但业务 callback 失败时保留（截 500 字）
+}
 ```
 
 职责：
 - 遍历 `.agent-slack/sessions/slack/` 下所有 session 目录
 - 按 `scope` 参数过滤时间范围
 - 从 `messages.jsonl` 按 user 消息分 round，结构化提取 user / assistant / tool 内容
+- 从 `events.jsonl` 读 `confirm_action` 事件（其他类型忽略），供主 Agent 识别"哪些建议被用户拒绝 / 接受"等偏好信号
 - 从 `memory/*.md` 读取用户记忆
-- 读取现有 `system.md` 避免重复
+- 读取现有 `experience.md`（以及 `system.md` / `AGENTS.md`）避免重复
 - **Token 控制**：单 session rounds 序列化超过 `MAX_SESSION_CHARS = 12000`（~3000 tokens）时从最旧 round 往后丢
+- **调试支持**：`collect()` 完成时打 `debug` 日志输出 `SessionSummary` 轻量视图（sessionId / channelName / messageCount / toolUsage / roundCount / confirmActionCount），便于 `LOG_LEVEL=debug` 时排障
 
 ### 5.4 规则后处理器（generator）：`src/agent/tools/selfImprove.generator.ts`
 
-**职责已变更**：本模块**不调 LLM**，纯代码后处理。由 `self_improve_confirm` tool 调用，负责在主 Agent 生成候选规则后做：
+**职责已变更**：本模块**不调 LLM**，纯代码后处理。由 `self_improve_confirm` tool 作为 **LLM 语义去重失败时的 fallback** 调用，负责在主 Agent 生成候选规则后做：
 
 1. **字段校验 & 归一化**：剔除 `content` 为空、`id` 缺失的条目
 2. **与现有规则去重**：用简化文本匹配（规范化空白 + 小写后做 `includes` / Jaccard 比较），命中 existingRules 的候选丢弃
@@ -433,6 +450,59 @@ await slackConfirm.send({
 })
 ```
 
+### 5.6 LLM 语义去重层（`self_improve_confirm` 内部，非 tool）
+
+主 Agent 生成的 candidate rules 语义上可能与 `experience.md` / `system.md` 已有规则重复（Jaccard 捕获不到的同义改写）。在 `self_improve_confirm.execute` 中，**generator 之前**先走一层 LLM 语义去重。
+
+**位置**：`src/agent/tools/selfImprove.semanticDedup.ts`（新增，内部 helper，不作为 tool 暴露给主 Agent）。
+
+**接口**：
+```typescript
+export interface SemanticDedupInput {
+  rules: CandidateRule[]
+  existingExperience: string
+  existingSystem: string
+}
+
+export interface SemanticDedupDecision {
+  id: string                  // candidate rule id
+  action: 'keep' | 'drop'     // keep = 入选；drop = 被判为与已有规则或组内同义重复
+  reason?: string             // 简要说明（日志用）
+}
+
+export interface SemanticDedupResult {
+  decisions: SemanticDedupDecision[]
+}
+
+export interface SemanticDedup {
+  process(input: SemanticDedupInput): Promise<SemanticDedupResult>
+}
+
+export function createSemanticDedup(deps: {
+  model: LanguageModel
+  logger: Logger
+}): SemanticDedup
+```
+
+**实现要点**：
+- 用 Vercel AI SDK `generateObject` + zod schema 约束输出，只要 `decisions`
+- Prompt 说明：对照 existing（experience + system）和组内，判断每条是否与已有语义重复；要求给出每条的 keep/drop 决定
+- 传入给 LLM 的 context：`rules`（id + content）+ `existingExperience`（原文）+ `existingSystem`（原文）
+- 模型复用主 Agent `runtime.model`（通过 `SelfImproveConfirmDeps` 注入）
+
+**在 `self_improve_confirm.execute` 中的调用顺序**：
+1. 读 `experience.md` + `system.md`
+2. `semanticDedup.process({ rules, existingExperience, existingSystem })`
+3. 成功：取 `action === 'keep'` 的 rules，**不**再走 generator（直接进入排序 + 发送）
+4. 失败（LLM 调用抛错 / schema 不合法 / 超时）：记 warn，fallback 到 `generator.process(rules, existingRules)`
+5. 排序：AI 路径复用 generator 里的 `compareRules`（按 confidence + category）— 把排序提取为独立导出函数或重新实现一次，保证两条路径输出顺序一致
+
+**职责边界**：
+- 本模块**只做语义去重判决**，不负责排序/字段校验（字段校验由 tool 层 zod 做；排序由公用 `compareRules` 做）
+- 失败路径必须安全 fallback，不能让 tool 报错导致用户侧体验断掉
+
+```
+
 ## 6. Tool 注册接入
 
 ### 6.1 `src/agent/tools/index.ts`
@@ -460,9 +530,10 @@ export function buildBuiltinTools(ctx: ToolContext, deps: BuiltinToolDeps): Tool
 
 | 依赖 | 来源 | 用途 |
 |---|---|---|
-| `paths: WorkspacePaths` | `ctx.paths` | 定位 sessions/memory/system.md 目录 |
+| `paths: WorkspacePaths` | `ctx.paths` | 定位 sessions/memory/experience.md/system.md 目录 |
 | `selfImproveCollector` | `createSelfImproveCollector({ paths, logger })` | 数据采集 |
-| `selfImproveGenerator` | `createSelfImproveGenerator()` | 候选规则后处理（去重/排序/过滤） |
+| `selfImproveGenerator` | `createSelfImproveGenerator()` | 候选规则后处理（去重/排序/过滤，**语义去重失败时的 fallback**） |
+| `semanticDedup` | `createSemanticDedup({ model, logger })` | LLM 语义去重（generator 之前执行，复用主 Agent 的 `runtime.model`） |
 | `ctx.confirm?: ConfirmSender` | 每次 handle 由 SlackAdapter 绑定 web/channel/thread 构造，沿 `InboundMessage → Orchestrator → ToolsBuilder → ToolContext` 透传 | 通用确认交互 proxy（tool 层不接触 WebClient） |
 | `logger` | ctx | 日志 |
 
@@ -479,8 +550,9 @@ export function buildBuiltinTools(ctx: ToolContext, deps: BuiltinToolDeps): Tool
 | `src/im/slack/SlackConfirm.ts` | **新增** | 通用 Block Kit 确认交互模块（IM 层，业务无关） |
 | `src/im/slack/SlackConfirm.test.ts` | **新增** | `buildConfirmBlocks` 纯函数单测 + callback 路由单测 |
 | `src/agent/tools/selfImprove.constants.ts` | **新增** | AGENTS.md 编写规则常量（`AGENTS_RULE_WRITING_GUIDE`） |
-| `src/agent/tools/selfImprove.collector.ts` | **新增** | 数据收集器（读 sessions/memory/system.md） |
-| `src/agent/tools/selfImprove.generator.ts` | **新增** | 规则后处理（去重/排序/过滤，**纯代码**） |
+| `src/agent/tools/selfImprove.collector.ts` | **新增** | 数据收集器（读 sessions/memory/experience.md/system.md） |
+| `src/agent/tools/selfImprove.generator.ts` | **新增** | 规则后处理（去重/排序/过滤，**纯代码**，作为语义去重失败 fallback） |
+| `src/agent/tools/selfImprove.semanticDedup.ts` | **新增** | LLM 语义去重 helper（`self_improve_confirm` 内部调用；失败降级到 generator） |
 | `src/agent/tools/selfImproveCollect.ts` | **新增** | `self_improve_collect` tool 定义 |
 | `src/agent/tools/selfImproveConfirm.ts` | **新增** | `self_improve_confirm` tool 定义 |
 | `src/agent/tools/selfImprove.test.ts` | **新增** | 单元测试 |
@@ -507,17 +579,24 @@ Agent: 基于返回数据 + guide，在自己的 assistant 回合里生成候选
 Agent: 调用 self_improve_confirm({ rules: [...] })
   │
   ▼
-Tool: generator.process() 去重/排序/过滤
+Tool: semanticDedup.process() 对照 experience.md + system.md 做 LLM 语义去重
+      ├─ 成功：取 keep 集合 → 排序
+      └─ 失败：fallback 到 generator.process() 纯代码去重/排序
+      ▼
       → slackConfirm.send() 每条一张 Block Kit 消息（✅采纳 / ❌跳过）
-      → 返回 { sent, skipped }
+      → 返回 { sent, skipped, reason?, dedupMode: 'semantic' | 'generator' }
   │
   ▼
 用户: 点击 ✅ 或 ❌
   │
   ▼
-app.action(): 采纳 → 追加到 system.md，更新消息为 "✅ 已采纳"
+app.action(): 采纳 → 追加到 experience.md，更新消息为 "✅ 已采纳"
               跳过 → 更新消息为 "❌ 已跳过"
 ```
+
+说明：`selfImproveConfirm` tool 启动时会执行一次性初始化：
+- 若 `system.md` 未包含引用 experience.md 的固定标题（如 `## 经验`），在顶部注入一小段引用提示，要求 agent 每次任务前阅读 `.agent-slack/experience.md`（以可读标题做幂等去重，不用 HTML 注释锚点）
+- `system.md` 里若已有旧的 `## 由 self_improve 产生的规则` 段**不做自动迁移**，保留由用户手动清理
 
 ## 9. 关键设计决策
 
@@ -561,10 +640,35 @@ Block Kit 按钮优势：
 
 ### 9.3 规则写入位置
 
-写入 `.agent-slack/system.md`（而非项目根目录 `AGENTS.md`），原因：
-- `system.md` 是 agent 专属的系统提示文件，由 `loadWorkspaceContext` 自动加载
-- 不污染项目源码中的 `AGENTS.md`
-- 用户可随时手动编辑 `system.md` 调整规则
+写入 `.agent-slack/experience.md`（独立于 `system.md`），原因：
+- `experience.md` 是纯经验沉淀文件，`system.md` 是 agent 专属的系统提示文件
+- 两者分离后 `system.md` 保持稳定（手写配置），`experience.md` 可以被频繁追加而不影响主 prompt 结构
+- `experience.md` 由 `system.md` 中的一段**引用**激活：agent 每次任务前读取 `.agent-slack/experience.md` 吸收历史经验
+- 引用注入与条目写入均用可读文本做幂等去重，**不使用 HTML 注释**（避免占用 context token）
+  - 注入去重：`system.md.includes('## 经验')` 为 true 则跳过注入
+  - 条目去重：`experience.md.includes(rule.content.trim())` 为 true 则跳过写入
+- 旧版本写在 `system.md` 的内容**不做自动迁移**，保留由用户手动清理
+
+### 9.4 语义去重：LLM 判决为主，Jaccard generator 为 fallback
+
+主 Agent 生成的候选规则和已有规则经常语义相同但措辞不同（同一用户偏好被重复总结）。Jaccard 阈值 0.6 对这类改写仍会漏判，导致重复卡片堆积。
+
+**选择**：在 `self_improve_confirm` 内、发送前，先走一层 LLM 语义去重（`createSemanticDedup`，复用主 Agent 的 `runtime.model`），输出每条 candidate 的 keep/drop 决定；只把 keep 集合交给排序 → 发送。
+
+**fallback**：LLM 调用抛错 / 输出不合 schema / 超时 时，降级到 `generator.process(rules, existingRules)` 纯 Jaccard 去重，保证体验不会因 LLM 故障断掉。
+
+**不在 fallback 成功路径上叠加 Jaccard generator**：LLM 已经基于完整语义做出判决，再叠加 Jaccard 反而引入多余假阳性。两条路径在 tool 返回值中用 `dedupMode: 'semantic' | 'generator'` 区分，供调试。
+
+### 9.5 确认决策审计（log + events.jsonl）
+
+`self_improve` 与 `ask-*` 共用 `SlackAdapter.handleConfirmAction` 路径，确认决策落到两处：
+
+- **log**：callback 成功打 `info('confirm 决策已处理')`、失败打 `error`，tag `slack:confirm`，带 `namespace / itemId / decision / userId / channelId / messageTs`
+- **session events.jsonl**：在 `<sessionDir>/events.jsonl` 追加 `ConfirmActionEvent`（详见 ask-confirm-design §8.6）
+
+不把决策并入 `messages.jsonl`：messages 只装 AI SDK 的 `CoreMessage`，混入元信息会污染 LLM 上下文。events.jsonl 单独一个文件，将来可扩展其他运行事件（tool 生命周期、错误等）。
+
+采纳的规则本身仍**只**落 `experience.md`（content 去重），events.jsonl 只记"谁在何时点了什么"，与规则文本解耦。
 
 ## 10. 未解决问题
 
@@ -583,4 +687,5 @@ Block Kit 按钮优势：
 | P2 | 规则编写常量 (`selfImprove.constants.ts`) | 独立可交付，无代码依赖 |
 | P3 | 数据收集器 (`selfImprove.collector.ts`) + 测试 | 核心 |
 | P4 | 规则后处理器 (`selfImprove.generator.ts`) + 测试 | **纯代码**，不调 LLM |
-| P5 | 双 tool 定义 + 注册 + SlackAdapter 的 confirm 回调接入 system.md 追加 + 端到端联调 | 集成 |
+| P5 | 双 tool 定义 + 注册 + SlackAdapter 的 confirm 回调接入 experience.md 追加（含 system.md 引用注入，幂等）+ 端到端联调 | 集成 |
+| P6 | LLM 语义去重（`selfImprove.semanticDedup.ts`）+ 注入 `model` 到 `self_improve_confirm` + fallback 到 generator | 新增语义去重能力，解决 Jaccard 漏判 |

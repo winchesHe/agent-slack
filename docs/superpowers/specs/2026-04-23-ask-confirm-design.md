@@ -325,6 +325,50 @@ kagura 的 `SlackUserInputBridge` 也是单 pending。理由：
 - **硬超时** `timeoutMs`：tool 层面，到了就 reject，partial decisions 仍可返回（timeout 条目填 'timeout'）
 - **AbortSignal**：vercel ai SDK 传下来（例如用户说"算了"触发新一轮 LLM，旧 tool 被取消）
 
+### 8.6 决策审计（log + session events.jsonl）
+
+两层记录：
+
+1. **log**（即时可见）：`SlackAdapter.handleConfirmAction` 成功调用 callback 后打 `info`，callback 抛错时打 `error`；tag `slack:confirm`，字段 `namespace / itemId / decision / userId / channelId / messageTs`
+2. **session events.jsonl**（可回溯）：在 `<sessionDir>/events.jsonl` 追加一条 `ConfirmActionEvent`
+
+事件结构：
+```typescript
+type SessionEvent = ConfirmActionEvent
+
+interface ConfirmActionEvent {
+  type: 'confirm_action'
+  timestamp: string       // ISO
+  namespace: string       // ask-<toolCallId> | self_improve
+  itemId: string
+  decision: 'accept' | 'reject'
+  userId?: string         // 点击者 Slack uid
+  channelId: string
+  messageTs: string
+  callbackError?: string  // callback 抛错时写入 err.message，便于区分"点了但业务失败"
+}
+```
+
+SessionStore 新增方法：
+```typescript
+appendEvent(
+  args: { channelName: string; channelId: string; threadTs: string },
+  event: SessionEvent,
+): Promise<void>
+```
+
+- 路径定位复用 `slackSessionDir(paths, channelName, channelId, threadTs)`
+- 目录不存在时只打 warn 不建空目录（避免野点击生成幽灵 session）
+- `events.jsonl` 不存在则自动创建
+
+**为什么拆出 events.jsonl 而不是写进 messages.jsonl**：
+- `messages.jsonl` 只装 AI SDK 的 `CoreMessage`，加入非对话元信息会污染 LLM 上下文
+- 事件流将来可扩展（tool 生命周期、错误等）
+
+**SlackAdapter 接线**：`createSlackAdapter` deps 加 `sessionStore`；`app.action` 路由已拿到 `channelId / threadTs`，`channelName` 从 `channelNameCache` 复用（没有则回填 `'unknown'`，不阻塞决策）；写入失败只打 warn，不影响按钮处理。
+
+**collector 下游消费**（P7 起）：`selfImprove.collector` 同时读 `events.jsonl`，把 `confirm_action` 展平到 `SessionSummary.confirmActions` 带入规则生成 context，主 Agent 可据此识别"用户对哪些候选规则/操作已表态"。
+
 ### 8.7 超时后按钮 fallback 选 C（adapter 分支 + ephemeral 提示）
 
 对比：

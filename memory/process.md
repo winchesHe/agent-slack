@@ -377,3 +377,95 @@ chunk 2（完整）：
 
 **ask_confirm 整体完成** ✅
 
+---
+
+## self_improve 二期
+
+### experience.md 切换（2026-04-23）
+
+**背景**：
+- 之前 self_improve 采纳的规则写入 `system.md` 的 `## 由 self_improve 产生的规则` 段
+- 规则积累后污染主 prompt，且条目带 HTML 注释元信息占用 context
+- 决定拆分：规则写入独立 `experience.md`，由 `system.md` 顶部一段引用激活，要求 agent 每次任务前读 experience.md
+
+**方案要点**：
+- 新路径 `.agent-slack/experience.md`（paths 加 `experienceFile`）
+- 条目：纯 `rule.content.trim()` + `\n` 分隔，无 HTML 注释/时间戳/category 元信息（减少 context token）
+- 去重：`existing.includes(content)`
+- system.md 引用注入：固定标题 `## 经验` 幂等 key；body 为 `## 经验\n\n每次执行任务前请先阅读 .agent-slack/experience.md...`；顶部注入；已含则跳过
+- 旧 `system.md` 的 `## 由 self_improve 产生的规则` 段**不迁移**，由用户手动清理
+- `AGENTS_RULE_WRITING_GUIDE` 文案调整
+
+**改动文件**：
+- `docs/superpowers/specs/2026-04-22-self-improve-design.md`：§4/§5.3/§6.2/§7/§8/§9.3/§11 多处同步
+- `src/workspace/paths.ts`：加 `experienceFile`
+- `src/agent/tools/selfImproveConfirm.ts`：重构写入逻辑 + 注入 ref
+- `src/agent/tools/selfImprove.collector.ts`：`existingRules` 合并 experience + system
+- `src/agent/tools/selfImprove.constants.ts`：文案更新
+
+**验证**：代码完成，未自行编译/运行（按用户约束）；随 P6 一起提交
+
+---
+
+### P6 LLM 语义去重（2026-04-23）
+
+**背景**：
+- 真机联调发现同一经验被反复生成多条（如 9 条 growthbook/tax 白名单相关规则，措辞不同语义重复）
+- Jaccard 阈值 0.6 对语义改写漏判
+- 用户需求：collector 之后、发送之前，用 AI 对照 experience.md + system.md 再做一轮语义去重
+
+**方案**（已过 design doc §3/§5.4/§5.6/§6.2/§7/§8/§9.4/§11 review）：
+- 新文件 `src/agent/tools/selfImprove.semanticDedup.ts`：内部 helper，非 tool
+- `generateObject` + zod schema 输出 `decisions: [{ id, action: 'keep'|'drop', reason? }]`
+- 复用主 Agent `runtime.model`，通过 `SelfImproveConfirmDeps.semanticDedup`（可选）注入
+- `self_improve_confirm.execute` 执行顺序：读 experience + system → semanticDedup.process → 成功取 keep + compareRules 排序 / 失败 fallback 到 `generator.process`
+- 不叠加 Jaccard：语义去重成功就跳过 generator
+- 返回值加 `dedupMode: 'semantic' | 'generator'` 供调试
+- generator.ts 的 `compareRules` 从私有改为 export，两路径共享
+
+**改动文件**：
+- `docs/superpowers/specs/2026-04-22-self-improve-design.md`
+- `src/agent/tools/selfImprove.semanticDedup.ts`（新增）
+- `src/agent/tools/selfImprove.generator.ts`（export compareRules）
+- `src/agent/tools/selfImproveConfirm.ts`（deps 加 semanticDedup 可选 + 执行流程）
+- `src/agent/tools/index.ts`（`BuiltinToolDeps.selfImproveSemanticDedup?`）
+- `src/application/createApplication.ts`（`createSemanticDedup({ model: runtime.model, logger })` 并注入）
+
+**容错**：LLM 调用抛错 / schema 不合法 → 记 warn + 降级；输入未被 LLM 覆盖的 id 默认 keep（避免静默丢规则）
+
+**验证**：代码完成，未自行编译/运行（按用户约束）；提交前建议用户真机触发一次 self_improve 看 dedupMode
+
+
+### P7 Confirm 决策审计（log + events.jsonl）
+
+**问题**：`ask_confirm` / `self_improve_confirm` 两条确认路径共用 `SlackAdapter.handleConfirmAction`，但成功路径完全无 log，无从审计"谁在何时点了什么"。
+
+**修改**：
+- `src/im/slack/SlackAdapter.ts`
+  - `ConfirmActionContext` 新增 `channelName / threadTs / sessionStore / userId?`
+  - 路由处从 body.user.id 取 userId；channelName 从已有 `channelNameCache` 复用（无则回落 `unknown`）
+  - callback 成功打 `log.info('confirm 决策已处理', { namespace, itemId, decision, userId, channelId, messageTs })`；抛错打 `error` 带齐字段 + `err`
+  - 新增 `appendConfirmEvent`：把点击作为 `ConfirmActionEvent` 追加进 `<sessionDir>/events.jsonl`；写入失败只 warn 不阻塞
+
+- `src/store/SessionStore.ts`
+  - 新增 `SessionEvent` / `ConfirmActionEvent` 类型
+  - `SessionStore.appendEvent({ channelName, channelId, threadTs }, event)`：`slackSessionDir` 定位 → `meta.json` 不存在则跳过（避免野点击造幽灵目录） → append `events.jsonl`
+
+- `src/application/createApplication.ts`：`sessionStore` 注入 `createSlackAdapter`
+- `src/im/slack/SlackAdapter.test.ts`：`createDeps` 加 `stubSessionStore()`
+- `src/orchestrator/ConversationOrchestrator.test.ts`：store mock 补 `async appendEvent() {}`
+
+**决策（A 方案）**：
+- 事件写入独立 `events.jsonl`，不混进 `messages.jsonl`（后者只装 `CoreMessage`，混入元信息会污染 LLM 上下文）
+- 事件 schema 留余地：`type: 'confirm_action'` 起头，未来可扩 tool 生命周期等
+- 采纳的规则本身仍**只**落 `experience.md`，events.jsonl 不重复规则文本
+
+**文档**：`2026-04-23-ask-confirm-design.md` §8.6 / `2026-04-22-self-improve-design.md` §9.5 同步改为"log + events.jsonl"两层。
+
+**collector 接入（同一轮追加）**：
+- `selfImprove.collector.ts` 新增 `analyzeEvents` + `SessionSummary.confirmActions`
+- `summarizeSession` 读 `<dir>/events.jsonl`，展平 `confirm_action` 事件
+- `collect()` 末尾 `log.debug('SessionSummary 汇总', {...})` 输出轻量视图（sessionId / channelName / messageCount / toolUsage / roundCount / confirmActionCount），方便 `LOG_LEVEL=debug` 时排障
+- design doc §5.3 同步
+
+**验证**：`pnpm tsc --noEmit` 干净（createApplication.test 的 3 条 baseline 错不变），未真机跑。
