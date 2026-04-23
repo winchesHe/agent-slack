@@ -7,7 +7,8 @@
 - [x] P0 通用 SlackConfirm 模块 ✅ 2026-04-23
 - [x] P1 SlackAdapter 接入 `app.action(/^confirm:/)` 通用处理器 ✅ 2026-04-23
 - [x] P2 规则编写常量 (`selfImprove.constants.ts`) ✅ 2026-04-23
-- [ ] P3 数据收集器 (`selfImprove.collector.ts`) + 测试
+- [x] P3 数据收集器 (`selfImprove.collector.ts`) ✅ 2026-04-23（未写测试文件，用户约束）
+- [ ] P4 规则生成器 (`selfImprove.generator.ts`) + 测试
 - [ ] P4 规则生成器 (`selfImprove.generator.ts`) + 测试
 - [ ] P5 Tool 定义 + 注册 + 端到端联调
 
@@ -79,5 +80,39 @@
 **设计边界**：
 - 文件**只含纯文本常量**，不含任何 IO / 逻辑 / 读写 AGENTS.md。
 - 不涉及调用处（generator 是 P4 范围），此 chunk 不改 `tools/index.ts`。
+
+**未验证**：未运行 `pnpm vitest` / `pnpm lint` / `tsc`（用户要求）。
+
+### P3 完成（2026-04-23）
+
+**产出文件**：
+- `src/agent/tools/selfImprove.collector.ts`
+  - 导出接口：`CollectedData` / `SessionSummary` / `MemoryEntry` / `CollectorScope` / `SelfImproveCollector` / `SelfImproveCollectorDeps`
+  - 工厂：`createSelfImproveCollector(deps: { paths, logger })` → `{ collect(scope) }`
+  - session 扫描：遍历 `paths.sessionsDir/slack/<dir>/`，读 `meta.json` + `messages.jsonl`
+    - scope='recent' 按 `meta.updatedAt` 过滤（7 天窗口，常量 `RECENT_WINDOW_MS`）
+    - 按 updatedAt 降序返回
+    - 单 session 解析失败 log.warn 跳过，不中断批量
+  - `analyzeMessages`：
+    - messageCount：非空行数
+    - hasErrors：jsonl 原文包含 `[error:` 或 `"isError":true` 任一
+    - toolUsage：遍历 role='assistant' 的 parts 里 `type: 'tool-call'` 的 toolName；role='tool' 的 parts 里 `toolName` 字段，做计数累加
+    - highlights：最多 6 条/session；先放 tool 结果里的 `[error:` 错误行（截断 300 字符），再补最后 3 条 assistant 文本摘要（截断 300 字符）
+  - memory 扫描：读 `paths.memoryDir/*.md`，产出 `MemoryEntry[]`
+  - existingRules：读 `paths.systemFile`（`.agent-slack/system.md`），不存在则 ''
+  - 所有 IO 通过 `readFileSafe` 吞错回 ''，避免单文件异常整体崩
+
+**设计决策**：
+- scope='recent' 取 `updatedAt`（最后活跃），非 createdAt
+- highlights 提取策略 C：错误行（优先）+ 最后 3 条 assistant 文本摘要
+- 所有 ANSI / 文本裁剪遵循 300 字符上限 + `…` 省略号（`truncate` 工具函数）
+- 纯函数式工厂，无全局状态，与现有 store 风格一致
+- **未**引入 `user` 消息内容提取（避免泄露用户输入到 LLM prompt；一期只让 agent 看 assistant 的回应和 tool 的错误）
+
+**未实施**：
+- 未写 `selfImprove.collector.test.ts`（用户约束"不要生成测试脚本"）。测试方案另文口头说明。
+- 未改 `tools/index.ts`（collector 还没有调用处，P5 再接入）。
+
+**补丁**：`analyzeMessages` 改为 `export function`（零行为变更），便于 P4 复用与未来单测。
 
 **未验证**：未运行 `pnpm vitest` / `pnpm lint` / `tsc`（用户要求）。
