@@ -19,16 +19,19 @@ export function selfImproveCollectTool(_ctx: ToolContext, deps: SelfImproveColle
       '收集当前工作区 session 历史 / memory / 现有规则，返回摘要与 AGENTS.md 编写指南。返回后你需要基于数据自行提炼候选规则 JSON，再调用 self_improve_confirm 发送确认。',
     parameters: z.object({
       scope: z
-        .enum(['all', 'recent'])
+        .union([z.literal('--all'), z.number().int().positive()])
         .optional()
-        .describe('分析范围：all=全部历史，recent=最近 7 天，默认 recent'),
+        .describe(
+          '分析范围：--all=扫描全部历史 session（默认）；数字=最近 N 天。' +
+            '用户说"最近经验"时传 7；指定天数时传对应数字；说"全部"或未指定时默认 --all。',
+        ),
       focus: z
         .string()
         .optional()
         .describe('聚焦主题提示（仅透传到返回值的 focus 字段，供你自行参考）'),
     }),
     async execute({ scope, focus }) {
-      const data = await deps.collector.collect(scope ?? 'recent')
+      const data = await deps.collector.collect(scope ?? '--all')
       return {
         ...data,
         guide: AGENTS_RULE_WRITING_GUIDE,

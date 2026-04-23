@@ -30,7 +30,7 @@ export interface CollectedData {
   existingRules: string
 }
 
-export type CollectorScope = 'all' | 'recent'
+export type CollectorScope = '--all' | number
 
 export interface SelfImproveCollector {
   collect(scope: CollectorScope): Promise<CollectedData>
@@ -43,8 +43,7 @@ export interface SelfImproveCollectorDeps {
 
 // ── 常量 ──────────────────────────────────────────────
 
-/** scope='recent' 的时间窗口：7 天 */
-const RECENT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
+const MS_PER_DAY = 24 * 60 * 60 * 1000
 
 /** 每个 session 最多保留的 highlights 条数，控制 token */
 const MAX_HIGHLIGHTS_PER_SESSION = 6
@@ -89,7 +88,7 @@ async function collectSessions(
   }
 
   const now = Date.now()
-  const cutoff = scope === 'recent' ? now - RECENT_WINDOW_MS : 0
+  const cutoff = typeof scope === 'number' && scope > 0 ? now - scope * MS_PER_DAY : 0
 
   const summaries: SessionSummary[] = []
   for (const name of entries) {

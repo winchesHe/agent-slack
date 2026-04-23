@@ -65,11 +65,11 @@ export function selfImproveCollectTool(ctx: ToolContext, deps: SelfImproveCollec
     description:
       '收集当前工作区的 session 历史与 memory，返回摘要数据与 AGENTS.md 规则编写指南。调用后你需要基于返回的数据自行提炼候选规则，再调用 self_improve_confirm 做发送。',
     parameters: z.object({
-      scope: z.enum(['all', 'recent']).optional().describe('分析范围：all=全部历史，recent=最近 7 天。默认 recent'),
+      scope: z.union([z.literal('--all'), z.number().int().positive()]).optional().describe('分析范围：--all=全部历史（默认）；数字=最近 N 天'),
       focus: z.string().optional().describe('聚焦主题提示，仅透传到返回值的 focus 字段，供你自行参考'),
     }),
     async execute({ scope, focus }) {
-      const data = await collector.collect(scope ?? 'recent')
+      const data = await collector.collect(scope ?? '--all')
       return { ...data, guide: AGENTS_RULE_WRITING_GUIDE, focus: focus ?? null }
     },
   })
@@ -469,7 +469,7 @@ export function buildBuiltinTools(ctx: ToolContext, deps: BuiltinToolDeps): Tool
 用户: @bot 帮我总结一下最近的经验，生成规则
   │
   ▼
-Agent: 调用 self_improve_collect({ scope: 'recent' })
+Agent: 调用 self_improve_collect({ scope: 7 })
   │
   ▼
 Tool: 收集最近 7 天的 session 数据 + memory + existingRules，

@@ -196,3 +196,17 @@
 2. `pnpm lint`
 3. `pnpm vitest run` 观察 SlackAdapter / Orchestrator 相关套件
 4. 真实 Slack：@bot 总结最近经验 → 观察两次 tool 调用 → 点击按钮 → 检查 `.agent-slack/system.md` 出现 `## 由 self_improve 产生的规则` + 采纳条目
+
+### P5.1 `self_improve_collect` scope 改为 `'--all' | number`（2026-04-23）
+
+**起因**：用户 review 后指出 P3 收集器写死"最近 7 天"不合理，应允许模型按用户意图选择范围。
+
+**改动**：
+- `src/agent/tools/selfImprove.collector.ts`：
+  - `CollectorScope` 类型：`'all' | 'recent'` → `'--all' | number`（number = 天数）
+  - 去掉 `RECENT_WINDOW_MS` 常量，改用 `MS_PER_DAY * scope` 动态计算 cutoff
+- `src/agent/tools/selfImproveCollect.ts`：
+  - 参数 schema：`z.union([z.literal('--all'), z.number().int().positive()]).optional()`
+  - 默认 `scope ?? '--all'`
+  - describe 引导：用户说"最近经验"→传 7；指定天数→传对应数字；"全部"或未指定→默认 `--all`
+- `docs/superpowers/specs/2026-04-22-self-improve-design.md`：同步 §5 / §11 代码示例
