@@ -202,6 +202,39 @@
 **起因**：用户 review 后指出 P3 收集器写死"最近 7 天"不合理，应允许模型按用户意图选择范围。
 
 **改动**：
+- `src/agent/tools/selfImprove.collector.ts`：`CollectorScope` 由 `'all' | 'recent'` 改为 `'--all' | number`（number=天数）；移除 `RECENT_WINDOW_MS`，动态计算
+- `src/agent/tools/selfImproveCollect.ts`：参数 `z.union([z.literal('--all'), z.number().int().positive()])`，默认 `'--all'`，describe 引导模型
+- `docs/.../self-improve-design.md` §5/§11 代码示例同步
+
+### P5.2 Collector 重构：结构化 rounds（借鉴 Claude Code compact）（2026-04-23）
+
+**起因**：用户指出原 `highlights: string[]` 只取末尾 3 条 assistant 截 300 字信息量不足，且完全丢弃 user 消息；参考 `/Users/moego-winches/Desktop/Company/AI-Agent/general-agent/free-code/src/services/compact/` 的 compact 策略重构。
+
+**借鉴要点**：
+- Claude Code compact prompt 明确要求"List ALL user messages"
+- 按 API round 分组（user→assistant→tool_results 为一组）
+- 不做机械裁剪抽样，保留全量让下游 LLM 自己总结
+
+**改动**：
+- `src/agent/tools/selfImprove.collector.ts`：
+  - 新增 `SessionRound` 类型：`{ userMessage, assistantTexts[], toolCalls[] }`
+  - `SessionSummary.highlights: string[]` → `rounds: SessionRound[]`
+  - `analyzeMessages` 重写：以 user 消息为 round 边界，assistant/tool 归属当前 round
+  - 新增 `extractUserText` 支持 user content 是字符串或数组形式
+  - 新增 `trimRoundsBySessionBudget`：从尾部（最新）往前保留，超 `MAX_SESSION_CHARS` 丢最旧
+  - 新增/替换常量：
+    - `MAX_USER_MESSAGE_CHARS = 2000`
+    - `MAX_ASSISTANT_TEXT_CHARS = 1000`
+    - `MAX_ERROR_TEXT_CHARS = 500`
+    - `MAX_SESSION_CHARS = 12000`
+  - 移除：`MAX_HIGHLIGHTS_PER_SESSION / ASSISTANT_SUMMARY_MAX_CHARS / LAST_ASSISTANT_COUNT`
+- `docs/superpowers/specs/2026-04-22-self-improve-design.md`：§5.3 / §10 同步更新 interface 与 token 控制策略
+
+**未变更**：collector 对外签名 / selfImproveCollect.ts tool 返回形状（rounds 直接透传）。
+
+**起因**：用户 review 后指出 P3 收集器写死"最近 7 天"不合理，应允许模型按用户意图选择范围。
+
+**改动**：
 - `src/agent/tools/selfImprove.collector.ts`：
   - `CollectorScope` 类型：`'all' | 'recent'` → `'--all' | number`（number = 天数）
   - 去掉 `RECENT_WINDOW_MS` 常量，改用 `MS_PER_DAY * scope` 动态计算 cutoff

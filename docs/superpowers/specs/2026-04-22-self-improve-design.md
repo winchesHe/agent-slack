@@ -125,18 +125,25 @@ export interface SessionSummary {
   hasErrors: boolean              // 是否包含 [error:] 消息
   toolUsage: Record<string, number>
   createdAt: string
-  // 为控制 token，只保留关键信息的摘要而非完整对话
-  highlights: string[]
+  updatedAt: string
+  // 结构化按 API round 保留，借鉴 Claude Code compact 思路：user→assistant→tool 为一组
+  rounds: SessionRound[]
+}
+
+export interface SessionRound {
+  userMessage: string                                // 截 2000 字
+  assistantTexts: string[]                           // 每条截 1000 字
+  toolCalls: { name: string; error?: string }[]     // 成功只记 name，失败保留 error 片段
 }
 ```
 
 职责：
 - 遍历 `.agent-slack/sessions/slack/` 下所有 session 目录
 - 按 `scope` 参数过滤时间范围
-- 从 `messages.jsonl` 提取：错误消息、用户反复提及的主题、tool 调用模式
+- 从 `messages.jsonl` 按 user 消息分 round，结构化提取 user / assistant / tool 内容
 - 从 `memory/*.md` 读取用户记忆
 - 读取现有 `system.md` 避免重复
-- **Token 控制**：对话内容不全量传入，只提取关键信号（错误、纠正、重复模式）
+- **Token 控制**：单 session rounds 序列化超过 `MAX_SESSION_CHARS = 12000`（~3000 tokens）时从最旧 round 往后丢
 
 ### 5.4 规则后处理器（generator）：`src/agent/tools/selfImprove.generator.ts`
 
@@ -535,7 +542,7 @@ Block Kit 按钮优势：
 
 ## 10. 未解决问题
 
-1. **Token 预算**：session 数据可能很大，如何控制传给 LLM 的 token 量？→ collector 只提取关键信号（已实施：highlights 6 条上限、单条 300 字符截断）
+1. **Token 预算**：session 数据可能很大，如何控制传给 LLM 的 token 量？→ collector 输出结构化 `SessionRound[]`（user 2000 字 / assistant 1000 字 / 错误 500 字），并按 `MAX_SESSION_CHARS = 12000` 从最旧 round 开始裁剪
 2. **规则去重**：如何检测新规则与现有规则的语义重复？→ 一期用文本归一化 + `includes` / Jaccard，后续可加 embedding
 3. ~~Tool 拆分 vs 单一 Tool~~ → 已决：**双 tool**（`self_improve_collect` + `self_improve_confirm`）
 4. ~~LLM 调用方式：tool 内部调 LLM 还是让主 Agent 生成规则~~ → 已决：**主 Agent 生成**，tool 不调 LLM
