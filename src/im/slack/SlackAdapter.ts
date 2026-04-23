@@ -7,6 +7,7 @@ import type { AbortRegistry } from '@/orchestrator/AbortRegistry.ts'
 import type { SessionRunQueue } from '@/orchestrator/SessionRunQueue.ts'
 import type { ConfirmSender } from '@/im/types.ts'
 import type { ConfirmBridge } from '@/im/slack/ConfirmBridge.ts'
+import type { SessionStore } from '@/store/SessionStore.ts'
 import type { SlackRenderer } from './SlackRenderer.ts'
 import { createSlackEventSink } from './SlackEventSink.ts'
 import {
@@ -24,6 +25,8 @@ export interface SlackAdapterDeps {
   slackConfirm: SlackConfirm
   /** ask_confirm 依赖：用于判断超时后按钮点击 fallback */
   confirmBridge?: ConfirmBridge
+  /** 用于在点击确认按钮时追加 confirm_action 事件到 session events.jsonl */
+  sessionStore: SessionStore
   logger: Logger
   botToken: string
   appToken: string
@@ -35,11 +38,16 @@ export interface SlackAdapterDeps {
 export interface ConfirmActionContext {
   actionId: string
   channelId: string
+  channelName: string
+  threadTs: string
   messageTs: string
   messageBlocks: SlackBlock[]
   client: WebClient
   slackConfirm: SlackConfirm
+  sessionStore: SessionStore
   logger: Logger
+  /** 点击按钮的 Slack user id，用于决策日志审计 */
+  userId?: string
 }
 
 /**
@@ -65,8 +73,27 @@ export async function handleConfirmAction(ctx: ConfirmActionContext): Promise<vo
 
   try {
     await callback(parsed.itemId, parsed.decision)
+    log.info('confirm 决策已处理', {
+      namespace: parsed.namespace,
+      itemId: parsed.itemId,
+      decision: parsed.decision,
+      userId: ctx.userId,
+      channelId: ctx.channelId,
+      messageTs: ctx.messageTs,
+    })
+    await appendConfirmEvent(ctx, parsed, undefined)
   } catch (err) {
-    log.error('confirm callback 执行失败', { namespace: parsed.namespace, err })
+    log.error('confirm callback 执行失败', {
+      namespace: parsed.namespace,
+      itemId: parsed.itemId,
+      decision: parsed.decision,
+      err,
+    })
+    await appendConfirmEvent(
+      ctx,
+      parsed,
+      err instanceof Error ? err.message : String(err),
+    )
   }
 
   const resultBlocks = buildConfirmResultBlocks(ctx.messageBlocks, parsed.decision)
@@ -81,6 +108,40 @@ export async function handleConfirmAction(ctx: ConfirmActionContext): Promise<vo
     } as Parameters<WebClient['chat']['update']>[0])
   } catch (err) {
     log.warn('chat.update 替换确认消息失败', { err })
+  }
+}
+
+/**
+ * 把 confirm action 点击作为 ConfirmActionEvent 追加到 session events.jsonl。
+ * 失败只 warn，不影响按钮响应（审计数据缺一条 << 用户体验受损）。
+ */
+async function appendConfirmEvent(
+  ctx: ConfirmActionContext,
+  parsed: { namespace: string; itemId: string; decision: 'accept' | 'reject' },
+  callbackError: string | undefined,
+): Promise<void> {
+  const log = ctx.logger.withTag('slack:confirm')
+  try {
+    await ctx.sessionStore.appendEvent(
+      {
+        channelName: ctx.channelName,
+        channelId: ctx.channelId,
+        threadTs: ctx.threadTs,
+      },
+      {
+        type: 'confirm_action',
+        timestamp: new Date().toISOString(),
+        namespace: parsed.namespace,
+        itemId: parsed.itemId,
+        decision: parsed.decision,
+        ...(ctx.userId ? { userId: ctx.userId } : {}),
+        channelId: ctx.channelId,
+        messageTs: ctx.messageTs,
+        ...(callbackError ? { callbackError } : {}),
+      },
+    )
+  } catch (err) {
+    log.warn('写入 confirm_action 事件失败', { err })
   }
 }
 
@@ -202,19 +263,23 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
     const actionId = (action as { action_id?: string }).action_id
     if (!actionId) return
 
-    // body 类型 bolt 层较宽松，运行时从点击事件中取 channel / message
+    // body 类型 bolt 层较宽松，运行时从点击事件中取 channel / message / user
     const b = body as {
       channel?: { id?: string }
       message?: { ts?: string; thread_ts?: string; blocks?: SlackBlock[] }
+      user?: { id?: string }
     }
     const channelId = b.channel?.id
     const messageTs = b.message?.ts
     const threadTs = b.message?.thread_ts ?? messageTs
     const messageBlocks = b.message?.blocks ?? []
+    const userId = b.user?.id
     if (!channelId || !messageTs) {
       log.warn('confirm action 缺少 channel/message 信息', { actionId })
       return
     }
+    const effectiveThreadTs = threadTs ?? messageTs
+    const channelName = channelNameCache.get(channelId) ?? 'unknown'
 
     // ask_confirm 超时 fallback：namespace=ask-* 且 bridge 无 pending → ephemeral 提示已过期
     const parsed = parseConfirmActionId(actionId)
@@ -222,8 +287,7 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
       parsed &&
       parsed.namespace.startsWith('ask-') &&
       deps.confirmBridge &&
-      threadTs &&
-      !deps.confirmBridge.hasPending(threadTs)
+      !deps.confirmBridge.hasPending(effectiveThreadTs)
     ) {
       try {
         await respond({
@@ -240,11 +304,15 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
     await handleConfirmAction({
       actionId,
       channelId,
+      channelName,
+      threadTs: effectiveThreadTs,
       messageTs,
       messageBlocks,
       client: client as unknown as WebClient,
       slackConfirm: deps.slackConfirm,
+      sessionStore: deps.sessionStore,
       logger: deps.logger,
+      ...(userId ? { userId } : {}),
     })
   })
 

@@ -124,11 +124,25 @@ function createDeps(
       send: vi.fn(async () => {}),
       getCallback: vi.fn(() => undefined),
     },
+    sessionStore: stubSessionStore(),
     logger: overrides.logger ?? stubLogger(),
     botToken: 'xoxb-test-token',
     appToken: 'xapp-test-token',
     signingSecret: 'secret-test-value',
   }
+}
+
+function stubSessionStore() {
+  return {
+    getOrCreate: vi.fn(),
+    getMeta: vi.fn(),
+    loadMessages: vi.fn(),
+    appendMessage: vi.fn(),
+    appendEvent: vi.fn(async () => {}),
+    accumulateUsage: vi.fn(),
+    accumulateCost: vi.fn(),
+    setStatus: vi.fn(),
+  } as unknown as import('@/store/SessionStore.ts').SessionStore
 }
 
 function getRegisteredHandler(name: string): SlackEventHandler {
