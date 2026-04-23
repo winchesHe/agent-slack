@@ -26,6 +26,17 @@ export interface SessionSummary {
   updatedAt: string
   /** 按 API round 结构化保留的会话内容（可能按 MAX_SESSION_CHARS 从尾部裁剪） */
   rounds: SessionRound[]
+  /** confirm 按钮点击审计，来自 events.jsonl */
+  confirmActions: ConfirmActionSummary[]
+}
+
+export interface ConfirmActionSummary {
+  namespace: string
+  itemId: string
+  decision: 'accept' | 'reject'
+  timestamp: string
+  /** callback 抛错时保留消息，便于规则生成时识别"点了但业务失败"的条目 */
+  callbackError?: string
 }
 
 export interface MemoryEntry {
@@ -36,7 +47,7 @@ export interface MemoryEntry {
 export interface CollectedData {
   sessions: SessionSummary[]
   memories: MemoryEntry[]
-  /** 现有 .agent-slack/system.md 内容；不存在则 '' */
+  /** 现有规则参考：`.agent-slack/experience.md` 与 `system.md` 拼接；均不存在则 '' */
   existingRules: string
 }
 
@@ -72,13 +83,32 @@ export function createSelfImproveCollector(deps: SelfImproveCollectorDeps): Self
 
   return {
     async collect(scope) {
-      const [sessions, memories, existingRules] = await Promise.all([
+      const [sessions, memories, experienceRules, systemRules] = await Promise.all([
         collectSessions(slackSessionsDir, scope, log),
         collectMemories(deps.paths.memoryDir, log),
+        readFileSafe(deps.paths.experienceFile),
         readFileSafe(deps.paths.systemFile),
       ])
+      const existingRules = [experienceRules, systemRules].filter((s) => s.length > 0).join('\n')
 
-      return { sessions, memories, existingRules }
+      const data = { sessions, memories, existingRules }
+      log.debug('SessionSummary 汇总', {
+        scope,
+        sessionCount: data.sessions.length,
+        memoryCount: data.memories.length,
+        existingRulesChars: data.existingRules.length,
+        sessions: data.sessions.map((s) => ({
+          sessionId: s.sessionId,
+          channelName: s.channelName,
+          updatedAt: s.updatedAt,
+          messageCount: s.messageCount,
+          hasErrors: s.hasErrors,
+          toolUsage: s.toolUsage,
+          roundCount: s.rounds.length,
+          confirmActionCount: s.confirmActions.length,
+        })),
+      })
+      return data
     },
   }
 }
@@ -141,6 +171,8 @@ async function summarizeSession(
 
   const messagesRaw = await readFileSafe(path.join(dir, 'messages.jsonl'))
   const { messageCount, hasErrors, toolUsage, rounds } = analyzeMessages(messagesRaw)
+  const eventsRaw = await readFileSafe(path.join(dir, 'events.jsonl'))
+  const confirmActions = analyzeEvents(eventsRaw)
 
   return {
     sessionId,
@@ -151,6 +183,7 @@ async function summarizeSession(
     createdAt: meta.createdAt ?? '',
     updatedAt,
     rounds,
+    confirmActions,
   }
 }
 
@@ -254,6 +287,40 @@ export function analyzeMessages(jsonl: string): MessageAnalysis {
     toolUsage,
     rounds: trimRoundsBySessionBudget(rounds, MAX_SESSION_CHARS),
   }
+}
+
+/** 解析 events.jsonl 里的 confirm_action 条目为轻量摘要；其他类型忽略 */
+export function analyzeEvents(jsonl: string): ConfirmActionSummary[] {
+  if (!jsonl) return []
+  const out: ConfirmActionSummary[] = []
+  for (const line of jsonl.split('\n')) {
+    if (!line.trim()) continue
+    let ev: {
+      type?: string
+      namespace?: string
+      itemId?: string
+      decision?: string
+      timestamp?: string
+      callbackError?: string
+    }
+    try {
+      ev = JSON.parse(line) as typeof ev
+    } catch {
+      continue
+    }
+    if (ev.type !== 'confirm_action') continue
+    if (!ev.namespace || !ev.itemId) continue
+    if (ev.decision !== 'accept' && ev.decision !== 'reject') continue
+    const entry: ConfirmActionSummary = {
+      namespace: ev.namespace,
+      itemId: ev.itemId,
+      decision: ev.decision,
+      timestamp: ev.timestamp ?? '',
+    }
+    if (ev.callbackError) entry.callbackError = truncate(ev.callbackError, MAX_ERROR_TEXT_CHARS)
+    out.push(entry)
+  }
+  return out
 }
 
 function extractUserText(content: unknown): string {
