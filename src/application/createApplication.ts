@@ -21,6 +21,7 @@ import { createSlackConfirm } from '@/im/slack/SlackConfirm.ts'
 import { createConfirmBridge } from '@/im/slack/ConfirmBridge.ts'
 import { createSelfImproveCollector } from '@/agent/tools/selfImprove.collector.ts'
 import { createSelfImproveGenerator } from '@/agent/tools/selfImprove.generator.ts'
+import { createSemanticDedup } from '@/agent/tools/selfImprove.semanticDedup.ts'
 import { ConfigError } from '@/core/errors.ts'
 import type { Application } from './types.ts'
 
@@ -73,6 +74,7 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
 
   const modelName = ctx.config.agent.model
   const runtime = buildProviderRuntime(provider, providerEnv, modelName)
+  const selfImproveSemanticDedup = createSemanticDedup({ model: runtime.model, logger })
 
   const toolsBuilder = (
     currentUser: { userName: string; userId: string },
@@ -89,6 +91,7 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
         memoryStore,
         selfImproveCollector,
         selfImproveGenerator,
+        selfImproveSemanticDedup,
         confirmBridge,
         paths: ctx.paths,
         logger,
@@ -126,6 +129,7 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
     renderer,
     slackConfirm,
     confirmBridge,
+    sessionStore,
     logger,
     botToken: slackBotToken,
     appToken: slackAppToken,

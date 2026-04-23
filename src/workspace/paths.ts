@@ -6,6 +6,7 @@ export interface WorkspacePaths {
   root: string
   configFile: string
   systemFile: string
+  experienceFile: string
   sessionsDir: string
   memoryDir: string
   skillsDir: string
@@ -29,6 +30,7 @@ export function resolveWorkspacePaths(cwd: string): WorkspacePaths {
     root,
     configFile: path.join(root, 'config.yaml'),
     systemFile: path.join(root, 'system.md'),
+    experienceFile: path.join(root, 'experience.md'),
     sessionsDir: path.join(root, 'sessions'),
     memoryDir: path.join(root, 'memory'),
     skillsDir: path.join(root, 'skills'),

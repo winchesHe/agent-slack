@@ -11,11 +11,13 @@ import { selfImproveConfirmTool } from './selfImproveConfirm.ts'
 import { askConfirmTool } from './askConfirm.ts'
 import type { SelfImproveCollector } from './selfImprove.collector.ts'
 import type { SelfImproveGenerator } from './selfImprove.generator.ts'
+import type { SemanticDedup } from './selfImprove.semanticDedup.ts'
 
 export interface BuiltinToolDeps {
   memoryStore: MemoryStore
   selfImproveCollector: SelfImproveCollector
   selfImproveGenerator: SelfImproveGenerator
+  selfImproveSemanticDedup?: SemanticDedup
   confirmBridge: ConfirmBridge
   paths: WorkspacePaths
   logger: Logger
@@ -31,6 +33,7 @@ export function buildBuiltinTools(ctx: ToolContext, deps: BuiltinToolDeps): Tool
     }),
     self_improve_confirm: selfImproveConfirmTool(ctx, {
       generator: deps.selfImproveGenerator,
+      ...(deps.selfImproveSemanticDedup ? { semanticDedup: deps.selfImproveSemanticDedup } : {}),
       paths: deps.paths,
       logger: deps.logger,
     }),

@@ -78,7 +78,8 @@ function isValidRule(r: unknown): r is CandidateRule {
 
 // ── 排序 ─────────────────────────────────────────────
 
-function compareRules(a: CandidateRule, b: CandidateRule): number {
+/** 候选规则排序：confidence（high > medium）+ category 字典序稳定排序。导出供语义去重路径复用。 */
+export function compareRules(a: CandidateRule, b: CandidateRule): number {
   // high 排前
   const byConf = confWeight(a.confidence) - confWeight(b.confidence)
   if (byConf !== 0) return byConf
