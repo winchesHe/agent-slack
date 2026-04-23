@@ -32,6 +32,12 @@ export type ConfirmCallback = (itemId: string, decision: ConfirmDecision) => Pro
  * 经 InboundMessage 透传到 Orchestrator，再经 ToolsBuilder 写入 ToolContext。
  */
 export interface ConfirmSender {
+  /**
+   * 当前会话的不透明 id（由 IM Adapter 决定其含义，Slack 下取 threadTs）。
+   * ConfirmBridge 用它作 per-session 单 pending 的 key；tool 层不应解析其内容。
+   */
+  readonly sessionId: string
+
   send(opts: {
     items: ConfirmItem[]
     namespace: string

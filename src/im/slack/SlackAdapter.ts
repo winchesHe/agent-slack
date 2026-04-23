@@ -6,6 +6,7 @@ import type { Logger } from '@/logger/logger.ts'
 import type { AbortRegistry } from '@/orchestrator/AbortRegistry.ts'
 import type { SessionRunQueue } from '@/orchestrator/SessionRunQueue.ts'
 import type { ConfirmSender } from '@/im/types.ts'
+import type { ConfirmBridge } from '@/im/slack/ConfirmBridge.ts'
 import type { SlackRenderer } from './SlackRenderer.ts'
 import { createSlackEventSink } from './SlackEventSink.ts'
 import {
@@ -21,6 +22,8 @@ export interface SlackAdapterDeps {
   runQueue: SessionRunQueue
   renderer: SlackRenderer
   slackConfirm: SlackConfirm
+  /** ask_confirm 依赖：用于判断超时后按钮点击 fallback */
+  confirmBridge?: ConfirmBridge
   logger: Logger
   botToken: string
   appToken: string
@@ -142,6 +145,7 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
       // 构造 IM-agnostic 确认发送器，绑定本次会话的 web/channel/thread。
       // tool 层通过 ToolContext.confirm 调用；不感知 WebClient。
       const confirmSender: ConfirmSender = {
+        sessionId: threadTs,
         async send({ items, namespace, labels, onDecision }) {
           await deps.slackConfirm.send({
             web: client as unknown as WebClient,
@@ -193,7 +197,7 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
   })
 
   // 通用 confirm 按钮路由：action_id 前缀 "confirm:"
-  app.action(/^confirm:/, async ({ action, ack, client, body }) => {
+  app.action(/^confirm:/, async ({ action, ack, client, body, respond }) => {
     await ack()
     const actionId = (action as { action_id?: string }).action_id
     if (!actionId) return
@@ -201,13 +205,35 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
     // body 类型 bolt 层较宽松，运行时从点击事件中取 channel / message
     const b = body as {
       channel?: { id?: string }
-      message?: { ts?: string; blocks?: SlackBlock[] }
+      message?: { ts?: string; thread_ts?: string; blocks?: SlackBlock[] }
     }
     const channelId = b.channel?.id
     const messageTs = b.message?.ts
+    const threadTs = b.message?.thread_ts ?? messageTs
     const messageBlocks = b.message?.blocks ?? []
     if (!channelId || !messageTs) {
       log.warn('confirm action 缺少 channel/message 信息', { actionId })
+      return
+    }
+
+    // ask_confirm 超时 fallback：namespace=ask-* 且 bridge 无 pending → ephemeral 提示已过期
+    const parsed = parseConfirmActionId(actionId)
+    if (
+      parsed &&
+      parsed.namespace.startsWith('ask-') &&
+      deps.confirmBridge &&
+      threadTs &&
+      !deps.confirmBridge.hasPending(threadTs)
+    ) {
+      try {
+        await respond({
+          response_type: 'ephemeral',
+          replace_original: false,
+          text: '⏱ 此确认已超时，请重新请求',
+        })
+      } catch (err) {
+        log.warn('ask_confirm 超时 ephemeral 提示失败', { err })
+      }
       return
     }
 

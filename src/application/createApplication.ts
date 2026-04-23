@@ -18,6 +18,7 @@ import { AbortRegistry } from '@/orchestrator/AbortRegistry.ts'
 import { createSlackAdapter } from '@/im/slack/SlackAdapter.ts'
 import { createSlackRenderer } from '@/im/slack/SlackRenderer.ts'
 import { createSlackConfirm } from '@/im/slack/SlackConfirm.ts'
+import { createConfirmBridge } from '@/im/slack/ConfirmBridge.ts'
 import { createSelfImproveCollector } from '@/agent/tools/selfImprove.collector.ts'
 import { createSelfImproveGenerator } from '@/agent/tools/selfImprove.generator.ts'
 import { ConfigError } from '@/core/errors.ts'
@@ -66,6 +67,7 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
   const memoryStore = createMemoryStore(ctx.paths)
   const selfImproveCollector = createSelfImproveCollector({ paths: ctx.paths, logger })
   const selfImproveGenerator = createSelfImproveGenerator()
+  const confirmBridge = createConfirmBridge({ logger })
   const runQueue = new SessionRunQueue()
   const abortRegistry = new AbortRegistry<string>()
 
@@ -87,6 +89,7 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
         memoryStore,
         selfImproveCollector,
         selfImproveGenerator,
+        confirmBridge,
         paths: ctx.paths,
         logger,
       },
@@ -122,6 +125,7 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
     runQueue,
     renderer,
     slackConfirm,
+    confirmBridge,
     logger,
     botToken: slackBotToken,
     appToken: slackAppToken,

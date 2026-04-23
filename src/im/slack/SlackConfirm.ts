@@ -1,11 +1,6 @@
 import type { WebClient } from '@slack/web-api'
 import type { Logger } from '@/logger/logger.ts'
-import type {
-  ConfirmCallback,
-  ConfirmDecision,
-  ConfirmItem,
-  ConfirmLabels,
-} from '@/im/types.ts'
+import type { ConfirmCallback, ConfirmDecision, ConfirmItem, ConfirmLabels } from '@/im/types.ts'
 
 // 向后兼容：从 im/types.ts re-export，保持原有调用方不受影响
 export type { ConfirmCallback, ConfirmDecision, ConfirmItem, ConfirmLabels }

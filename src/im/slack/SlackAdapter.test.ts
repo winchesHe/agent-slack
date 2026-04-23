@@ -34,10 +34,7 @@ const boltMock = vi.hoisted(() => {
       handlers.set(name, handler)
     }),
     action: vi.fn(
-      (
-        pattern: string | RegExp,
-        handler: (args: Record<string, unknown>) => Promise<void>,
-      ) => {
+      (pattern: string | RegExp, handler: (args: Record<string, unknown>) => Promise<void>) => {
         actionHandlers.push({ pattern, handler })
       },
     ),

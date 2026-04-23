@@ -312,3 +312,57 @@
 | Q2 | 接入：createApplication 装配 / SlackAdapter action handler 加 `ask:*` 超时 fallback / tools/index.ts 注册 |
 | Q3 | 端到端联调 |
 
+
+### Q0 完成（2026-04-23）
+
+**产出**：`src/im/slack/ConfirmBridge.ts`（~200 行）
+
+chunk 1（骨架）：
+- `ConfirmBridge` 接口：`hasPending` / `awaitAllDecisions` / `resolveOne`
+- `pendingByThread: Map<threadTs, ConfirmPending>` 单 pending（同 thread 禁止并发）
+- `resolveOne` 三重校验：无 pending / toolCallId 不匹配 / 重复点击 都忽略
+
+chunk 2（完整）：
+- `ConfirmTimeoutError` / `ConfirmAbortError`：携带 `partialDecisions`，交由 tool 决定回退
+- `timeoutMs` setTimeout → 超时 reject TimeoutError
+- `signal?: AbortSignal`：已 aborted 立即 reject / 监听 abort → reject AbortError
+- `cancel(threadTs, reason?)` 方法
+- 每个 pending 的 `cleanup`（clearTimeout + removeEventListener），resolve/reject/cancel 统一调用
+
+### Q1 完成（2026-04-23）
+
+**产出**：
+- `src/agent/tools/askConfirm.ts`：tool 定义 + postDecisionFeedback
+  - tool 名 `ask_confirm`
+  - 参数 schema：`title` / `items[]`（id/title/description?） / `timeoutMs?`
+  - `no_confirm_channel` / `concurrent_pending` 早期返回
+  - `namespace = ask:<toolCallId>` 和 self_improve 隔离
+  - 捕获 `ConfirmTimeoutError` / `ConfirmAbortError` → 使用 `partialDecisions`，输出 `timedOut` / `aborted` 标志
+  - 每个条目决定 `accept` / `reject` / `timeout`
+  - postFeedback 失败只记 error log，不影响返回
+- `src/im/types.ts`：`ConfirmSender` 扩展
+  - 新增 `sessionId: string`（IM-agnostic 不透明 id，Slack 下 = threadTs）
+  - 新增 `postFeedback(text: string): Promise<void>`（IM-agnostic 回帖）
+
+### Q2 完成（2026-04-23）
+
+**改动**：
+- `src/im/slack/SlackAdapter.ts`：
+  - `SlackAdapterDeps` 加 `confirmBridge?: ConfirmBridge`（可选，保持测试兼容）
+  - ConfirmSender 实现填充 `sessionId = threadTs` + `postFeedback` 调 chat.postMessage
+  - `app.action(/^confirm:/)` 闭包加 `ask:*` 超时 fallback 分支：namespace 以 `ask:` 开头 + bridge 无 pending → `respond` ephemeral 提示"已超时"，不调 handleConfirmAction
+- `src/application/createApplication.ts`：
+  - 装配 `confirmBridge = createConfirmBridge({ logger })`
+  - 注入 toolsBuilder（BuiltinToolDeps.confirmBridge）
+  - 传给 SlackAdapter
+- `src/agent/tools/index.ts`：
+  - 注册 `ask_confirm: askConfirmTool(ctx, { bridge, logger })`
+  - `BuiltinToolDeps` 加 `confirmBridge: ConfirmBridge`
+- `scripts/smoke.ts`：同步 buildBuiltinTools 调用，加 confirmBridge 参数（否则 typecheck 失败）
+
+**验证**：
+- `pnpm typecheck`：除 baseline 3 条 anthropic 类型错误（pre-existing，与 ask_confirm 无关），无新增
+- `pnpm lint`：通过（prettier 已 format）
+- `pnpm test`：193 通过 + 5 失败（均为 baseline pre-existing，都在 createApplication.test.ts，与 ask_confirm 无关）
+- ❌ **未做**：端到端 Slack 联调（Q3）
+

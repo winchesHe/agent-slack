@@ -4,6 +4,7 @@ import { createAiSdkExecutor } from '@/agent/AiSdkExecutor.ts'
 import { buildBuiltinTools } from '@/agent/tools/index.ts'
 import { createSelfImproveCollector } from '@/agent/tools/selfImprove.collector.ts'
 import { createSelfImproveGenerator } from '@/agent/tools/selfImprove.generator.ts'
+import { createConfirmBridge } from '@/im/slack/ConfirmBridge.ts'
 import { createMemoryStore } from '@/store/MemoryStore.ts'
 import { resolveWorkspacePaths } from '@/workspace/paths.ts'
 import { createLogger } from '@/logger/logger.ts'
@@ -20,13 +21,14 @@ async function main(): Promise<void> {
   const memoryStore = createMemoryStore(paths)
   const selfImproveCollector = createSelfImproveCollector({ paths, logger })
   const selfImproveGenerator = createSelfImproveGenerator()
+  const confirmBridge = createConfirmBridge({ logger })
 
   const provider = createOpenAICompatible({ baseURL, apiKey, name: 'litellm' })
   const exec = createAiSdkExecutor({
     model: provider.chatModel(model),
     tools: buildBuiltinTools(
       { cwd: process.cwd(), logger },
-      { memoryStore, selfImproveCollector, selfImproveGenerator, paths, logger },
+      { memoryStore, selfImproveCollector, selfImproveGenerator, confirmBridge, paths, logger },
     ),
     maxSteps: 10,
     logger,

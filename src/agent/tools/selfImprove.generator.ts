@@ -45,15 +45,11 @@ export function createSelfImproveGenerator(): SelfImproveGenerator {
         if (tokens.size === 0) continue
 
         // 与现有规则查重
-        const dupExisting = existingTokenSets.some(
-          (et) => jaccard(tokens, et) >= JACCARD_THRESHOLD,
-        )
+        const dupExisting = existingTokenSets.some((et) => jaccard(tokens, et) >= JACCARD_THRESHOLD)
         if (dupExisting) continue
 
         // 组内查重
-        const dupInGroup = survivors.some(
-          (s) => jaccard(tokens, s.tokens) >= JACCARD_THRESHOLD,
-        )
+        const dupInGroup = survivors.some((s) => jaccard(tokens, s.tokens) >= JACCARD_THRESHOLD)
         if (dupInGroup) continue
 
         survivors.push({ rule, tokens })
@@ -126,9 +122,7 @@ function splitExistingRules(md: string): string[] {
 /** 文本归一化 + 分词（按非字母数字切分，忽略大小写与 Markdown 标点）。导出供单测。 */
 export function tokenize(text: string): Set<string> {
   const normalized = text.toLowerCase().replace(/[`*_>#\[\]()~]/g, ' ')
-  const tokens = normalized
-    .split(/[^\p{L}\p{N}]+/u)
-    .filter((t) => t.length >= 2)
+  const tokens = normalized.split(/[^\p{L}\p{N}]+/u).filter((t) => t.length >= 2)
   return new Set(tokens)
 }
 

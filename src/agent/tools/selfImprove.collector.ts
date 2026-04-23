@@ -66,9 +66,7 @@ const MAX_SESSION_CHARS = 12000
 
 // ── 工厂 ──────────────────────────────────────────────
 
-export function createSelfImproveCollector(
-  deps: SelfImproveCollectorDeps,
-): SelfImproveCollector {
+export function createSelfImproveCollector(deps: SelfImproveCollectorDeps): SelfImproveCollector {
   const log = deps.logger.withTag('self-improve:collector')
   const slackSessionsDir = path.join(deps.paths.sessionsDir, 'slack')
 
@@ -288,10 +286,7 @@ function trimRoundsBySessionBudget(rounds: SessionRound[], maxChars: number): Se
 
 // ── memory 收集 ──────────────────────────────────────
 
-async function collectMemories(
-  memoryDir: string,
-  log: Logger,
-): Promise<MemoryEntry[]> {
+async function collectMemories(memoryDir: string, log: Logger): Promise<MemoryEntry[]> {
   let entries: string[]
   try {
     entries = await readdir(memoryDir)

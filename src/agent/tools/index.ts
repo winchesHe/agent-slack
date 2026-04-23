@@ -2,11 +2,13 @@ import type { ToolSet } from 'ai'
 import type { MemoryStore } from '@/store/MemoryStore.ts'
 import type { WorkspacePaths } from '@/workspace/paths.ts'
 import type { Logger } from '@/logger/logger.ts'
+import type { ConfirmBridge } from '@/im/slack/ConfirmBridge.ts'
 import { bashTool, type ToolContext } from './bash.ts'
 import { editFileTool } from './editFile.ts'
 import { saveMemoryTool } from './saveMemory.ts'
 import { selfImproveCollectTool } from './selfImproveCollect.ts'
 import { selfImproveConfirmTool } from './selfImproveConfirm.ts'
+import { askConfirmTool } from './askConfirm.ts'
 import type { SelfImproveCollector } from './selfImprove.collector.ts'
 import type { SelfImproveGenerator } from './selfImprove.generator.ts'
 
@@ -14,6 +16,7 @@ export interface BuiltinToolDeps {
   memoryStore: MemoryStore
   selfImproveCollector: SelfImproveCollector
   selfImproveGenerator: SelfImproveGenerator
+  confirmBridge: ConfirmBridge
   paths: WorkspacePaths
   logger: Logger
 }
@@ -29,6 +32,10 @@ export function buildBuiltinTools(ctx: ToolContext, deps: BuiltinToolDeps): Tool
     self_improve_confirm: selfImproveConfirmTool(ctx, {
       generator: deps.selfImproveGenerator,
       paths: deps.paths,
+      logger: deps.logger,
+    }),
+    ask_confirm: askConfirmTool(ctx, {
+      bridge: deps.confirmBridge,
       logger: deps.logger,
     }),
   }

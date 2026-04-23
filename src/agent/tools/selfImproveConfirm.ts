@@ -107,10 +107,7 @@ async function readFileSafe(file: string): Promise<string> {
  * - 文件不存在 / 标题不存在时自动创建
  * - 若段内已含相同 content（完全匹配）则跳过，避免重复写入
  */
-async function appendAcceptedRuleToSystemMd(
-  file: string,
-  rule: CandidateRule,
-): Promise<void> {
+async function appendAcceptedRuleToSystemMd(file: string, rule: CandidateRule): Promise<void> {
   await mkdir(path.dirname(file), { recursive: true })
   const existing = await readFileSafe(file)
   const entry = buildRuleEntry(rule)
