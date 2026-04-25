@@ -11,6 +11,7 @@ import {
   createLiveE2EContext,
   delay,
   findReplyContaining,
+  findUsageMessage,
   waitForThread,
   writeScenarioResult,
 } from './scenario-utils.ts'
@@ -19,9 +20,12 @@ interface SaveMemoryResult {
   assistantReplyText?: string
   assistantReplyTs?: string
   failureMessage?: string
+  usageText?: string
   matched: {
     assistantReplied: boolean
     memoryMarkerPersisted: boolean
+    memoryTailObserved: boolean
+    usageObserved: boolean
   }
   passed: boolean
   rootMessageTs?: string
@@ -37,6 +41,8 @@ async function main(): Promise<void> {
     matched: {
       assistantReplied: false,
       memoryMarkerPersisted: false,
+      memoryTailObserved: false,
+      usageObserved: false,
     },
     passed: false,
     runId,
@@ -71,7 +77,19 @@ async function main(): Promise<void> {
       }
 
       result.matched.memoryMarkerPersisted = await memoryContains(marker)
-      return result.matched.assistantReplied && result.matched.memoryMarkerPersisted
+      const usage = findUsageMessage(messages, rootMessage.ts)
+      if (typeof usage?.text === 'string') {
+        result.usageText = usage.text
+      }
+      result.matched.usageObserved = usage !== undefined
+      result.matched.memoryTailObserved = hasPositiveTailCount(usage?.text, ':agent_memory:')
+
+      return (
+        result.matched.assistantReplied &&
+        result.matched.memoryMarkerPersisted &&
+        result.matched.usageObserved &&
+        result.matched.memoryTailObserved
+      )
     })
 
     assertResult(result)
@@ -151,10 +169,20 @@ async function memoryContains(marker: string): Promise<boolean> {
   return false
 }
 
+function hasPositiveTailCount(text: string | undefined, emoji: string): boolean {
+  if (!text?.includes(emoji)) {
+    return false
+  }
+  const escaped = emoji.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`${escaped}\\s+[1-9]\\d*\\s+\\w+`).test(text)
+}
+
 function assertResult(result: SaveMemoryResult): void {
   const failures: string[] = []
   if (!result.matched.assistantReplied) failures.push('assistant reply not observed')
   if (!result.matched.memoryMarkerPersisted) failures.push('memory marker not persisted')
+  if (!result.matched.usageObserved) failures.push('usage message not observed')
+  if (!result.matched.memoryTailObserved) failures.push('memory tail not observed')
 
   if (failures.length > 0) {
     throw new Error(`Live save memory E2E failed: ${failures.join('; ')}`)

@@ -8,7 +8,7 @@ import type {
 import type { Logger } from '@/logger/logger.ts'
 import type { EventSink } from '@/im/types.ts'
 import { STATUS, getShuffledLoadingMessages } from './thinking-messages.ts'
-import type { SlackRenderer } from './SlackRenderer.ts'
+import type { SessionUsageTailStats, SlackRenderer } from './SlackRenderer.ts'
 import { isRenderDebugEnabled } from '@/workspace/config.ts'
 
 export interface SlackEventSinkDeps {
@@ -39,6 +39,7 @@ interface SinkLocalState {
   terminalStopReason: StopReason | undefined
   terminalErrorMessage: string | undefined
   pendingUsage: SessionUsageInfo | undefined
+  usageTailStats: SessionUsageTailStats
 }
 
 function makeStateKey(state: ActivityState): string {
@@ -83,6 +84,55 @@ function extractBaseToolName(label: string): string {
   return parenIdx >= 0 ? label.slice(0, parenIdx) : label
 }
 
+function emptyUsageTailStats(): SessionUsageTailStats {
+  return { memories: 0, tools: 0, skills: 0 }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function countToolCall(stats: SessionUsageTailStats, toolName: string, args: unknown): void {
+  if (toolName === 'save_memory') {
+    stats.memories += 1
+    return
+  }
+
+  if (toolName !== 'bash' || !isRecord(args) || typeof args.cmd !== 'string') {
+    return
+  }
+
+  if (args.cmd.includes('.agent-slack/memory/')) {
+    stats.memories += 1
+  }
+  if (args.cmd.includes('.agent-slack/skills/') && args.cmd.includes('SKILL.md')) {
+    stats.skills += 1
+  }
+}
+
+function collectUsageTailStats(
+  event: Extract<AgentExecutionEvent, { type: 'lifecycle'; phase: 'completed' }>,
+  toolHistory: Map<string, number>,
+): SessionUsageTailStats {
+  const stats = emptyUsageTailStats()
+  stats.tools = Array.from(toolHistory.values()).reduce((sum, count) => sum + count, 0)
+
+  for (const message of event.finalMessages) {
+    if (message.role !== 'assistant' || !Array.isArray(message.content)) {
+      continue
+    }
+
+    for (const part of message.content) {
+      if (!isRecord(part) || part.type !== 'tool-call' || typeof part.toolName !== 'string') {
+        continue
+      }
+      countToolCall(stats, part.toolName, part.args)
+    }
+  }
+
+  return stats
+}
+
 // 将 base name 的 toolHistory 转为 display label 版本，供渲染层直接使用。
 function toDisplayToolHistory(
   toolHistory: Map<string, number>,
@@ -125,6 +175,7 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
     terminalStopReason: undefined,
     terminalErrorMessage: undefined,
     pendingUsage: undefined,
+    usageTailStats: emptyUsageTailStats(),
   }
 
   function debugCutover(message: string, meta?: unknown): void {
@@ -316,6 +367,10 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
       local.terminalStopReason = event.reason
     }
 
+    if (event.phase === 'completed') {
+      local.usageTailStats = collectUsageTailStats(event, local.toolHistory)
+    }
+
     if (event.phase === 'failed') {
       local.terminalErrorMessage = event.error?.message ?? 'unknown'
     }
@@ -444,6 +499,7 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
             deps.channelId,
             deps.threadTs,
             local.pendingUsage,
+            local.usageTailStats,
           )
         }
 

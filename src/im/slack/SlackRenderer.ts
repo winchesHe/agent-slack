@@ -19,6 +19,12 @@ export interface ProgressUiState {
   reasoningTail?: string
 }
 
+export interface SessionUsageTailStats {
+  memories: number
+  tools: number
+  skills: number
+}
+
 export interface SlackRenderer {
   addAck(client: WebClient, channelId: string, messageTs: string): Promise<void>
   removeAck(client: WebClient, channelId: string, messageTs: string): Promise<void>
@@ -78,6 +84,7 @@ export interface SlackRenderer {
     channelId: string,
     threadTs: string,
     usage: SessionUsageInfo,
+    tailStats?: SessionUsageTailStats,
   ): Promise<void>
 }
 
@@ -126,9 +133,9 @@ function fallbackText(state: ProgressUiState): string {
   return state.status || state.activities.at(-1) || '…'
 }
 
-// usage 行简洁展示：耗时 · 成本 · 模型 token 统计。
-function formatUsageLine(usage: SessionUsageInfo): string {
-  const parts = [`${(usage.durationMs / 1000).toFixed(1)}s`]
+// usage 行简洁展示：耗时 · 成本 · 模型 token 统计 · 本轮 memory/tool/skill 使用。
+function formatUsageLine(usage: SessionUsageInfo, tailStats?: SessionUsageTailStats): string {
+  const parts = [`:agent_time: ${(usage.durationMs / 1000).toFixed(1)}s`]
 
   if (usage.totalCostUSD > 0) {
     parts.push(`$${usage.totalCostUSD.toFixed(4)}`)
@@ -145,7 +152,23 @@ function formatUsageLine(usage: SessionUsageInfo): string {
     parts.push(segment)
   }
 
+  if (tailStats) {
+    if (tailStats.memories > 0) {
+      parts.push(`:agent_memory: ${formatCount(tailStats.memories, 'memory', 'memories')}`)
+    }
+    if (tailStats.tools > 0) {
+      parts.push(`:agent_tool: ${formatCount(tailStats.tools, 'tool', 'tools')}`)
+    }
+    if (tailStats.skills > 0) {
+      parts.push(`:agent_skill: ${formatCount(tailStats.skills, 'skill', 'skills')}`)
+    }
+  }
+
   return parts.join(' · ')
+}
+
+function formatCount(n: number, singular: string, plural: string): string {
+  return `${n} ${n === 1 ? singular : plural}`
 }
 
 // token 数量超千用 k 后缀，保持紧凑。
@@ -418,8 +441,8 @@ export function createSlackRenderer(deps: SlackRendererDeps): SlackRenderer {
         }
       }
     },
-    async postSessionUsage(client, channelId, threadTs, usage) {
-      const line = formatUsageLine(usage)
+    async postSessionUsage(client, channelId, threadTs, usage, tailStats) {
+      const line = formatUsageLine(usage, tailStats)
 
       await safeRender('chat.postMessage(usage)', () =>
         client.chat.postMessage({

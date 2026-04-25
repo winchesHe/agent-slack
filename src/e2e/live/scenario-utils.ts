@@ -72,13 +72,28 @@ export function findReplyContaining(
   })
 }
 
-export function hasUsageMessage(messages: SlackThreadMessage[], rootMessageTs: string): boolean {
-  return messages.some((message) => {
+export function findUsageMessage(
+  messages: SlackThreadMessage[],
+  rootMessageTs: string,
+): SlackThreadMessage | undefined {
+  const candidates = messages.filter((message) => {
     if (!message.ts || message.ts === rootMessageTs || typeof message.text !== 'string') {
       return false
     }
-    return /^\d+\.\d+s\b/.test(message.text) && message.text.includes('tokens')
+    return (
+      message.text.includes('tokens') &&
+      (/^\d+\.\d+s\b/.test(message.text) || message.text.includes(':agent_time:'))
+    )
   })
+
+  return (
+    [...candidates].reverse().find((message) => message.text?.includes(':agent_time:')) ??
+    candidates.at(-1)
+  )
+}
+
+export function hasUsageMessage(messages: SlackThreadMessage[], rootMessageTs: string): boolean {
+  return findUsageMessage(messages, rootMessageTs) !== undefined
 }
 
 export async function hasReaction(
