@@ -23,6 +23,8 @@
 - Node ≥ 22，TypeScript strict，ESM only。
 - 路径别名 `@/` → `src/`；不跨目录用相对路径。
 - 测试 `vitest`；`*.test.ts` 与源文件同目录；跨模块集成测试放 `tests/`。
+- Slack live E2E 在 `src/e2e/live/run-*.ts`；用 `pnpm e2e:list` 查看，`pnpm e2e <id>` 或 `pnpm e2e` 运行（真实 Slack）。
+- 修改 Slack 交互 / SlackRenderer / SlackAdapter / SlackEventSink / Slack tool UI 时，尽量补充或更新对应 live E2E 场景；不可自动化的交互在 PR/交付说明中写明原因。
 - Lint `pnpm lint`（`eslint`）作为完成前最后一步；hook 失败修根因而非 `--no-verify`。
 - Don't 用 `any` — 用 `unknown` + type guard。
 - Don't 裸用 `console.*` — 用 `logger.withTag('<tag>')`。
@@ -53,6 +55,8 @@
 ## Task Completion Checklist
 
 - [ ] 相关 `*.test.ts` 全部通过
+- [ ] 修改测试代码后，必须跑通对应测试，并用 `cunzhi` 告知测试结果
+- [ ] Slack 交互变更已补/更新 live E2E，或说明无法自动化原因
 - [ ] `pnpm lint` 无错误
 - [ ] 任务完成已同步更新进度和 design doc
 - [ ] 架构级变更已同步更新 design doc

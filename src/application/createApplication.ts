@@ -40,13 +40,19 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
   const slackBotToken = requireEnv('SLACK_BOT_TOKEN')
   const slackAppToken = requireEnv('SLACK_APP_TOKEN')
   const slackSigningSecret = requireEnv('SLACK_SIGNING_SECRET')
+  const slackE2eTriggerUserToken = process.env.SLACK_E2E_TRIGGER_USER_TOKEN?.trim()
   const logLevel = parseLogLevel(process.env.LOG_LEVEL)
 
   // 日志文件路径：.agent-slack/logs/agent-YYYY-MM-DD.log；由 Dashboard Logs tab 消费
   const logFile = resolveDailyLogFile(args.workspaceDir)
 
   // 先用 bootstrap logger 加载 workspace context（此时尚未知晓 provider secrets）
-  const bootstrapRedactor = createRedactor([slackBotToken, slackAppToken, slackSigningSecret])
+  const bootstrapRedactor = createRedactor([
+    slackBotToken,
+    slackAppToken,
+    slackSigningSecret,
+    ...(slackE2eTriggerUserToken ? [slackE2eTriggerUserToken] : []),
+  ])
   const bootstrapLogger = createLogger({ level: logLevel, redactor: bootstrapRedactor, logFile })
 
   const ctx = await loadWorkspaceContext(args.workspaceDir, bootstrapLogger)
@@ -59,6 +65,7 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
     slackBotToken,
     slackAppToken,
     slackSigningSecret,
+    ...(slackE2eTriggerUserToken ? [slackE2eTriggerUserToken] : []),
     ...providerEnv.secrets,
   ])
   const logger = createLogger({ level: logLevel, redactor, logFile })

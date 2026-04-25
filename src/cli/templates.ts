@@ -66,6 +66,12 @@ SLACK_SIGNING_SECRET=${args.slackSigningSecret}
 LOG_LEVEL=info
 # Slack Block Kit 渲染调试: 1 启用 / 0 禁用
 # SLACK_RENDER_DEBUG=0
+
+# ---------- Slack live E2E（可选；真实发 Slack 消息）----------
+# SLACK_E2E_CHANNEL_ID=C...
+# SLACK_E2E_TRIGGER_USER_TOKEN=xoxp-...
+# SLACK_E2E_TIMEOUT_MS=120000
+# SLACK_E2E_RESULT_PATH=.agent-slack/e2e/result.json
 `
 
   if (args.provider === 'litellm') {

@@ -188,6 +188,7 @@ interface Skill {
 
 - 环境变量（`process.env`）> `<cwd>/.agent-slack/.env.local` > `~/.agent-slack/.env`
 - `<cwd>/.agent-slack/config.yaml` > `~/.agent-slack/global.yaml` > 代码默认值
+- Slack live E2E runner 额外加载 `<cwd>/.env.e2e` 并允许覆盖，仅用于 `SLACK_E2E_*` 等手动测试变量
 
 ### 3.4 `config.yaml` 形态
 
@@ -387,7 +388,7 @@ agent-slack --help
 
 ### 6.1 日志
 
-- 技术：`consola` + redactor（脱敏 `SLACK_BOT_TOKEN`、`SLACK_APP_TOKEN`、`LITELLM_API_KEY`）
+- 技术：`consola` + redactor（脱敏 `SLACK_BOT_TOKEN`、`SLACK_APP_TOKEN`、`SLACK_E2E_TRIGGER_USER_TOKEN`、`LITELLM_API_KEY`）
 - 双写：终端（pretty 彩色，dev/CLI 前台）+ 文件（`logs/YYYY-MM-DD.log`，JSON lines）
 - 级别：`trace` / `debug` / `info` / `warn` / `error`；dev 默认 `debug`，生产默认 `info`
 - `LOG_LEVEL=trace` 时，`orchestrator` 会额外记录最终发给模型的完整 `systemPromptWithMemory`，用于排查 memory 注入和 system prompt 拼装问题
@@ -417,7 +418,7 @@ SIGINT / SIGTERM
 
 - **Unit**：Vitest，每个 core service 一个 `.test.ts`
 - **Integration**：mock SlackClient + mock litellm → 跑完整链路
-- **E2E（二期）**：真 slack + 真 litellm smoke test
+- **Live E2E（手动）**：`pnpm e2e:list` / `pnpm e2e <id>` 启动真实 app，向真实 Slack channel 发消息并轮询 thread 断言；默认不挂到 `pnpm test`
 
 ---
 
@@ -465,7 +466,7 @@ SIGINT / SIGTERM
 - **多 IM 适配**：基于 `IMAdapter` 接口的 `TelegramAdapter`
 - **Memory 检索增强**：ripgrep 封装 tool 或可选的向量索引
 - **多 workspace 切换**：在 `config.yaml` 声明多个 workspace 或引入 `global.yaml` 的 workspace 注册表
-- **E2E 框架**：脱胎于 app `packages/live-cli`
+- **E2E 场景扩展**：在现有 live runner 上按需迁移更多 kagura 场景
 
 ---
 
@@ -515,7 +516,7 @@ SIGINT / SIGTERM
 | IM 抽象 | Slack 深度耦合 | IMAdapter 接口先行 | 多 IM 扩展不返工 |
 | Agent 抽象 | 已有 ProviderRegistry 但只一份实现 | 同样 registry，未来加 provider 无结构改动 | 对齐 |
 | 探针机制 | FileClaudeExecutionProbe 等 | 不做 | 过度设计，logs 够用 |
-| E2E 框架 | packages/live-cli | 二期再做 | 聚焦一期 MVP |
+| E2E 框架 | packages/live-cli | 已引入 live runner，覆盖 basic-reply / rich-text-blocks / tool-progress / save-memory / thread-session-resume | 控制范围，避免迁入 kagura 专有 Claude/SQLite 依赖 |
 
 ---
 

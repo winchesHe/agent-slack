@@ -30,12 +30,16 @@ const mocks = vi.hoisted(() => {
       cwd: '/mock-workspace',
       paths: {
         rootDir: '/mock-workspace/.agent-slack',
+        sessionsDir: '/mock-workspace/.agent-slack/sessions',
+        memoryDir: '/mock-workspace/.agent-slack/memory',
+        experienceFile: '/mock-workspace/.agent-slack/experience.md',
+        systemFile: '/mock-workspace/.agent-slack/system.md',
       },
       config: {
         agent: {
           model: 'test-model',
           maxSteps: 8,
-          provider: 'litellm' as const,
+          provider: 'litellm' as 'litellm' | 'anthropic',
         },
       },
       systemPrompt: 'system prompt',
@@ -188,7 +192,13 @@ describe('createApplication', () => {
     process.env.ANTHROPIC_API_KEY = 'sk-ant-xxx'
     mocks.loadWorkspaceContext.mockResolvedValueOnce({
       cwd: '/mock-workspace',
-      paths: { rootDir: '/mock-workspace/.agent-slack' },
+      paths: {
+        rootDir: '/mock-workspace/.agent-slack',
+        sessionsDir: '/mock-workspace/.agent-slack/sessions',
+        memoryDir: '/mock-workspace/.agent-slack/memory',
+        experienceFile: '/mock-workspace/.agent-slack/experience.md',
+        systemFile: '/mock-workspace/.agent-slack/system.md',
+      },
       config: {
         agent: { model: 'claude-sonnet-4-5', maxSteps: 8, provider: 'anthropic' as const },
       },
@@ -205,7 +215,13 @@ describe('createApplication', () => {
     process.env.ANTHROPIC_BASE_URL = 'https://gateway.example.com/v1'
     mocks.loadWorkspaceContext.mockResolvedValueOnce({
       cwd: '/mock-workspace',
-      paths: { rootDir: '/mock-workspace/.agent-slack' },
+      paths: {
+        rootDir: '/mock-workspace/.agent-slack',
+        sessionsDir: '/mock-workspace/.agent-slack/sessions',
+        memoryDir: '/mock-workspace/.agent-slack/memory',
+        experienceFile: '/mock-workspace/.agent-slack/experience.md',
+        systemFile: '/mock-workspace/.agent-slack/system.md',
+      },
       config: {
         agent: { model: 'claude-sonnet-4-5', maxSteps: 8, provider: 'anthropic' as const },
       },
@@ -222,7 +238,13 @@ describe('createApplication', () => {
   it('config.agent.provider=anthropic 缺 ANTHROPIC_API_KEY → 抛 ConfigError', async () => {
     mocks.loadWorkspaceContext.mockResolvedValueOnce({
       cwd: '/mock-workspace',
-      paths: { rootDir: '/mock-workspace/.agent-slack' },
+      paths: {
+        rootDir: '/mock-workspace/.agent-slack',
+        sessionsDir: '/mock-workspace/.agent-slack/sessions',
+        memoryDir: '/mock-workspace/.agent-slack/memory',
+        experienceFile: '/mock-workspace/.agent-slack/experience.md',
+        systemFile: '/mock-workspace/.agent-slack/system.md',
+      },
       config: { agent: { model: 'test-model', maxSteps: 8, provider: 'anthropic' as const } },
       systemPrompt: 'system prompt',
       skills: [],

@@ -42,6 +42,7 @@ agent-slack start           # 启动（前台阻塞）
 | `agent-slack start` | 启动服务（前台阻塞，Ctrl+C 优雅退出） |
 | `agent-slack status` | 打印 workspace 配置 + skills + 最近 session 摘要 |
 | `agent-slack doctor` | 环境自检（Node / 目录 / 凭证 / Slack auth / LiteLLM /models / 模型可用 / skills） |
+| `pnpm e2e:list` / `pnpm e2e <id>` | 手动运行 Slack live E2E（真实发送 Slack 消息） |
 
 所有命令支持 `--cwd <dir>` 显式指定 workspace 目录。
 
@@ -83,6 +84,12 @@ ANTHROPIC_API_KEY=sk-ant-...
 # ANTHROPIC_BASE_URL=https://api.anthropic.com/v1   # 可选：自建网关
 
 LOG_LEVEL=info
+
+# Slack live E2E（可选；真实发 Slack 消息）
+# SLACK_E2E_CHANNEL_ID=C...
+# SLACK_E2E_TRIGGER_USER_TOKEN=xoxp-...
+# SLACK_E2E_TIMEOUT_MS=120000
+# SLACK_E2E_RESULT_PATH=.agent-slack/e2e/result.json
 ```
 
 **切换步骤**：编辑 `.agent-slack/config.yaml` 的 `agent.provider` + 对应 `agent.model`，补齐 `.env.local` 凭证，重启进程。`agent-slack onboard` 在交互流程中会直接问一次 provider 并把选择写入 config.yaml。
