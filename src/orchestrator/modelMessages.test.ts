@@ -26,6 +26,10 @@ function assistant(content: string): CoreMessage {
   return { role: 'assistant', content }
 }
 
+function compactSummary(content = '摘要'): CoreMessage {
+  return assistant(`[compact: manual]\n${content}`)
+}
+
 function toolPair(toolCallId: string): CoreMessage[] {
   return [
     {
@@ -166,6 +170,73 @@ describe('buildModelMessages', () => {
     expect(messages).toContainEqual(user('c'))
     expect(messages).toContainEqual(current)
     expect(messages).not.toContainEqual(user('a'.repeat(80)))
+  })
+
+  it('存在 compact summary 时从最后一次 compact 边界后续接', () => {
+    const compact = compactSummary('旧历史摘要')
+    const history = [user('old-before'), assistant('old-answer'), compact, user('after-compact')]
+    const current = user('current')
+
+    const messages = buildModelMessages({
+      history,
+      userMessage: current,
+      budget: defaultBudget,
+      messagesJsonlPath,
+    })
+
+    expect(messages).toEqual([compact, user('after-compact'), current])
+  })
+
+  it('多次 compact 时只保留最后一次 compact summary', () => {
+    const firstCompact = compactSummary('first')
+    const lastCompact = compactSummary('last')
+    const current = user('current')
+
+    const messages = buildModelMessages({
+      history: [firstCompact, user('stale-tail'), lastCompact, assistant('fresh-tail')],
+      userMessage: current,
+      budget: defaultBudget,
+      messagesJsonlPath,
+    })
+
+    expect(messages).toEqual([lastCompact, assistant('fresh-tail'), current])
+  })
+
+  it('compact boundary 后的 tail 超预算时保留 compact summary 并裁剪 tail', () => {
+    const compact = compactSummary('summary')
+    const current = user('current')
+
+    const messages = buildModelMessages({
+      history: [compact, user('tail-1'), user('tail-2')],
+      userMessage: current,
+      budget: budget({ keepRecentMessages: 3 }),
+      messagesJsonlPath,
+    })
+
+    expect(messages).toEqual([
+      compact,
+      {
+        role: 'user',
+        content: `${MODEL_CONTEXT_PRUNED_NOTICE_TITLE}\n本次仅加载最近对话片段；完整会话记录仍保存在：${messagesJsonlPath}`,
+      },
+      user('tail-2'),
+      current,
+    ])
+  })
+
+  it('compact boundary 后的裁剪仍会向前扩展保留 tool pair', () => {
+    const compact = compactSummary('summary')
+    const pair = toolPair('call_after_compact')
+    const current = user('current')
+
+    const messages = buildModelMessages({
+      history: [compact, pair[0]!, pair[1]!, assistant('done')],
+      userMessage: current,
+      budget: budget({ keepRecentMessages: 4 }),
+      messagesJsonlPath,
+    })
+
+    expect(messages).toEqual([compact, pair[0], pair[1], assistant('done'), current])
   })
 
   it('仅在模型视图中压缩旧 tool-result，保留最近 N 个完整结果', () => {

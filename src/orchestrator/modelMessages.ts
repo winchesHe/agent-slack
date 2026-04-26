@@ -21,6 +21,7 @@ export interface BuildModelMessagesArgs {
 
 export const MODEL_CONTEXT_PRUNED_NOTICE_TITLE = '[历史上下文已按预算裁剪]'
 export const TOOL_RESULT_COMPACTED_NOTICE_TITLE = '[旧工具结果已压缩]'
+export const COMPACT_SUMMARY_PREFIX = '[compact:'
 
 function estimateMessageChars(message: CoreMessage): number {
   return JSON.stringify(message).length
@@ -35,6 +36,29 @@ function createPrunedNotice(messagesJsonlPath: string): CoreMessage {
 
 function createCompactedToolResultNotice(messagesJsonlPath: string): string {
   return `${TOOL_RESULT_COMPACTED_NOTICE_TITLE}；完整内容保存在：${messagesJsonlPath}`
+}
+
+function isCompactSummaryMessage(message: CoreMessage): boolean {
+  return message.role === 'assistant' && typeof message.content === 'string'
+    ? message.content.trimStart().startsWith(COMPACT_SUMMARY_PREFIX)
+    : false
+}
+
+function splitHistoryAtLastCompact(history: CoreMessage[]): {
+  compactSummary: CoreMessage | undefined
+  tailHistory: CoreMessage[]
+} {
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    const message = history[i]!
+    if (isCompactSummaryMessage(message)) {
+      return {
+        compactSummary: message,
+        tailHistory: history.slice(i + 1),
+      }
+    }
+  }
+
+  return { compactSummary: undefined, tailHistory: history }
 }
 
 function assistantToolCallIds(message: CoreMessage): Set<string> {
@@ -190,12 +214,14 @@ export function buildModelMessages({
   const maxApproxChars = Math.max(1, budget.maxApproxChars)
   const keepRecentMessages = Math.max(1, budget.keepRecentMessages)
   const keepRecentToolResults = Math.max(1, budget.keepRecentToolResults)
-  let selectedStart = history.length
-  let selectedChars = estimateMessageChars(userMessage)
-  let selectedMessageCount = 1
+  const { compactSummary, tailHistory } = splitHistoryAtLastCompact(history)
+  let selectedStart = tailHistory.length
+  let selectedChars =
+    estimateMessageChars(userMessage) + (compactSummary ? estimateMessageChars(compactSummary) : 0)
+  let selectedMessageCount = 1 + (compactSummary ? 1 : 0)
 
-  for (let i = history.length - 1; i >= 0; i -= 1) {
-    const nextMessage = history[i]!
+  for (let i = tailHistory.length - 1; i >= 0; i -= 1) {
+    const nextMessage = tailHistory[i]!
     const nextChars = selectedChars + estimateMessageChars(nextMessage)
     const nextMessageCount = selectedMessageCount + 1
     if (nextChars > maxApproxChars || nextMessageCount > keepRecentMessages) {
@@ -207,25 +233,32 @@ export function buildModelMessages({
     selectedMessageCount = nextMessageCount
   }
 
+  const prefixMessages = compactSummary ? [compactSummary] : []
+
   if (selectedStart === 0) {
     return compactOldToolResults(
-      [...history, userMessage],
+      [...prefixMessages, ...tailHistory, userMessage],
       keepRecentToolResults,
       messagesJsonlPath,
     )
   }
 
-  const adjustedStart = adjustStartToPreserveToolPairs(history, selectedStart)
+  const adjustedStart = adjustStartToPreserveToolPairs(tailHistory, selectedStart)
   if (adjustedStart === 0) {
     return compactOldToolResults(
-      [...history, userMessage],
+      [...prefixMessages, ...tailHistory, userMessage],
       keepRecentToolResults,
       messagesJsonlPath,
     )
   }
 
   return compactOldToolResults(
-    [createPrunedNotice(messagesJsonlPath), ...history.slice(adjustedStart), userMessage],
+    [
+      ...prefixMessages,
+      createPrunedNotice(messagesJsonlPath),
+      ...tailHistory.slice(adjustedStart),
+      userMessage,
+    ],
     keepRecentToolResults,
     messagesJsonlPath,
   )

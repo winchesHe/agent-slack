@@ -27,7 +27,6 @@
 
 ## 后续未实现
 
-- Phase 3：LLM compact summary + compact boundary。
 - Phase 4：自动触发与熔断。
 
 ## Phase 1 实现结果
@@ -67,6 +66,15 @@
 - 占位提示包含真实 `messages.jsonl` 路径，便于模型需要时读取完整历史。
 - 单测覆盖旧 tool-result 压缩、最近结果保留、原始 history 不变、tool pair 结构合法。
 
+## Phase 3 实现结果
+
+- `buildModelMessages()` 已识别最后一条 assistant 文本 `[compact:` summary 作为 compact boundary。
+- 有 compact boundary 时，模型视图只保留最后 compact summary、boundary 后 tail、当前 user message，不再 replay 更早历史。
+- compact summary 会被强制保留；预算裁剪只作用于 boundary 后 tail。
+- Phase 1 裁剪提示和 Phase 2 tool-result microcompact 会继续作用于 boundary 后 tail。
+- 单测覆盖最后 compact summary 续接、多次 compact 取最后一个、boundary 后 tail 裁剪、boundary 后 tool pair 保留。
+- 新增 live E2E `compact-boundary`：先写入会被 compact 过滤的旧 marker，手动 compact 后再发下一轮消息，验证模型不会泄漏 boundary 前原始历史。
+
 ## 已验证
 
 - `pnpm vitest run src/orchestrator/ConversationOrchestrator.test.ts src/im/slack/SlackEventSink.test.ts`
@@ -82,3 +90,6 @@
 - `pnpm e2e self-improve-collect`（真实 Slack，验证 self_improve_collect 调用与 tool-result 持久化）
 - `pnpm vitest run src/orchestrator/modelMessages.test.ts src/orchestrator/ConversationOrchestrator.test.ts src/workspace/config.test.ts`
 - `pnpm test`（33 files / 239 tests）
+- `pnpm vitest run src/orchestrator/modelMessages.test.ts src/orchestrator/ConversationOrchestrator.test.ts`
+- `pnpm test`（33 files / 243 tests）
+- `pnpm e2e compact-boundary`（真实 Slack，验证 compact boundary 后不再回看 boundary 前原始历史）

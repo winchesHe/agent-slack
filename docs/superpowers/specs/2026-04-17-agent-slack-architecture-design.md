@@ -364,6 +364,8 @@ Phase 1 稳定后，再在模型视图层加入旧 tool-result 轻量压缩：
 - compact 失败时回退 Phase 1，不阻塞用户请求。
 - 手动 compact 的 Slack 输出必须短，只保留后续有用上下文；过滤握手/测试/原样回复等低价值内容，不展示本地绝对路径、session/jsonl 路径或完整记录路径。
 
+当前实现的手动 compact marker 为 assistant 文本消息前缀 `[compact:`（例如 `[compact: manual]`）。模型视图构造时识别最后一条该前缀消息作为 boundary；该 summary 必须保留，预算裁剪只作用于 boundary 之后的 tail。
+
 LLM compact 不作为普通 AI SDK built-in tool 注入主 agent toolset。原因是 compact 属于运行时上下文管理，不应该由模型自主决定或消耗主任务 `maxSteps`；自动触发由 Orchestrator / ContextCompactor 服务在调用 executor 前处理。本期新增 @mention command router 作为手动 compact 控制入口，首个支持的 command 为 `compact`，它复用同一个 compact service，而不是暴露成主 agent 可调用工具。
 
 compact marker 必须是稳定可识别的数据，而不是只能靠自然语言匹配。优先方案是单独 `compact.jsonl` 或消息 metadata；若使用 `CoreMessage` metadata，需先验证 AI SDK 会安全透传/忽略该字段，不影响 provider 请求。
