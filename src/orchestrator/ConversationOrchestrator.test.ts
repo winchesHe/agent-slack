@@ -239,6 +239,65 @@ describe('ConversationOrchestrator 粗事件消费', () => {
     expect(sink.finalize).toHaveBeenCalledTimes(1)
   })
 
+  it('长历史只裁剪传给 executor 的模型视图，messages.jsonl 仍完整追加', async () => {
+    const paths = resolveWorkspacePaths(cwd)
+    const store = createSessionStore(paths)
+    const memoryStore = createMemoryStore(paths)
+    const session = await store.getOrCreate({
+      imProvider: 'slack',
+      channelId: 'C',
+      channelName: 'c',
+      threadTs: 't',
+      imUserId: 'U',
+    })
+    const history: CoreMessage[] = [
+      { role: 'user', content: 'old-1' },
+      { role: 'assistant', content: 'old-2' },
+      { role: 'user', content: 'recent-1' },
+      { role: 'assistant', content: 'recent-2' },
+    ]
+    for (const message of history) {
+      await store.appendMessage(session.id, message)
+    }
+
+    let executorMessages: CoreMessage[] | undefined
+    const executor: AgentExecutor = {
+      async *execute(req) {
+        executorMessages = req.messages
+        yield { type: 'lifecycle', phase: 'completed', finalMessages: [] }
+      },
+    }
+    const { sink } = mockSink()
+    const orch = createConversationOrchestrator({
+      toolsBuilder: () => ({}),
+      executorFactory: () => executor,
+      sessionStore: store,
+      memoryStore,
+      runQueue: new SessionRunQueue(),
+      abortRegistry: new AbortRegistry<string>(),
+      systemPrompt: '',
+      modelMessageBudget: { maxApproxChars: 10_000, keepRecentMessages: 3 },
+      logger: stubLogger(),
+    })
+
+    await orch.handle(makeInput({ text: 'current' }), sink)
+
+    expect(executorMessages).toEqual([
+      {
+        role: 'user',
+        content: `[历史上下文已按预算裁剪]\n本次仅加载最近对话片段；完整会话记录仍保存在：${path.join(
+          session.dir,
+          'messages.jsonl',
+        )}`,
+      },
+      { role: 'user', content: 'recent-1' },
+      { role: 'assistant', content: 'recent-2' },
+      { role: 'user', content: 'current' },
+    ])
+    const persistedMessages = await store.loadMessages(session.id)
+    expect(persistedMessages).toEqual([...history, { role: 'user', content: 'current' }])
+  })
+
   it('completed + tool finalMessages → user 后按顺序落盘 assistant(tool-call) / tool-result / assistant(text)', async () => {
     const paths = resolveWorkspacePaths(cwd)
     const store = createSessionStore(paths)

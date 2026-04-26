@@ -5,6 +5,10 @@ describe('parseConfig', () => {
   it('空配置返回默认值', () => {
     expect(parseConfig({})).toEqual(DEFAULT_CONFIG)
     expect(DEFAULT_CONFIG.agent.maxSteps).toBe(50)
+    expect(DEFAULT_CONFIG.agent.context).toEqual({
+      maxApproxChars: 120_000,
+      keepRecentMessages: 80,
+    })
   })
 
   it('合并用户字段', () => {
@@ -12,6 +16,20 @@ describe('parseConfig', () => {
     expect(cfg.agent.name).toBe('custom')
     expect(cfg.agent.model).toBe('claude-sonnet-4-6')
     expect(cfg.agent.maxSteps).toBe(DEFAULT_CONFIG.agent.maxSteps)
+    expect(cfg.agent.context).toEqual(DEFAULT_CONFIG.agent.context)
+  })
+
+  it('合并 agent.context 用户字段', () => {
+    const cfg = parseConfig({
+      agent: {
+        context: {
+          maxApproxChars: 10_000,
+          keepRecentMessages: 12,
+        },
+      },
+    })
+    expect(cfg.agent.context.maxApproxChars).toBe(10_000)
+    expect(cfg.agent.context.keepRecentMessages).toBe(12)
   })
 
   it('未知 provider 报错', () => {

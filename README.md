@@ -65,6 +65,9 @@ agent:
   model: claude-sonnet-4-5      # provider 对应的模型 ID
   provider: anthropic           # litellm | anthropic
   maxSteps: 50
+  context:
+    maxApproxChars: 120000      # 只限制发给模型的历史视图，不裁剪 messages.jsonl
+    keepRecentMessages: 80      # 最多加载最近消息数，避免短消息无限增长
 ```
 
 **凭证 / URL / debug 走 `.env.local`**：

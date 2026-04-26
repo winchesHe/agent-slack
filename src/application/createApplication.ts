@@ -123,6 +123,7 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
     runQueue,
     abortRegistry,
     systemPrompt: ctx.systemPrompt,
+    modelMessageBudget: ctx.config.agent.context,
     logger,
   })
 

@@ -65,6 +65,7 @@
 
 ```typescript
 // src/agent/tools/selfImproveCollect.ts
+// thin wrapper，核心 collector 在 src/agents/selfImprove/collectorAgent.ts
 export function selfImproveCollectTool(ctx: ToolContext, deps: SelfImproveCollectDeps) {
   return tool({
     description:
@@ -81,6 +82,7 @@ export function selfImproveCollectTool(ctx: ToolContext, deps: SelfImproveCollec
 }
 
 // src/agent/tools/selfImproveConfirm.ts
+// thin wrapper，核心 generator 在 src/agents/selfImprove/generatorAgent.ts
 export function selfImproveConfirmTool(ctx: ToolContext, deps: SelfImproveConfirmDeps) {
   return tool({
     description:
@@ -106,9 +108,9 @@ export function selfImproveConfirmTool(ctx: ToolContext, deps: SelfImproveConfir
 }
 ```
 
-### 5.2 规则生成 Prompt 常量：`src/agent/tools/selfImprove.constants.ts`
+### 5.2 Prompt 归口：`src/agents/selfImprove/prompts.ts`
 
-将用户提供的 AGENTS.md 编写规则作为 **常量** 保存在项目内，作为 LLM 生成规则时的约束 prompt。
+将用户提供的 AGENTS.md 编写规则作为 **常量** 保存在 `src/agents/selfImprove/prompts.ts`，作为 LLM 生成规则时的约束 prompt。`src/agent/tools/*` 只保留 AI SDK tool wrapper，不再存放长 prompt。
 
 核心内容包括：
 - **好规则的标准**：帮助 agent 回答安装/构建/测试、目录结构、约定、禁止变更区域、完成前检查等问题
@@ -117,7 +119,7 @@ export function selfImproveConfirmTool(ctx: ToolContext, deps: SelfImproveConfir
 - **决策规则**：具体事实 > 通用指导、短命令 > 解释、约束 > 愿望
 - **自检清单**
 
-### 5.3 数据收集器：`src/agent/tools/selfImprove.collector.ts`
+### 5.3 数据收集器：`src/agents/selfImprove/collectorAgent.ts`
 
 ```typescript
 export interface CollectedData {
@@ -165,7 +167,7 @@ export interface ConfirmActionSummary {
 - **Token 控制**：单 session rounds 序列化超过 `MAX_SESSION_CHARS = 12000`（~3000 tokens）时从最旧 round 往后丢
 - **调试支持**：`collect()` 完成时打 `debug` 日志输出 `SessionSummary` 轻量视图（sessionId / channelName / messageCount / toolUsage / roundCount / confirmActionCount），便于 `LOG_LEVEL=debug` 时排障
 
-### 5.4 规则后处理器（generator）：`src/agent/tools/selfImprove.generator.ts`
+### 5.4 规则后处理器（generator）：`src/agents/selfImprove/generatorAgent.ts`
 
 **职责已变更**：本模块**不调 LLM**，纯代码后处理。由 `self_improve_confirm` tool 作为 **LLM 语义去重失败时的 fallback** 调用，负责在主 Agent 生成候选规则后做：
 
@@ -454,7 +456,7 @@ await slackConfirm.send({
 
 主 Agent 生成的 candidate rules 语义上可能与 `experience.md` / `system.md` 已有规则重复（Jaccard 捕获不到的同义改写）。在 `self_improve_confirm.execute` 中，**generator 之前**先走一层 LLM 语义去重。
 
-**位置**：`src/agent/tools/selfImprove.semanticDedup.ts`（新增，内部 helper，不作为 tool 暴露给主 Agent）。
+**位置**：`src/agents/selfImprove/semanticDedupAgent.ts`（内部 helper，不作为 tool 暴露给主 Agent）。
 
 **接口**：
 ```typescript
@@ -549,13 +551,14 @@ export function buildBuiltinTools(ctx: ToolContext, deps: BuiltinToolDeps): Tool
 |---|---|---|
 | `src/im/slack/SlackConfirm.ts` | **新增** | 通用 Block Kit 确认交互模块（IM 层，业务无关） |
 | `src/im/slack/SlackConfirm.test.ts` | **新增** | `buildConfirmBlocks` 纯函数单测 + callback 路由单测 |
-| `src/agent/tools/selfImprove.constants.ts` | **新增** | AGENTS.md 编写规则常量（`AGENTS_RULE_WRITING_GUIDE`） |
-| `src/agent/tools/selfImprove.collector.ts` | **新增** | 数据收集器（读 sessions/memory/experience.md/system.md） |
-| `src/agent/tools/selfImprove.generator.ts` | **新增** | 规则后处理（去重/排序/过滤，**纯代码**，作为语义去重失败 fallback） |
-| `src/agent/tools/selfImprove.semanticDedup.ts` | **新增** | LLM 语义去重 helper（`self_improve_confirm` 内部调用；失败降级到 generator） |
+| `src/agents/selfImprove/prompts.ts` | **新增/迁移** | AGENTS.md 编写规则常量（`AGENTS_RULE_WRITING_GUIDE`）与 self-improve prompts |
+| `src/agents/selfImprove/collectorAgent.ts` | **新增/迁移** | 数据收集器（读 sessions/memory/experience.md/system.md） |
+| `src/agents/selfImprove/generatorAgent.ts` | **新增/迁移** | 规则后处理（去重/排序/过滤，**纯代码**，作为语义去重失败 fallback） |
+| `src/agents/selfImprove/semanticDedupAgent.ts` | **新增/迁移** | LLM 语义去重 helper（`self_improve_confirm` 内部调用；失败降级到 generator） |
 | `src/agent/tools/selfImproveCollect.ts` | **新增** | `self_improve_collect` tool 定义 |
 | `src/agent/tools/selfImproveConfirm.ts` | **新增** | `self_improve_confirm` tool 定义 |
-| `src/agent/tools/selfImprove.test.ts` | **新增** | 单元测试 |
+| `src/agents/selfImprove/*.test.ts` | **新增/迁移** | collector / generator / semantic dedup 单元测试 |
+| `src/agent/tools/selfImprove.test.ts` | **新增** | tool wrapper 单元测试 |
 | `src/agent/tools/index.ts` | 修改 | 注册两个 tool |
 | `src/im/slack/SlackAdapter.ts` | 修改 | 注册通用 `app.action(/^confirm:/)` 处理器 |
 | `src/application/createApplication.ts` | 修改 | 创建 SlackConfirm / collector / generator 并注入 |
@@ -684,8 +687,8 @@ Block Kit 按钮优势：
 |---|---|---|
 | P0 | 通用 SlackConfirm 模块 (`SlackConfirm.ts` + 测试) | **独立可交付**，不依赖 self-improve 业务；`buildConfirmBlocks` 纯函数 + callback 路由 |
 | P1 | SlackAdapter 接入 `app.action(/^confirm:/)` | 注册通用处理器，P0 完成后即可验证按钮交互 |
-| P2 | 规则编写常量 (`selfImprove.constants.ts`) | 独立可交付，无代码依赖 |
-| P3 | 数据收集器 (`selfImprove.collector.ts`) + 测试 | 核心 |
-| P4 | 规则后处理器 (`selfImprove.generator.ts`) + 测试 | **纯代码**，不调 LLM |
+| P2 | 规则编写常量 (`src/agents/selfImprove/prompts.ts`) | 独立可交付，无代码依赖 |
+| P3 | 数据收集器 (`src/agents/selfImprove/collectorAgent.ts`) + 测试 | 核心 |
+| P4 | 规则后处理器 (`src/agents/selfImprove/generatorAgent.ts`) + 测试 | **纯代码**，不调 LLM |
 | P5 | 双 tool 定义 + 注册 + SlackAdapter 的 confirm 回调接入 experience.md 追加（含 system.md 引用注入，幂等）+ 端到端联调 | 集成 |
-| P6 | LLM 语义去重（`selfImprove.semanticDedup.ts`）+ 注入 `model` 到 `self_improve_confirm` + fallback 到 generator | 新增语义去重能力，解决 Jaccard 漏判 |
+| P6 | LLM 语义去重（`src/agents/selfImprove/semanticDedupAgent.ts`）+ 注入 `model` 到 `self_improve_confirm` + fallback 到 generator | 新增语义去重能力，解决 Jaccard 漏判 |

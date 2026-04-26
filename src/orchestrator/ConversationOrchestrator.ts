@@ -4,9 +4,15 @@ import type { MemoryStore } from '@/store/MemoryStore.ts'
 import type { InboundMessage, EventSink, ConfirmSender } from '@/im/types.ts'
 import type { Logger } from '@/logger/logger.ts'
 import type { ToolSet, CoreMessage } from 'ai'
+import path from 'node:path'
 import type { SessionRunQueue } from './SessionRunQueue.ts'
 import type { AbortRegistry } from './AbortRegistry.ts'
 import { emitSyntheticFailed } from './emitSyntheticFailed.ts'
+import {
+  DEFAULT_MODEL_MESSAGE_BUDGET,
+  buildModelMessages,
+  type ModelMessageBudget,
+} from './modelMessages.ts'
 
 export interface CurrentUser {
   userName: string
@@ -33,6 +39,7 @@ export interface ConversationOrchestratorDeps {
   runQueue: SessionRunQueue
   abortRegistry: AbortRegistry<string>
   systemPrompt: string
+  modelMessageBudget?: ModelMessageBudget
   logger: Logger
 }
 
@@ -44,6 +51,7 @@ export function createConversationOrchestrator(
   deps: ConversationOrchestratorDeps,
 ): ConversationOrchestrator {
   const log = deps.logger.withTag('orchestrator')
+  const modelMessageBudget = deps.modelMessageBudget ?? DEFAULT_MODEL_MESSAGE_BUDGET
 
   /** 与 SessionStore 保持一致的 session key 推导规则，用于在首次建档前先进入串行队列。 */
   const sessionKeyFor = (input: InboundMessage): string =>
@@ -101,6 +109,12 @@ export function createConversationOrchestrator(
             const history = await deps.sessionStore.loadMessages(session.id)
             const userMsg: CoreMessage = { role: 'user', content: input.text }
             await deps.sessionStore.appendMessage(session.id, userMsg)
+            const modelMessages = buildModelMessages({
+              history,
+              userMessage: userMsg,
+              budget: modelMessageBudget,
+              messagesJsonlPath: path.join(session.dir, 'messages.jsonl'),
+            })
 
             // 组装 per-handle systemPrompt：若用户 memory 存在则提示路径
             const hasMemory = await deps.memoryStore.exists(
@@ -125,7 +139,7 @@ export function createConversationOrchestrator(
             try {
               for await (const event of executor.execute({
                 systemPrompt: systemPromptWithMemory,
-                messages: [...history, userMsg],
+                messages: modelMessages,
                 abortSignal: ctrl.signal,
               })) {
                 await sink.onEvent(event)

@@ -11,7 +11,7 @@
 ### 一期目标
 
 - **Agent 基座**：Vercel AI SDK + LiteLLM（统一模型层代理）
-- **IM 入口**：Slack（socket mode，@mention 触发）
+- **IM 入口**：Slack（socket mode，@mention 触发；本期新增 @mention command router，首个 command 为 `compact`）
 - **Workspace 模式**：进程启动时绑定 `cwd`，所有数据落在 `<cwd>/.agent-slack/`
 - **运行方式**：`pnpm dev`（开发，dogfooding agent-slack 仓库本身）和 `agent-slack` CLI（分发给其他项目使用）
 - **交互丰富度**：thinking、tool-use、cost/token 展示齐全
@@ -198,6 +198,9 @@ agent:
   model: claude-sonnet-4-6
   provider: litellm
   maxSteps: 50
+  context:
+    maxApproxChars: 120000      # 传给模型的历史上下文近似字符预算；只影响模型视图，不裁剪 messages.jsonl
+    keepRecentMessages: 80      # 传给模型的最近消息数上限；用于限制大量短消息导致的上下文膨胀
 
 skills:
   enabled: ['*']
@@ -237,6 +240,171 @@ im:
 - **tools 每次 handle 动态构建**：Orchestrator 注入 `toolsBuilder: (ctx: ToolContext) => ToolSet`，闭包持有当前 user，per-handle 新建 executor
 - **userName 来源**：Slack `users.info(userId)` → `real_name ?? name`，回退 `userId`；加 `userNameCache: Map<userId, userName>` 缓存
 
+### 3.7 Session 上下文预算与压缩设计
+
+#### 3.7.1 背景与目标
+
+当前 session 历史以 append-only `messages.jsonl` 保存，`SessionStore.loadMessages()` 会完整读取历史。长 thread、频繁 tool loop、较大的 bash/tool 输出会让 `ConversationOrchestrator` 把越来越大的 `messages` 传给模型，存在触发 provider context too large 的风险。
+
+目标是在不破坏全量 transcript 的前提下，为模型调用构造一个有预算的 **model-view messages**：
+
+- `messages.jsonl` 继续作为完整事实源，append-only，不做 destructive rewrite。
+- Slack 展示、审计、debug 仍可读取完整历史。
+- 只裁剪传给 `AgentExecutor.execute()` 的模型视图。
+- 裁剪必须保护 AI SDK tool-call / tool-result 配对，避免产生 orphan tool result 或悬空 tool call。
+- 一期先做 deterministic pruning；LLM summary compact、tool result microcompact 作为渐进增强。
+
+#### 3.7.2 配置
+
+上下文预算属于行为配置，只放在 `config.yaml`，不使用 env：
+
+```yaml
+agent:
+  context:
+    maxApproxChars: 120000      # 传给模型的历史上下文近似字符预算；只影响模型视图，不裁剪 messages.jsonl
+    keepRecentMessages: 80      # 传给模型的最近消息数上限；用于限制大量短消息导致的上下文膨胀
+```
+
+- `maxApproxChars`：模型视图的近似字符预算。默认 `120000`，作为跨 provider 的保守上限，避免把文件型 transcript 无限制塞入 prompt。
+- `keepRecentMessages`：最多保留的最近消息数。默认 `80`，用于限制大量短消息导致的无限增长。
+
+预算是 best-effort：为保护 tool-call/tool-result 配对，实际输出可能略超预算；正确性优先于硬截断。
+
+#### 3.7.3 Phase 1：确定性模型视图裁剪
+
+新增纯函数模块构造模型视图，例如：
+
+```ts
+interface ModelMessageBudget {
+  maxApproxChars: number
+  keepRecentMessages: number
+}
+
+function buildModelMessages(args: {
+  history: CoreMessage[]
+  userMessage: CoreMessage
+  budget: ModelMessageBudget
+  messagesJsonlPath: string
+}): CoreMessage[]
+```
+
+`SessionStore.loadMessages()` 仍完整返回历史；`ConversationOrchestrator` 在 append 当前 user message 后，调用 `buildModelMessages()`，再把结果传给 executor。裁剪提示里必须使用当前 session 的真实 `messages.jsonl` 路径（例如 `path.join(session.dir, 'messages.jsonl')`），禁止写死泛化文案：
+
+```ts
+const history = await deps.sessionStore.loadMessages(session.id)
+const userMsg: CoreMessage = { role: 'user', content: input.text }
+await deps.sessionStore.appendMessage(session.id, userMsg)
+
+const messagesJsonlPath = path.join(session.dir, 'messages.jsonl')
+const modelMessages = buildModelMessages({
+  history,
+  userMessage: userMsg,
+  budget: workspace.config.agent.context,
+  messagesJsonlPath,
+})
+
+executor.execute({ systemPrompt, messages: modelMessages, abortSignal })
+```
+
+裁剪策略：
+
+1. 当前 `userMessage` 永远保留。
+2. 从 `history` 尾部向前累计，直到达到 `maxApproxChars` 或 `keepRecentMessages`。
+3. 若没有触发预算，返回 `history + userMessage`。
+4. 若触发裁剪，在模型视图最前面插入一条中文提示，说明仅加载最近上下文，完整记录仍在 session 文件中。
+5. 裁剪只发生在模型视图，不回写 `messages.jsonl`。
+
+裁剪提示建议：
+
+```txt
+[历史上下文已按预算裁剪]
+本次仅加载最近对话片段；完整会话记录仍保存在：<messagesJsonlPath>
+```
+
+#### 3.7.4 Tool-call / tool-result 不变量
+
+裁剪边界必须维护 AI SDK 消息序列合法性：
+
+- 保留 `role: 'tool'` 的 tool-result 时，必须保留对应 assistant tool-call。
+- 保留 assistant tool-call 且历史中已有对应 tool-result 时，必须保留该 tool-result。
+- 如果预算切点落在一组 tool-call/tool-result 中间，向前或向后扩展边界以保留完整 pair。
+- 若扩展后超过预算，仍优先保留完整 pair；不能为了硬预算制造非法消息序列。
+
+实现上通过扫描 `CoreMessage.content` 中的结构化块识别：
+
+- assistant content array 中的 `{ type: 'tool-call', toolCallId }`
+- tool content array 中的 `{ type: 'tool-result', toolCallId }`
+
+边界调整优先向前扩展到包含缺失的 assistant tool-call；对已经位于保留区内的 assistant tool-call，则向后包含匹配 tool-result。若存在多 tool-call 一次返回、多 tool-result 分条落盘，也按 `toolCallId` 集合处理。
+
+#### 3.7.5 Phase 2：工具结果 microcompact
+
+Phase 1 稳定后，再在模型视图层加入旧 tool-result 轻量压缩：
+
+- 保留最近 N 个完整 tool-result。
+- 更旧的 tool-result content 替换为占位文本：
+
+```txt
+[旧工具结果已压缩；完整内容保存在：<messagesJsonlPath>]
+```
+
+该替换仅作用于 `modelMessages`，不回写 `messages.jsonl`，避免 transcript migration 和审计信息丢失。
+
+#### 3.7.6 Phase 3：LLM summary compact + boundary
+
+当 deterministic pruning 仍不足以保留高质量上下文时，引入 compact summary：
+
+- 用单独的无工具模型调用生成历史摘要。
+- 在文件存储中追加 compact marker / summary，而不是覆盖旧消息。
+- 后续构造模型视图时，从最后一个 compact boundary 开始加载：`summary + boundary 后 tail + 当前 userMessage`。
+- compact 失败时回退 Phase 1，不阻塞用户请求。
+
+LLM compact 不作为普通 AI SDK built-in tool 注入主 agent toolset。原因是 compact 属于运行时上下文管理，不应该由模型自主决定或消耗主任务 `maxSteps`；自动触发由 Orchestrator / ContextCompactor 服务在调用 executor 前处理。本期新增 @mention command router 作为手动 compact 控制入口，首个支持的 command 为 `compact`，它复用同一个 compact service，而不是暴露成主 agent 可调用工具。
+
+compact marker 必须是稳定可识别的数据，而不是只能靠自然语言匹配。优先方案是单独 `compact.jsonl` 或消息 metadata；若使用 `CoreMessage` metadata，需先验证 AI SDK 会安全透传/忽略该字段，不影响 provider 请求。
+
+#### 3.7.7 Phase 4：自动触发与熔断
+
+自动 compact 基于近似 token/字符预算和上一轮 usage 信息触发：
+
+- 达到预算阈值前主动 compact，而不是等待 provider 返回 context too large。
+- 为输出预留 buffer，避免 summary 或下一轮回复挤爆上下文。
+- compact 连续失败达到阈值后进入 circuit breaker，本 session 后续仅使用 deterministic pruning，避免每轮重复失败。
+- 用户手动 compact 可绕过自动熔断，但仍需失败可见。
+
+### 3.8 辅助 agent 与 prompt 目录归口
+
+本期新增专门目录集中管理辅助 agent。这里的 "agent" 指 agent-slack 内部的辅助能力模块，不等同于主 `AgentExecutor`；它们可能是纯代码处理器，也可能是无工具 LLM 调用封装。目标是把 compact agent、self-improve collector/generator 以及它们的 prompts 放在同一归口下，避免继续散落在 `src/agent/tools/*`。
+
+推荐目录：
+
+```txt
+src/agents/
+  compact/
+    index.ts
+    compactAgent.ts
+    prompts.ts
+    types.ts
+  selfImprove/
+    index.ts
+    collectorAgent.ts
+    generatorAgent.ts
+    semanticDedupAgent.ts
+    prompts.ts
+    types.ts
+```
+
+职责边界：
+
+- `src/agents/compact/compactAgent.ts`：封装无工具 LLM summary compact 调用，供 `ContextCompactor` 使用。
+- `src/agents/compact/prompts.ts`：保存 compact summary prompt、输出格式约束、裁剪提示模板。
+- `src/agents/selfImprove/collectorAgent.ts`：承接已实现的 self-improve collector 职责，负责收集 session / memory / existing rules。
+- `src/agents/selfImprove/generatorAgent.ts`：承接已实现的 self-improve generator 职责，负责候选规则后处理/去重/排序。
+- `src/agents/selfImprove/semanticDedupAgent.ts`：承接 self-improve 语义去重 LLM 能力（存在时），失败降级到 generator。
+- `src/agents/selfImprove/prompts.ts`：保存 AGENTS 规则编写指南、语义去重 prompt 等 self-improve 相关 prompt。
+
+`src/agent/tools/*` 只保留 AI SDK tool wrapper：解析 tool 参数、调用 `src/agents/*` 能力、格式化 tool 返回值。tool wrapper 不再定义长 prompt、不直接实现 collector/generator/compact 核心逻辑。新增辅助 agent 时必须优先放入 `src/agents/<name>/`，再由 tool、orchestrator command、运行时服务按需复用。
+
 ---
 
 ## 4. 关键数据流
@@ -261,23 +429,26 @@ im:
      │       ├─ 目录存在 → load meta
      │       └─ 不存在 → 调用 conversations.info 查 channelName（缓存到 meta）
      │
-     ├─ 2c. SessionStore.loadMessages(sessionId) → ModelMessage[]
+     ├─ 2c. SessionStore.loadMessages(sessionId) → 完整历史 CoreMessage[]
      │
      ├─ 2d. append 新 user message 到 messages.jsonl
      │
-     ├─ 2e. 组装 AgentExecutionRequest
+     ├─ 2e. buildModelMessages(history, userMsg, context budget)
+     │       └─ 生成预算内 model-view messages（完整 transcript 不回写裁剪）
+     │
+     ├─ 2f. 组装 AgentExecutionRequest
      │       ├─ systemPrompt (system.md + skills frontmatter 拼接)
-     │       ├─ messages (history + new user msg)
+     │       ├─ messages (model-view messages)
      │       ├─ tools (内置 8 个)
      │       ├─ abortSignal (AbortRegistry 分配)
      │       └─ modelConfig (from config.yaml)
      │
-     ├─ 2f. executor.execute(req) → AsyncGenerator<AgentExecutionEvent>
+     ├─ 2g. executor.execute(req) → AsyncGenerator<AgentExecutionEvent>
      │
-     └─ 2g. for await event of stream:
-              sink.emit(event)
-              持久化 assistant/tool message 到 jsonl
-              step_finish 累加 usage 到 meta.json
+     └─ 2h. for await event of stream:
+               sink.emit(event)
+               持久化 assistant/tool message 到 jsonl
+               step_finish 累加 usage 到 meta.json
        ▼
  (3) AiSdkExecutor.execute
      └─ streamText({ model: litellm(...), messages, tools,
@@ -326,6 +497,38 @@ im:
 - 排队期间 IM 侧可加 `⏳` reaction 提示
 - 进程崩溃 = 队列丢失（一期接受）
 
+### 4.5 @mention command router：`compact`
+
+本期新增 @mention command router，第一条命令是 `compact`，用于手动触发当前 thread session 的 LLM summary compact。该入口是 IM 控制面，不进入主 agent toolset，也不消耗主任务 `maxSteps`。
+
+用户仍然通过 @mention 触发，不需要额外配置 Slack slash command。`SlackAdapter` 去掉 bot mention 后，把用户文本交给 command router 先做确定性匹配；命中控制命令则走命令处理，不再进入普通 agent 执行。首期支持的 compact 触发表达：
+
+```txt
+@bot /compact
+@bot compact
+@bot 压缩上下文
+@bot 帮我压缩当前上下文
+```
+
+未来新增其他命令时，沿用同一个 router 注册表扩展；不要把比喻性的命令前缀写成真实示例。
+
+目标 session 由当前 @mention 事件确定：
+
+- 在 thread 内触发时，使用该 thread 的 `threadTs`。
+- 在 channel 根消息触发时，使用当前消息形成的 thread/session key；如果不存在可 compact 的历史，回复用法提示，不创建空 compact。
+- 不从自然语言里猜测其他 thread，也不要求用户手输 thread URL。
+
+处理流程：
+
+1. `SlackAdapter.onMention` 继续按现有 @mention 路径 ack，并构造 `InboundMessage`。
+2. `ConversationOrchestrator` 在构造 tools/executor 前调用 command router。
+3. 命中 `compact` 后，进入同一个 `SessionRunQueue`，与该 thread 的普通 agent run 串行，避免 compact 与运行中 agent 同时写 jsonl。
+4. 调用 `ContextCompactor.manualCompact({ sessionId, trigger: 'mention_command', userId })`。
+5. compactor 读取完整 `messages.jsonl`，用无工具模型调用生成 summary，追加 compact marker / summary。
+6. 成功后在当前 thread 发送一条可见说明；失败时发送错误说明，并记录日志。
+
+`compact` command 只做手动压缩，不触发 agent 回复、不执行工具、不修改 memory。权限沿用 Slack workspace/channel 可见性；更细粒度权限（如仅 thread 参与者可 compact）作为后续增强。
+
 ---
 
 ## 5. 运行时入口
@@ -356,10 +559,10 @@ agent-slack --help
 2. 依次询问：Slack Bot Token / App Token / Signing Secret、LiteLLM Endpoint / API Key、默认 Model、Skills 启用策略
 3. 当场调 `slack auth.test` 和 `litellm /health` 校验凭证
 4. 生成：
-   - `.agent-slack/config.yaml`
-   - `.agent-slack/system.md`（默认模板）
-   - `.agent-slack/.env.local`（凭证 + 提示加入 `.gitignore`）
-   - `.agent-slack/{sessions,memory,skills,logs}/` 空目录
+    - `.agent-slack/config.yaml`
+    - `.agent-slack/system.md`（默认模板）
+    - `.agent-slack/.env.local`（凭证 + 提示加入 `.gitignore`）
+    - `.agent-slack/{sessions,memory,skills,logs}/` 空目录
 5. 引导下一步："运行 `agent-slack start`"
 
 **边界情况处理**：

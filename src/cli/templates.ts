@@ -6,6 +6,11 @@ export function defaultConfigYaml(model: string, provider: 'litellm' | 'anthropi
   # 可选值: litellm | anthropic；env 不参与选择，需改此处后重启生效
   provider: ${provider}
   maxSteps: 50
+  context:
+    # 传给模型的历史上下文近似字符预算；只影响模型视图，不裁剪 messages.jsonl
+    maxApproxChars: 120000
+    # 传给模型的最近消息数上限；用于限制大量短消息导致的上下文膨胀
+    keepRecentMessages: 80
 
 skills:
   enabled: ['*']

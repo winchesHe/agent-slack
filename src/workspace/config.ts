@@ -8,6 +8,13 @@ export const ConfigSchema = z.object({
       maxSteps: z.number().int().positive().default(50),
       // provider 为唯一权威来源（env 不参与），默认 litellm
       provider: z.enum(['litellm', 'anthropic']).default('litellm'),
+      context: z
+        .object({
+          // 只限制发给模型的历史视图，不裁剪 messages.jsonl。
+          maxApproxChars: z.number().int().positive().default(120_000),
+          keepRecentMessages: z.number().int().positive().default(80),
+        })
+        .default({}),
     })
     .default({}),
   skills: z.object({ enabled: z.array(z.string()).default(['*']) }).default({}),
