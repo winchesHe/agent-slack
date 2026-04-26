@@ -392,6 +392,13 @@ describe('ConversationOrchestrator 粗事件消费', () => {
       { role: 'user', content: 'current' },
       { role: 'assistant', content: '[compact: auto]\n摘要' },
     ])
+    await expect(store.loadCompactRecords(session.id)).resolves.toMatchObject([
+      {
+        schemaVersion: 1,
+        messageId: 'msg-auto-compact',
+        mode: 'auto',
+      },
+    ])
   })
 
   it('自动 compact 失败时记录失败计数并继续主流程', async () => {
@@ -536,6 +543,13 @@ describe('ConversationOrchestrator 粗事件消费', () => {
     ])
     const persistedMessages = await store.loadMessages('slack:C:t')
     expect(persistedMessages).toEqual([{ role: 'user', content: '/compact' }, ...finalMessages])
+    await expect(store.loadCompactRecords('slack:C:t')).resolves.toMatchObject([
+      {
+        schemaVersion: 1,
+        messageId: 'msg-compact',
+        mode: 'manual',
+      },
+    ])
   })
 
   it('completed + tool finalMessages → user 后按顺序落盘 assistant(tool-call) / tool-result / assistant(text)', async () => {
@@ -1165,6 +1179,10 @@ describe('ConversationOrchestrator 粗事件消费', () => {
         return { failureCount: 0, breakerOpen: false }
       },
       async setAutoCompactState() {},
+      async loadCompactRecords() {
+        return []
+      },
+      async appendCompactRecord() {},
       async setStatus(id, status) {
         statusBySession.set(id, status)
       },

@@ -182,6 +182,40 @@ describe('SessionStore', () => {
     expect(reloaded.meta.context?.autoCompact?.breakerOpen).toBe(true)
   })
 
+  it('compact 结构化记录默认为空，并按 jsonl 追加读取', async () => {
+    const { store, session } = await createStoreWithSession('t-compact-records')
+
+    await expect(store.loadCompactRecords(session.id)).resolves.toEqual([])
+
+    await store.appendCompactRecord(session.id, {
+      schemaVersion: 1,
+      messageId: 'msg-manual',
+      mode: 'manual',
+      createdAt: '2026-04-26T00:00:00.000Z',
+    })
+    await store.appendCompactRecord(session.id, {
+      schemaVersion: 1,
+      messageId: 'msg-auto',
+      mode: 'auto',
+      createdAt: '2026-04-26T00:01:00.000Z',
+    })
+
+    await expect(store.loadCompactRecords(session.id)).resolves.toEqual([
+      {
+        schemaVersion: 1,
+        messageId: 'msg-manual',
+        mode: 'manual',
+        createdAt: '2026-04-26T00:00:00.000Z',
+      },
+      {
+        schemaVersion: 1,
+        messageId: 'msg-auto',
+        mode: 'auto',
+        createdAt: '2026-04-26T00:01:00.000Z',
+      },
+    ])
+  })
+
   it('按多个 model 循环 accumulateUsage 后只通过一次 accumulateCost 记账', async () => {
     const { store, session } = await createStoreWithSession('t5')
     const modelSteps = [

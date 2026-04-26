@@ -104,6 +104,25 @@ export function createConversationOrchestrator(
     })
   }
 
+  const compactMessageIds = (records: Awaited<ReturnType<SessionStore['loadCompactRecords']>>) =>
+    records.map((record) => record.messageId)
+
+  const appendCompactRecords = async (
+    sessionId: string,
+    finalMessages: Array<{ id: string }>,
+    mode: 'auto' | 'manual',
+  ): Promise<void> => {
+    const createdAt = new Date().toISOString()
+    for (const message of finalMessages) {
+      await deps.sessionStore.appendCompactRecord(sessionId, {
+        schemaVersion: 1,
+        messageId: message.id,
+        mode,
+        createdAt,
+      })
+    }
+  }
+
   /**
    * 错误补偿时两个落盘动作都要尝试，避免前一个失败导致 session 永远停在 running。
    */
@@ -163,6 +182,7 @@ export function createConversationOrchestrator(
             await deps.sessionStore.setStatus(session.id, 'running')
 
             const history = await deps.sessionStore.loadMessages(session.id)
+            let compactRecords = await deps.sessionStore.loadCompactRecords(session.id)
             const userMsg: CoreMessage = { role: 'user', content: input.text }
             const mentionCommand = deps.mentionCommandRouter?.match(input.text)
             if (mentionCommand && deps.mentionCommandRouter) {
@@ -176,6 +196,9 @@ export function createConversationOrchestrator(
               await sink.onEvent({ type: 'assistant-message', text: commandResult.responseText })
               for (const message of commandResult.finalMessages) {
                 await deps.sessionStore.appendMessage(session.id, message)
+              }
+              if (commandResult.status === 'compacted') {
+                await appendCompactRecords(session.id, commandResult.finalMessages, 'manual')
               }
               await sink.onEvent({
                 type: 'lifecycle',
@@ -192,6 +215,7 @@ export function createConversationOrchestrator(
             if (deps.contextCompactor && autoCompactConfig?.enabled) {
               const autoCompactState = await deps.sessionStore.getAutoCompactState(session.id)
               const candidateMessages = buildCompactCandidateMessages({
+                compactMessageIds: compactMessageIds(compactRecords),
                 history,
                 userMessage: userMsg,
               })
@@ -222,6 +246,7 @@ export function createConversationOrchestrator(
                     for (const message of compactResult.finalMessages) {
                       await deps.sessionStore.appendMessage(session.id, message)
                     }
+                    await appendCompactRecords(session.id, compactResult.finalMessages, 'auto')
                     await deps.sessionStore.setAutoCompactState(session.id, {
                       failureCount: 0,
                       breakerOpen: false,
@@ -229,6 +254,7 @@ export function createConversationOrchestrator(
                       lastSuccessAt: new Date().toISOString(),
                     })
                     modelHistory = await deps.sessionStore.loadMessages(session.id)
+                    compactRecords = await deps.sessionStore.loadCompactRecords(session.id)
                   }
                 } catch (error) {
                   log.warn('auto compact 失败，回退到模型视图裁剪', error)
@@ -242,6 +268,7 @@ export function createConversationOrchestrator(
             }
 
             const modelMessages = buildModelMessages({
+              compactMessageIds: compactMessageIds(compactRecords),
               history: modelHistory,
               userMessage: userMsg,
               budget: modelMessageBudget,

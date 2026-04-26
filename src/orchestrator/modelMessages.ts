@@ -27,6 +27,7 @@ export interface BuildModelMessagesArgs {
   userMessage: CoreMessage
   budget: ModelMessageBudget
   messagesJsonlPath: string
+  compactMessageIds?: string[]
 }
 
 export const MODEL_CONTEXT_PRUNED_NOTICE_TITLE = '[历史上下文已按预算裁剪]'
@@ -52,19 +53,31 @@ function createCompactedToolResultNotice(messagesJsonlPath: string): string {
   return `${TOOL_RESULT_COMPACTED_NOTICE_TITLE}；完整内容保存在：${messagesJsonlPath}`
 }
 
-function isCompactSummaryMessage(message: CoreMessage): boolean {
+function messageId(message: CoreMessage): string | undefined {
+  return 'id' in message && typeof message.id === 'string' ? message.id : undefined
+}
+
+function isCompactSummaryMessage(message: CoreMessage, compactMessageIds: Set<string>): boolean {
+  const id = messageId(message)
+  if (id && compactMessageIds.has(id)) {
+    return true
+  }
+
   return message.role === 'assistant' && typeof message.content === 'string'
     ? message.content.trimStart().startsWith(COMPACT_SUMMARY_PREFIX)
     : false
 }
 
-function splitHistoryAtLastCompact(history: CoreMessage[]): {
+function splitHistoryAtLastCompact(
+  history: CoreMessage[],
+  compactMessageIds: Set<string>,
+): {
   compactSummary: CoreMessage | undefined
   tailHistory: CoreMessage[]
 } {
   for (let i = history.length - 1; i >= 0; i -= 1) {
     const message = history[i]!
-    if (isCompactSummaryMessage(message)) {
+    if (isCompactSummaryMessage(message, compactMessageIds)) {
       return {
         compactSummary: message,
         tailHistory: history.slice(i + 1),
@@ -76,10 +89,14 @@ function splitHistoryAtLastCompact(history: CoreMessage[]): {
 }
 
 export function buildCompactCandidateMessages(input: {
+  compactMessageIds?: string[]
   history: CoreMessage[]
   userMessage: CoreMessage
 }): CoreMessage[] {
-  const { compactSummary, tailHistory } = splitHistoryAtLastCompact(input.history)
+  const { compactSummary, tailHistory } = splitHistoryAtLastCompact(
+    input.history,
+    new Set(input.compactMessageIds ?? []),
+  )
   return [...(compactSummary ? [compactSummary] : []), ...tailHistory, input.userMessage]
 }
 
@@ -228,6 +245,7 @@ function compactOldToolResults(
 }
 
 export function buildModelMessages({
+  compactMessageIds,
   history,
   userMessage,
   budget,
@@ -236,7 +254,10 @@ export function buildModelMessages({
   const maxApproxChars = Math.max(1, budget.maxApproxChars)
   const keepRecentMessages = Math.max(1, budget.keepRecentMessages)
   const keepRecentToolResults = Math.max(1, budget.keepRecentToolResults)
-  const { compactSummary, tailHistory } = splitHistoryAtLastCompact(history)
+  const { compactSummary, tailHistory } = splitHistoryAtLastCompact(
+    history,
+    new Set(compactMessageIds ?? []),
+  )
   let selectedStart = tailHistory.length
   let selectedChars =
     estimateMessageChars(userMessage) + (compactSummary ? estimateMessageChars(compactSummary) : 0)

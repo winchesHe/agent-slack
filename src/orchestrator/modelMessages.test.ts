@@ -32,6 +32,10 @@ function compactSummary(content = '摘要'): CoreMessage {
   return assistant(`[compact: manual]\n${content}`)
 }
 
+function structuredCompactSummary(id: string, content = '摘要'): CoreMessage {
+  return { id, role: 'assistant', content } as CoreMessage
+}
+
 function toolPair(toolCallId: string): CoreMessage[] {
   return [
     {
@@ -184,6 +188,21 @@ describe('buildModelMessages', () => {
       userMessage: current,
       budget: defaultBudget,
       messagesJsonlPath,
+    })
+
+    expect(messages).toEqual([compact, user('after-compact'), current])
+  })
+
+  it('优先使用 compactMessageIds 识别结构化 compact boundary', () => {
+    const compact = structuredCompactSummary('msg-compact', '结构化摘要')
+    const current = user('current')
+
+    const messages = buildModelMessages({
+      history: [user('old-before'), compact, user('after-compact')],
+      userMessage: current,
+      budget: defaultBudget,
+      messagesJsonlPath,
+      compactMessageIds: ['msg-compact'],
     })
 
     expect(messages).toEqual([compact, user('after-compact'), current])

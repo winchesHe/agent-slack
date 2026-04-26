@@ -23,6 +23,13 @@ export interface AutoCompactState {
   lastFailureMessage?: string
 }
 
+export interface CompactRecord {
+  schemaVersion: 1
+  messageId: string
+  mode: 'auto' | 'manual'
+  createdAt: string
+}
+
 export interface SessionMeta {
   schemaVersion: 1
   imProvider: 'slack'
@@ -75,6 +82,8 @@ export interface SessionStore {
   accumulateCost(id: string, usd: number): Promise<void>
   getAutoCompactState(id: string): Promise<AutoCompactState>
   setAutoCompactState(id: string, state: AutoCompactState): Promise<void>
+  loadCompactRecords(id: string): Promise<CompactRecord[]>
+  appendCompactRecord(id: string, record: CompactRecord): Promise<void>
   setStatus(id: string, status: SessionMeta['status']): Promise<void>
 }
 
@@ -218,6 +227,22 @@ export function createSessionStore(paths: WorkspacePaths): SessionStore {
         autoCompact: state,
       }
       await writeMeta(dir, meta)
+    },
+
+    async loadCompactRecords(id) {
+      const file = path.join(resolveDir(id), 'compact.jsonl')
+      if (!existsSync(file)) {
+        return []
+      }
+      const raw = await readFile(file, 'utf8')
+      return raw
+        .split('\n')
+        .filter((line) => line.length > 0)
+        .map((line) => JSON.parse(line) as CompactRecord)
+    },
+
+    async appendCompactRecord(id, record) {
+      await appendFile(path.join(resolveDir(id), 'compact.jsonl'), `${JSON.stringify(record)}\n`)
     },
 
     async setStatus(id, status) {

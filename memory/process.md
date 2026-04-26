@@ -93,6 +93,14 @@
 - 新增 live E2E `auto-compact`，验证真实 Slack 下自动 compact 后主回复继续、`[compact: auto]` 持久化、不作为 Slack 回复展示、session 进入 idle 后再清理。
 - 新增 live E2E `context-pruning-no-llm`，禁用 auto compact 并压低 `keepRecentMessages`，验证 deterministic pruning 隐藏旧上下文且不生成 `[compact:]` summary。
 
+## 结构化 compact marker 与活动态 E2E 实现结果
+
+- compact boundary 的权威 marker 改为 session 目录下的 `compact.jsonl`，每条记录包含 `schemaVersion/messageId/mode/createdAt`。
+- `messages.jsonl` 仍保留 `[compact: manual|auto]` 人类可读摘要标题；模型视图优先用 `compact.jsonl.messageId` 找 boundary，旧 session fallback 到 `[compact:` 文本前缀。
+- manual `/compact` 和 auto compact 成功后都会追加结构化 compact record。
+- `auto-compact` live E2E 已显式捕获 Slack progress message `正在整理上下文…`，并验证 `compact.jsonl` 中存在 auto marker。
+- `compact-command` live E2E 已验证 manual compact 会写入结构化 marker。
+
 ## 已验证
 
 - `pnpm vitest run src/orchestrator/ConversationOrchestrator.test.ts src/im/slack/SlackEventSink.test.ts`
@@ -115,3 +123,6 @@
 - `pnpm e2e auto-compact`（真实 Slack，验证自动 compact 和主流程继续）
 - `pnpm e2e context-pruning-no-llm`（真实 Slack，验证无 LLM compact 的 deterministic pruning）
 - `pnpm e2e context-pruning-no-llm compact-command compact-boundary auto-compact`（4 个 compact 覆盖场景全部 PASS）
+- `pnpm vitest run src/store/SessionStore.test.ts src/orchestrator/modelMessages.test.ts src/orchestrator/ConversationOrchestrator.test.ts tests/live-e2e-cli.test.ts`
+- `pnpm e2e compact-command auto-compact`（真实 Slack，验证 manual/auto 结构化 marker 与 auto 活动态）
+- `pnpm e2e compact-boundary`（真实 Slack，验证结构化 marker 后 context boundary 仍成立）

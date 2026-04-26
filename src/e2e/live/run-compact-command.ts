@@ -1,6 +1,8 @@
 import './load-e2e-env.ts'
 
 import { randomUUID } from 'node:crypto'
+import fs from 'node:fs/promises'
+import path from 'node:path'
 import { consola } from 'consola'
 import type { LiveE2EScenario } from './scenario.ts'
 import { runDirectly } from './scenario.ts'
@@ -8,6 +10,7 @@ import {
   createLiveE2EContext,
   delay,
   findReplyContaining,
+  findSessionDir,
   isUsageMessage,
   readSessionMessages,
   waitForThread,
@@ -24,6 +27,7 @@ interface CompactCommandResult {
     firstReplyObserved: boolean
     noStaleUsageBeforeCompactReply: boolean
     persistedCompactSummary: boolean
+    persistedStructuredCompactMarker: boolean
   }
   commandMessageTs?: string
   compactReplyTs?: string
@@ -44,6 +48,7 @@ async function main(): Promise<void> {
       firstReplyObserved: false,
       noStaleUsageBeforeCompactReply: false,
       persistedCompactSummary: false,
+      persistedStructuredCompactMarker: false,
     },
     passed: false,
     runId,
@@ -120,6 +125,10 @@ async function main(): Promise<void> {
         const jsonl = await readSessionMessages(rootMessage.ts)
         result.matched.persistedCompactSummary =
           jsonl.includes('[compact: manual]') && jsonl.includes('COMPACT_COMMAND_SEED')
+        const compactRecords = await readCompactRecords(rootMessage.ts)
+        result.matched.persistedStructuredCompactMarker = compactRecords.some(
+          (record) => record.mode === 'manual' && typeof record.messageId === 'string',
+        )
       }
 
       return (
@@ -128,7 +137,8 @@ async function main(): Promise<void> {
         result.matched.compactReplyHasNoPath &&
         result.matched.compactReplyOmitsSeedNoise &&
         result.matched.noStaleUsageBeforeCompactReply &&
-        result.matched.persistedCompactSummary
+        result.matched.persistedCompactSummary &&
+        result.matched.persistedStructuredCompactMarker
       )
     })
 
@@ -166,10 +176,24 @@ function assertResult(result: CompactCommandResult): void {
     failures.push('stale usage/ending appeared between compact command and compact reply')
   }
   if (!result.matched.persistedCompactSummary) failures.push('compact summary not persisted')
+  if (!result.matched.persistedStructuredCompactMarker) {
+    failures.push('structured compact marker not persisted')
+  }
 
   if (failures.length > 0) {
     throw new Error(`Live compact command E2E failed: ${failures.join('; ')}`)
   }
+}
+
+async function readCompactRecords(
+  threadTs: string,
+): Promise<Array<{ messageId?: string; mode?: string }>> {
+  const sessionDir = await findSessionDir(threadTs)
+  const raw = await fs.readFile(path.join(sessionDir, 'compact.jsonl'), 'utf8')
+  return raw
+    .split('\n')
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as { messageId?: string; mode?: string })
 }
 
 export const scenario: LiveE2EScenario = {

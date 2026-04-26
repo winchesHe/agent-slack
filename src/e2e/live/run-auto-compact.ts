@@ -24,9 +24,11 @@ interface AutoCompactResult {
   failureMessage?: string
   matched: {
     autoCompactNotVisibleAsReply: boolean
+    autoCompactActivityObserved: boolean
     autoCompactStateReset: boolean
     mainReplyContinued: boolean
     persistedAutoCompactSummary: boolean
+    persistedStructuredCompactMarker: boolean
     sessionIdle: boolean
     seedReplyObserved: boolean
   }
@@ -42,9 +44,11 @@ async function main(): Promise<void> {
   const result: AutoCompactResult = {
     matched: {
       autoCompactNotVisibleAsReply: false,
+      autoCompactActivityObserved: false,
       autoCompactStateReset: false,
       mainReplyContinued: false,
       persistedAutoCompactSummary: false,
+      persistedStructuredCompactMarker: false,
       sessionIdle: false,
       seedReplyObserved: false,
     },
@@ -85,6 +89,7 @@ async function main(): Promise<void> {
       thread_ts: rootMessage.ts,
       text: [
         `<@${ctx.botUserId}> AUTO_COMPACT_TRIGGER ${runId}`,
+        `AUTO_COMPACT_FILLER ${'x'.repeat(1_200)}`,
         `Reply exactly: AUTO_COMPACT_OK ${runId}`,
         'Do not use tools.',
       ].join('\n'),
@@ -94,6 +99,10 @@ async function main(): Promise<void> {
     result.secondMessageTs = secondMessage.ts
 
     await waitForThread(ctx, rootMessage.ts, async (messages) => {
+      result.matched.autoCompactActivityObserved ||= messages.some((message) =>
+        message.text?.includes('正在整理上下文'),
+      )
+
       const reply = findReplyContaining(messages, rootMessage.ts, `AUTO_COMPACT_OK ${runId}`)
       result.matched.mainReplyContinued = Boolean(reply)
       result.matched.autoCompactNotVisibleAsReply = !messages.some((message) =>
@@ -104,6 +113,10 @@ async function main(): Promise<void> {
         const jsonl = await readSessionMessages(rootMessage.ts, { workspaceDir })
         result.matched.persistedAutoCompactSummary =
           jsonl.includes('[compact: auto]') && jsonl.includes(`AUTO_COMPACT_TRIGGER ${runId}`)
+        const compactRecords = await readCompactRecords(rootMessage.ts, workspaceDir)
+        result.matched.persistedStructuredCompactMarker = compactRecords.some(
+          (record) => record.mode === 'auto' && typeof record.messageId === 'string',
+        )
 
         const meta = await readSessionMeta(rootMessage.ts, workspaceDir)
         result.matched.autoCompactStateReset =
@@ -115,7 +128,9 @@ async function main(): Promise<void> {
       return (
         result.matched.mainReplyContinued &&
         result.matched.autoCompactNotVisibleAsReply &&
+        result.matched.autoCompactActivityObserved &&
         result.matched.persistedAutoCompactSummary &&
+        result.matched.persistedStructuredCompactMarker &&
         result.matched.autoCompactStateReset &&
         result.matched.sessionIdle
       )
@@ -163,12 +178,12 @@ async function createAutoCompactWorkspace(): Promise<string> {
     ...agent,
     context: {
       ...context,
-      maxApproxChars: 120_000,
+      maxApproxChars: 1_000,
       keepRecentMessages: 3,
       keepRecentToolResults: 20,
       autoCompact: {
         enabled: true,
-        triggerRatio: 0.8,
+        triggerRatio: 0.5,
         maxFailures: 2,
       },
     },
@@ -198,6 +213,22 @@ async function readSessionMeta(
   }
 }
 
+async function readCompactRecords(
+  threadTs: string,
+  workspaceDir: string,
+): Promise<Array<{ messageId?: string; mode?: string }>> {
+  const sessionDir = await findSessionDir(threadTs, { workspaceDir })
+  const file = path.join(sessionDir, 'compact.jsonl')
+  if (!existsSync(file)) {
+    return []
+  }
+  const raw = await fs.readFile(file, 'utf8')
+  return raw
+    .split('\n')
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as { messageId?: string; mode?: string })
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
@@ -206,8 +237,14 @@ function assertResult(result: AutoCompactResult): void {
   const failures: string[] = []
   if (!result.matched.seedReplyObserved) failures.push('seed reply not observed')
   if (!result.matched.mainReplyContinued) failures.push('main reply did not continue')
+  if (!result.matched.autoCompactActivityObserved) {
+    failures.push('auto compact activity state not observed')
+  }
   if (!result.matched.persistedAutoCompactSummary) {
     failures.push('auto compact summary not persisted')
+  }
+  if (!result.matched.persistedStructuredCompactMarker) {
+    failures.push('structured compact marker not persisted')
   }
   if (!result.matched.autoCompactNotVisibleAsReply) {
     failures.push('auto compact summary should not be visible as Slack reply')

@@ -371,7 +371,18 @@ Phase 1 稳定后，再在模型视图层加入旧 tool-result 轻量压缩：
 - compact 失败时回退 Phase 1，不阻塞用户请求。
 - 手动 compact 的 Slack 输出必须短，只保留后续有用上下文；过滤握手/测试/原样回复等低价值内容，不展示本地绝对路径、session/jsonl 路径或完整记录路径。
 
-当前实现的手动 compact marker 为 assistant 文本消息前缀 `[compact:`（例如 `[compact: manual]`）。模型视图构造时识别最后一条该前缀消息作为 boundary；该 summary 必须保留，预算裁剪只作用于 boundary 之后的 tail。
+compact marker 使用结构化文件记录，存储在当前 session 目录的 `compact.jsonl`。每次 compact 成功时，除了把人类可读 summary 作为 assistant message 追加到 `messages.jsonl`，还追加一条结构化记录：
+
+```ts
+interface CompactRecord {
+  schemaVersion: 1
+  messageId: string
+  mode: 'manual' | 'auto'
+  createdAt: string
+}
+```
+
+模型视图构造时优先使用 `compact.jsonl` 中的 `messageId` 识别最后 compact boundary；该 summary 必须保留，预算裁剪只作用于 boundary 之后的 tail。为了兼容旧 session，若没有匹配的结构化记录，可 fallback 识别 assistant 文本前缀 `[compact:`（例如 `[compact: manual]`），但新写入不再依赖自然语言前缀作为权威 marker。
 
 LLM compact 不作为普通 AI SDK built-in tool 注入主 agent toolset。原因是 compact 属于运行时上下文管理，不应该由模型自主决定或消耗主任务 `maxSteps`；自动触发由 Orchestrator / ContextCompactor 服务在调用 executor 前处理。本期新增 @mention command router 作为手动 compact 控制入口，首个支持的 command 为 `compact`，它复用同一个 compact service，而不是暴露成主 agent 可调用工具。
 
@@ -431,7 +442,7 @@ Slack UI：
 
 - 记录日志 tag `context:compact`，包含 trigger reason、candidate chars/messages、failureCount、breakerOpen。
 - 可在 `events.jsonl` 追加非对话事件（例如 `auto_compact_attempt/succeeded/failed/skipped`），但不得污染 `messages.jsonl`；`messages.jsonl` 只追加 compact summary 这类模型上下文事实。
-- live E2E 应覆盖：超阈值后自动 compact、Slack 显示整理上下文活动态、主回复继续完成、`messages.jsonl` 持久化 `[compact: auto]`、熔断后不再重复调用 compact。
+- live E2E 应覆盖：超阈值后自动 compact、Slack 显示整理上下文活动态、主回复继续完成、`messages.jsonl` 持久化 `[compact: auto]`、`compact.jsonl` 持久化结构化 marker、熔断后不再重复调用 compact。
 
 ### 3.8 辅助 agent 与 prompt 目录归口
 
