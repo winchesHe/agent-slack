@@ -9,9 +9,9 @@ import { saveMemoryTool } from './saveMemory.ts'
 import { selfImproveCollectTool } from './selfImproveCollect.ts'
 import { selfImproveConfirmTool } from './selfImproveConfirm.ts'
 import { askConfirmTool } from './askConfirm.ts'
-import type { SelfImproveCollector } from './selfImprove.collector.ts'
-import type { SelfImproveGenerator } from './selfImprove.generator.ts'
-import type { SemanticDedup } from './selfImprove.semanticDedup.ts'
+import type { SelfImproveCollector } from '@/agents/selfImprove/collectorAgent.ts'
+import type { SelfImproveGenerator } from '@/agents/selfImprove/generatorAgent.ts'
+import type { SemanticDedup } from '@/agents/selfImprove/semanticDedupAgent.ts'
 
 export interface BuiltinToolDeps {
   memoryStore: MemoryStore

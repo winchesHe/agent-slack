@@ -110,6 +110,7 @@ src/
   types/                  # interface 先行（AgentExecutor/IMAdapter/EventSink/...）
   agent/
     ai-sdk/               # 一期唯一 AgentExecutor 实现
+  agents/                 # compact / selfImprove 等辅助 agent 与 prompts 归口
   im/
     slack/                # 一期唯一 IMAdapter 实现
   orchestrator/           # ConversationOrchestrator + SessionRunQueue + AbortRegistry

@@ -358,6 +358,7 @@ Phase 1 稳定后，再在模型视图层加入旧 tool-result 轻量压缩：
 - 在文件存储中追加 compact marker / summary，而不是覆盖旧消息。
 - 后续构造模型视图时，从最后一个 compact boundary 开始加载：`summary + boundary 后 tail + 当前 userMessage`。
 - compact 失败时回退 Phase 1，不阻塞用户请求。
+- 手动 compact 的 Slack 输出必须短，只保留后续有用上下文；过滤握手/测试/原样回复等低价值内容，不展示本地绝对路径、session/jsonl 路径或完整记录路径。
 
 LLM compact 不作为普通 AI SDK built-in tool 注入主 agent toolset。原因是 compact 属于运行时上下文管理，不应该由模型自主决定或消耗主任务 `maxSteps`；自动触发由 Orchestrator / ContextCompactor 服务在调用 executor 前处理。本期新增 @mention command router 作为手动 compact 控制入口，首个支持的 command 为 `compact`，它复用同一个 compact service，而不是暴露成主 agent 可调用工具。
 

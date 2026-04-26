@@ -83,10 +83,7 @@ export function findUsageMessage(
     if (!message.ts || message.ts === rootMessageTs || typeof message.text !== 'string') {
       return false
     }
-    return (
-      message.text.includes('tokens') &&
-      (/^\d+\.\d+s\b/.test(message.text) || message.text.includes(':agent_time:'))
-    )
+    return isUsageMessage(message)
   })
 
   return (
@@ -97,6 +94,16 @@ export function findUsageMessage(
 
 export function hasUsageMessage(messages: SlackThreadMessage[], rootMessageTs: string): boolean {
   return findUsageMessage(messages, rootMessageTs) !== undefined
+}
+
+export function isUsageMessage(message: SlackThreadMessage): boolean {
+  if (typeof message.text !== 'string') {
+    return false
+  }
+  return (
+    message.text.includes('tokens') &&
+    (/^\d+\.\d+s\b/.test(message.text) || message.text.includes(':agent_time:'))
+  )
 }
 
 export async function hasReaction(

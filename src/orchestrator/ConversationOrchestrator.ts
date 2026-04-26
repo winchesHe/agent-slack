@@ -13,6 +13,7 @@ import {
   buildModelMessages,
   type ModelMessageBudget,
 } from './modelMessages.ts'
+import type { MentionCommandRouter } from './MentionCommandRouter.ts'
 
 export interface CurrentUser {
   userName: string
@@ -40,6 +41,7 @@ export interface ConversationOrchestratorDeps {
   abortRegistry: AbortRegistry<string>
   systemPrompt: string
   modelMessageBudget?: ModelMessageBudget
+  mentionCommandRouter?: MentionCommandRouter
   logger: Logger
 }
 
@@ -92,7 +94,16 @@ export function createConversationOrchestrator(
     async handle(input, sink) {
       const currentUser: CurrentUser = { userName: input.userName, userId: input.userId }
       const sessionKey = sessionKeyFor(input)
-      // 外层 try/finally 保证 sink.finalize() 在任何路径下都被调用，包括 setup 阶段抛错。
+      let finalized = false
+      const finalizeSink = async (): Promise<void> => {
+        if (finalized) {
+          return
+        }
+        finalized = true
+        await sink.finalize()
+      }
+
+      // finalize 必须纳入同 session 队列，否则上一轮 usage/ending 可能与下一轮回复交错。
       try {
         await deps.runQueue.enqueue(sessionKey, async () => {
           let session: Session | undefined
@@ -108,6 +119,28 @@ export function createConversationOrchestrator(
 
             const history = await deps.sessionStore.loadMessages(session.id)
             const userMsg: CoreMessage = { role: 'user', content: input.text }
+            const mentionCommand = deps.mentionCommandRouter?.match(input.text)
+            if (mentionCommand && deps.mentionCommandRouter) {
+              await deps.sessionStore.appendMessage(session.id, userMsg)
+              const commandResult = await deps.mentionCommandRouter.execute({
+                command: mentionCommand,
+                input,
+                session,
+                history,
+              })
+              await sink.onEvent({ type: 'assistant-message', text: commandResult.responseText })
+              for (const message of commandResult.finalMessages) {
+                await deps.sessionStore.appendMessage(session.id, message)
+              }
+              await sink.onEvent({
+                type: 'lifecycle',
+                phase: 'completed',
+                finalMessages: commandResult.finalMessages,
+              })
+              await deps.sessionStore.setStatus(session.id, 'idle')
+              return
+            }
+
             await deps.sessionStore.appendMessage(session.id, userMsg)
             const modelMessages = buildModelMessages({
               history,
@@ -200,23 +233,30 @@ export function createConversationOrchestrator(
             }
           } catch (err) {
             if (!session) {
-              throw err
+              log.error('orchestrator setup failed', err)
+              await emitSyntheticFailedBestEffort(
+                sink,
+                err instanceof Error ? err.message : String(err),
+              )
+              return
             }
             log.error('orchestrator runner 异常', err)
             const errorMessage = err instanceof Error ? err.message : String(err)
             await persistErrorState(session.id, errorMessage)
             await emitSyntheticFailedBestEffort(sink, errorMessage)
+          } finally {
+            await finalizeSink()
           }
         })
       } catch (setupErr) {
-        // session 尚未创建前的 setup 阶段抛错时只做 best-effort 通知，finalize 仍在 finally 执行。
+        // enqueue 自身异常时只做 best-effort 通知，finalize 仍在 finally 执行。
         log.error('orchestrator setup failed', setupErr)
         await emitSyntheticFailedBestEffort(
           sink,
           setupErr instanceof Error ? setupErr.message : String(setupErr),
         )
       } finally {
-        await sink.finalize()
+        await finalizeSink()
       }
     },
   }

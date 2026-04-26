@@ -16,6 +16,7 @@ export interface SlackEventSinkDeps {
   channelId: string
   threadTs: string
   sourceMessageTs: string
+  shouldSuppressUsage?: () => boolean | Promise<boolean>
   workspaceLabel?: string
   renderer: SlackRenderer
   logger: Logger
@@ -40,6 +41,7 @@ interface SinkLocalState {
   terminalErrorMessage: string | undefined
   pendingUsage: SessionUsageInfo | undefined
   usageTailStats: SessionUsageTailStats
+  ackAdded: boolean
 }
 
 function makeStateKey(state: ActivityState): string {
@@ -176,6 +178,7 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
     terminalErrorMessage: undefined,
     pendingUsage: undefined,
     usageTailStats: emptyUsageTailStats(),
+    ackAdded: false,
   }
 
   function debugCutover(message: string, meta?: unknown): void {
@@ -183,6 +186,18 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
       return
     }
     log.info(`[render-debug] ${message}`, meta)
+  }
+
+  async function shouldSuppressUsage(): Promise<boolean> {
+    if (!deps.shouldSuppressUsage) {
+      return false
+    }
+    try {
+      return await deps.shouldSuppressUsage()
+    } catch (error) {
+      log.warn('usage suppress 检查失败，继续发送 usage', error)
+      return false
+    }
   }
 
   async function handleActivity(state: ActivityState): Promise<void> {
@@ -340,6 +355,7 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
   ): Promise<void> {
     if (event.phase === 'started') {
       await deps.renderer.addAck(deps.web, deps.channelId, deps.sourceMessageTs)
+      local.ackAdded = true
       await deps.renderer.setStatus(
         deps.web,
         deps.channelId,
@@ -493,7 +509,8 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
         if (
           (local.terminalPhase === 'completed' ||
             (local.terminalPhase === 'stopped' && local.terminalStopReason === 'max_steps')) &&
-          local.pendingUsage
+          local.pendingUsage &&
+          !(await shouldSuppressUsage())
         ) {
           debugCutover('finalize posting usage', {
             channelId: deps.channelId,
@@ -518,7 +535,9 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
           await deps.renderer.addError(deps.web, deps.channelId, deps.sourceMessageTs)
         }
 
-        await deps.renderer.removeAck(deps.web, deps.channelId, deps.sourceMessageTs)
+        if (local.ackAdded) {
+          await deps.renderer.removeAck(deps.web, deps.channelId, deps.sourceMessageTs)
+        }
 
         debugCutover('finalize end', {
           channelId: deps.channelId,

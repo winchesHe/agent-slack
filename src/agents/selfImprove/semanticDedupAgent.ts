@@ -8,7 +8,7 @@
 import { generateObject, type LanguageModel } from 'ai'
 import { z } from 'zod'
 import type { Logger } from '@/logger/logger.ts'
-import type { CandidateRule } from './selfImprove.generator.ts'
+import type { CandidateRule } from './generatorAgent.ts'
 
 export interface SemanticDedupInput {
   rules: CandidateRule[]

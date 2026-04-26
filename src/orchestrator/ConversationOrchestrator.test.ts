@@ -14,6 +14,7 @@ import type { AgentExecutionEvent } from '@/core/events.ts'
 import type { EventSink, InboundMessage } from '@/im/types.ts'
 import type { Logger } from '@/logger/logger.ts'
 import type { CoreMessage } from 'ai'
+import type { MentionCommandRouter } from './MentionCommandRouter.ts'
 
 function stubLogger(overrides: Partial<Logger> = {}): Logger {
   const l: Logger = {
@@ -296,6 +297,53 @@ describe('ConversationOrchestrator 粗事件消费', () => {
     ])
     const persistedMessages = await store.loadMessages(session.id)
     expect(persistedMessages).toEqual([...history, { role: 'user', content: 'current' }])
+  })
+
+  it('@mention compact command 命中时不进入 executor，并持久化命令回复', async () => {
+    const paths = resolveWorkspacePaths(cwd)
+    const store = createSessionStore(paths)
+    const memoryStore = createMemoryStore(paths)
+    const finalMessages: Extract<
+      AgentExecutionEvent,
+      { type: 'lifecycle'; phase: 'completed' }
+    >['finalMessages'] = [
+      { id: 'msg-compact', role: 'assistant', content: '[compact: manual]\n摘要' },
+    ]
+    const mentionCommandRouter: MentionCommandRouter = {
+      match: (text) => (text === '/compact' ? 'compact' : undefined),
+      execute: vi.fn(async () => ({
+        status: 'compacted' as const,
+        responseText: '[compact: manual]\n摘要',
+        finalMessages,
+      })),
+    }
+    const executor: AgentExecutor = {
+      async *execute() {
+        throw new Error('executor should not run for compact command')
+      },
+    }
+    const { sink, events } = mockSink()
+    const orch = createConversationOrchestrator({
+      toolsBuilder: () => ({}),
+      executorFactory: () => executor,
+      sessionStore: store,
+      memoryStore,
+      runQueue: new SessionRunQueue(),
+      abortRegistry: new AbortRegistry<string>(),
+      systemPrompt: '',
+      mentionCommandRouter,
+      logger: stubLogger(),
+    })
+
+    await orch.handle(makeInput({ text: '/compact' }), sink)
+
+    expect(mentionCommandRouter.execute).toHaveBeenCalledTimes(1)
+    expect(events).toEqual([
+      { type: 'assistant-message', text: '[compact: manual]\n摘要' },
+      { type: 'lifecycle', phase: 'completed', finalMessages },
+    ])
+    const persistedMessages = await store.loadMessages('slack:C:t')
+    expect(persistedMessages).toEqual([{ role: 'user', content: '/compact' }, ...finalMessages])
   })
 
   it('completed + tool finalMessages → user 后按顺序落盘 assistant(tool-call) / tool-result / assistant(text)', async () => {
@@ -684,6 +732,80 @@ describe('ConversationOrchestrator 粗事件消费', () => {
     expect(started).toEqual(['first'])
 
     releaseFirstExecution()
+    await Promise.all([firstHandle, secondHandle])
+
+    expect(started).toEqual(['first', 'second'])
+    expect(firstSink.sink.finalize).toHaveBeenCalledTimes(1)
+    expect(secondSink.sink.finalize).toHaveBeenCalledTimes(1)
+  })
+
+  it('同 session 第二次 handle 会等待第一次 finalize 完成，避免 Slack ending 与下一轮回复交错', async () => {
+    const paths = resolveWorkspacePaths(cwd)
+    const store = createSessionStore(paths)
+    const memoryStore = createMemoryStore(paths)
+    const runQueue = new SessionRunQueue()
+    const started: string[] = []
+
+    let releaseFirstFinalize = () => {}
+    const firstFinalizeReleased = new Promise<void>((resolve) => {
+      releaseFirstFinalize = resolve
+    })
+    let markFirstFinalizeStarted = () => {}
+    const firstFinalizeStarted = new Promise<void>((resolve) => {
+      markFirstFinalizeStarted = resolve
+    })
+
+    const executors: AgentExecutor[] = [
+      {
+        async *execute() {
+          started.push('first')
+          yield { type: 'lifecycle', phase: 'completed', finalMessages: [] }
+        },
+      },
+      {
+        async *execute() {
+          started.push('second')
+          yield { type: 'lifecycle', phase: 'completed', finalMessages: [] }
+        },
+      },
+    ]
+
+    const orch = createConversationOrchestrator({
+      toolsBuilder: () => ({}),
+      executorFactory: () => {
+        const executor = executors.shift()
+        if (!executor) {
+          throw new Error('unexpected executor request')
+        }
+        return executor
+      },
+      sessionStore: store,
+      memoryStore,
+      runQueue,
+      abortRegistry: new AbortRegistry<string>(),
+      systemPrompt: '',
+      logger: stubLogger(),
+    })
+
+    const firstSink = mockSink()
+    firstSink.sink.finalize = vi.fn(async () => {
+      markFirstFinalizeStarted()
+      await firstFinalizeReleased
+    })
+    const secondSink = mockSink()
+
+    const firstHandle = orch.handle(makeInput({ messageTs: 'm1', text: 'first' }), firstSink.sink)
+    await firstFinalizeStarted
+
+    const secondHandle = orch.handle(
+      makeInput({ messageTs: 'm2', text: 'second' }),
+      secondSink.sink,
+    )
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+    expect(started).toEqual(['first'])
+
+    releaseFirstFinalize()
     await Promise.all([firstHandle, secondHandle])
 
     expect(started).toEqual(['first', 'second'])

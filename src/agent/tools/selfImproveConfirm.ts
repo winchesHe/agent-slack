@@ -10,8 +10,8 @@ import {
   createSelfImproveGenerator,
   type CandidateRule,
   type SelfImproveGenerator,
-} from './selfImprove.generator.ts'
-import type { SemanticDedup } from './selfImprove.semanticDedup.ts'
+} from '@/agents/selfImprove/generatorAgent.ts'
+import type { SemanticDedup } from '@/agents/selfImprove/semanticDedupAgent.ts'
 
 export interface SelfImproveConfirmDeps {
   generator: SelfImproveGenerator

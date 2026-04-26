@@ -257,6 +257,55 @@ describe('SlackEventSink', () => {
     expect(sink.terminalPhase).toBe('completed')
   })
 
+  it('未收到 lifecycle:started 时 finalize 不移除 ack reaction', async () => {
+    const { sink, renderer } = makeSink()
+
+    await sink.onEvent({ type: 'assistant-message', text: '已压缩当前上下文' })
+    await sink.onEvent({ type: 'lifecycle', phase: 'completed', finalMessages: [] })
+    await sink.finalize()
+
+    const methods = renderer.calls.map((call) => call.method)
+    expect(methods).toContain('postThreadReply')
+    expect(methods).toContain('addDone')
+    expect(methods).not.toContain('removeAck')
+  })
+
+  it('shouldSuppressUsage=true 时 finalize 不发送 usage，避免与下一轮回复交错', async () => {
+    const renderer = mockRenderer()
+    const sink = createSlackEventSink({
+      web: stubWeb,
+      channelId: 'C1',
+      threadTs: 't1',
+      sourceMessageTs: 'src-ts',
+      shouldSuppressUsage: () => true,
+      renderer,
+      logger: stubLogger(),
+    })
+
+    await sink.onEvent({
+      type: 'usage-info',
+      usage: {
+        durationMs: 1,
+        totalCostUSD: 0,
+        modelUsage: [
+          {
+            model: 'm',
+            inputTokens: 1,
+            outputTokens: 1,
+            cachedInputTokens: 0,
+            cacheHitRate: 0,
+          },
+        ],
+      },
+    })
+    await sink.onEvent({ type: 'lifecycle', phase: 'completed', finalMessages: [] })
+    await sink.finalize()
+
+    const methods = renderer.calls.map((call) => call.method)
+    expect(methods).toContain('addDone')
+    expect(methods).not.toContain('postSessionUsage')
+  })
+
   it('lifecycle:stopped → finalize 调 finalizeStopped + addStopped（无 usage）', async () => {
     const { sink, renderer } = makeSink()
 

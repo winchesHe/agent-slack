@@ -192,6 +192,17 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
         channelId,
         threadTs,
         sourceMessageTs: messageTs,
+        shouldSuppressUsage: () =>
+          shouldSuppressUsage({
+            client: client as unknown as WebClient,
+            channelId,
+            logger: log,
+            runQueue: deps.runQueue,
+            sessionId,
+            sourceMessageTs: messageTs,
+            threadTs,
+            userId,
+          }),
         ...(deps.workspaceLabel ? { workspaceLabel: deps.workspaceLabel } : {}),
         renderer: deps.renderer,
         logger: deps.logger,
@@ -322,5 +333,44 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
       await app.stop()
       log.info('slack adapter stopped')
     },
+  }
+}
+
+interface ShouldSuppressUsageArgs {
+  client: WebClient
+  channelId: string
+  logger: Logger
+  runQueue: SessionRunQueue
+  sessionId: string
+  sourceMessageTs: string
+  threadTs: string
+  userId: string
+}
+
+async function shouldSuppressUsage(args: ShouldSuppressUsageArgs): Promise<boolean> {
+  if (args.runQueue.queueDepth(args.sessionId) > 1) {
+    return true
+  }
+
+  try {
+    const replies = await args.client.conversations.replies({
+      channel: args.channelId,
+      inclusive: false,
+      limit: 10,
+      oldest: args.sourceMessageTs,
+      ts: args.threadTs,
+    } as Parameters<WebClient['conversations']['replies']>[0])
+
+    return Boolean(
+      replies.messages?.some((message) => {
+        if (message.user !== args.userId || typeof message.ts !== 'string') {
+          return false
+        }
+        return Number(message.ts) > Number(args.sourceMessageTs)
+      }),
+    )
+  } catch (err) {
+    args.logger.warn('检查 thread 新消息失败，继续发送 usage', err)
+    return false
   }
 }

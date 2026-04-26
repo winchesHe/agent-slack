@@ -1,8 +1,8 @@
 import { tool } from 'ai'
 import { z } from 'zod'
 import type { ToolContext } from './bash.ts'
-import type { SelfImproveCollector } from './selfImprove.collector.ts'
-import { AGENTS_RULE_WRITING_GUIDE } from './selfImprove.constants.ts'
+import type { SelfImproveCollector } from '@/agents/selfImprove/collectorAgent.ts'
+import { AGENTS_RULE_WRITING_GUIDE } from '@/agents/selfImprove/prompts.ts'
 
 export interface SelfImproveCollectDeps {
   collector: SelfImproveCollector
