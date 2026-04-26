@@ -1,3 +1,5 @@
+# Changelog
+
 ## 0.1.5 (2026-04-26)
 
 
@@ -24,8 +26,3 @@
 * **store:** SessionStore 增加 appendEvent 追加 events.jsonl ([f6ffd85](https://github.com/winchesHe/agent-slack/commit/f6ffd8562607c2c766e151bb095029be900dbf0e))
 * update AGENTS ([636626d](https://github.com/winchesHe/agent-slack/commit/636626dbf9da2da53859685b29c5c627baf25fe7))
 * 增加 Slack 结束尾巴统计 ([be03175](https://github.com/winchesHe/agent-slack/commit/be03175a7f5d4fb09c0ce3ee0cf9de1f7619cab1))
-
-
-
-# Changelog
-
