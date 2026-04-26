@@ -21,7 +21,7 @@
     "build": "tsdown",
     "build:dev": "tsdown --watch",
     "changelog": "conventional-changelog -p angular -i CHANGELOG.md -s && git add CHANGELOG.md",
-    "release": "bumpp --execute=\"pnpm changelog\" --all && pnpm publish",
+    "release": "bumpp --execute=\"pnpm changelog\" --all --no-push && pnpm publish",
     "prepublishOnly": "pnpm build",
     "test": "vitest run",
     "test:watch": "vitest",
