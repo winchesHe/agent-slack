@@ -7,6 +7,11 @@ import path from 'node:path'
 import YAML from 'yaml'
 import { resolveWorkspacePaths, type WorkspacePaths } from '@/workspace/paths.ts'
 import { parseConfig, DEFAULT_CONFIG, type WorkspaceConfig } from '@/workspace/config.ts'
+import {
+  CHANNEL_TASKS_CONFIG_TEMPLATE,
+  parseChannelTasksConfig,
+  type ChannelTasksConfig,
+} from '@/channelTasks/config.ts'
 import { loadSkills } from '@/workspace/SkillLoader.ts'
 import type { Skill } from '@/workspace/WorkspaceContext.ts'
 import type { Logger } from '@/logger/logger.ts'
@@ -101,6 +106,17 @@ export interface HealthResult {
   env: DashboardEnvStatus
   slackAuth?: { ok: boolean; reason?: string }
   litellm?: { ok: boolean; modelAvailable?: boolean; sample?: string[]; reason?: string }
+}
+
+export interface DashboardChannelTasksConfig {
+  exists: boolean
+  raw: string | null
+  parsed: ChannelTasksConfig | null
+  validation: {
+    ok: boolean
+    error?: string
+  }
+  template: string
 }
 
 export function createDashboardApi(cwd: string, logger: Logger) {
@@ -301,6 +317,38 @@ export function createDashboardApi(cwd: string, logger: Logger) {
       const exists = existsSync(paths.configFile)
       const raw = exists ? await readFile(paths.configFile, 'utf8') : null
       return { parsed: await readConfig(), raw, exists }
+    },
+
+    async channelTasks(): Promise<DashboardChannelTasksConfig> {
+      const exists = existsSync(paths.channelTasksFile)
+      const raw = exists ? await readFile(paths.channelTasksFile, 'utf8') : null
+      if (!raw) {
+        return {
+          exists,
+          raw,
+          parsed: parseChannelTasksConfig({}),
+          validation: { ok: true },
+          template: CHANNEL_TASKS_CONFIG_TEMPLATE,
+        }
+      }
+
+      try {
+        return {
+          exists,
+          raw,
+          parsed: parseChannelTasksConfig(YAML.parse(raw)),
+          validation: { ok: true },
+          template: CHANNEL_TASKS_CONFIG_TEMPLATE,
+        }
+      } catch (err) {
+        return {
+          exists,
+          raw,
+          parsed: null,
+          validation: { ok: false, error: err instanceof Error ? err.message : String(err) },
+          template: CHANNEL_TASKS_CONFIG_TEMPLATE,
+        }
+      }
     },
 
     async systemPrompt(): Promise<{ exists: boolean; content: string }> {
@@ -533,6 +581,31 @@ export function createDashboardApi(cwd: string, logger: Logger) {
     async deleteConfig(): Promise<{ deleted: boolean }> {
       if (!existsSync(paths.configFile)) return { deleted: false }
       await unlink(paths.configFile)
+      return { deleted: true }
+    },
+
+    async updateChannelTasks(
+      rawYaml: string,
+    ): Promise<{ parsed: ChannelTasksConfig; raw: string }> {
+      // 保存 raw YAML，避免 dashboard 丢失用户保留的中文注释；parsed 只用于校验。
+      const parsed = parseChannelTasksConfig(YAML.parse(rawYaml))
+      await mkdir(paths.root, { recursive: true })
+      await writeFile(paths.channelTasksFile, rawYaml, 'utf8')
+      return { parsed, raw: rawYaml }
+    },
+
+    async createChannelTasksTemplate(force = false): Promise<{ raw: string; created: boolean }> {
+      if (existsSync(paths.channelTasksFile) && !force) {
+        throw new Error('channel-tasks.yaml already exists')
+      }
+      await mkdir(paths.root, { recursive: true })
+      await writeFile(paths.channelTasksFile, CHANNEL_TASKS_CONFIG_TEMPLATE, 'utf8')
+      return { raw: CHANNEL_TASKS_CONFIG_TEMPLATE, created: true }
+    },
+
+    async deleteChannelTasks(): Promise<{ deleted: boolean }> {
+      if (!existsSync(paths.channelTasksFile)) return { deleted: false }
+      await unlink(paths.channelTasksFile)
       return { deleted: true }
     },
 

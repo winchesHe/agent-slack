@@ -196,6 +196,26 @@ async function handle(
   if (req.method === 'DELETE' && pathname === '/api/config') {
     return json(await api.deleteConfig())
   }
+  if (req.method === 'PUT' && pathname === '/api/channel-tasks') {
+    try {
+      const body = await readBody()
+      const result = await api.updateChannelTasks(body)
+      return json(result)
+    } catch (err) {
+      return json({ error: err instanceof Error ? err.message : String(err) }, 400)
+    }
+  }
+  if (req.method === 'DELETE' && pathname === '/api/channel-tasks') {
+    return json(await api.deleteChannelTasks())
+  }
+  if (req.method === 'POST' && pathname === '/api/channel-tasks/template') {
+    try {
+      const result = await api.createChannelTasksTemplate(url.searchParams.get('force') === '1')
+      return json(result)
+    } catch (err) {
+      return json({ error: err instanceof Error ? err.message : String(err) }, 409)
+    }
+  }
   if (req.method === 'PUT' && pathname === '/api/system-prompt') {
     try {
       const body = await readBody()
@@ -262,6 +282,7 @@ async function handle(
   if (pathname === '/api/meta') return json(meta)
   if (pathname === '/api/overview') return json(await api.overview())
   if (pathname === '/api/config') return json(await api.config())
+  if (pathname === '/api/channel-tasks') return json(await api.channelTasks())
   if (pathname === '/api/system-prompt') return json(await api.systemPrompt())
   if (pathname === '/api/skills') return json(await api.skills())
   if (pathname === '/api/sessions') return json(await api.sessions())

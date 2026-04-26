@@ -79,6 +79,7 @@ const TABS = [
   { id: 'memory', label: 'Memory' },
   { id: 'logs', label: 'Logs' },
   { id: 'config', label: 'Config' },
+  { id: 'channelTasks', label: 'Channel Tasks' },
   { id: 'system', label: 'System Prompt' },
   { id: 'daemon', label: 'Daemon' },
 ]
@@ -398,6 +399,74 @@ const views = {
       msg,
       el('h3', {}, 'Parsed (只读)'),
       el('pre', {}, JSON.stringify(c.parsed, null, 2)),
+    ])
+  },
+
+  async channelTasks() {
+    const c = await api('/api/channel-tasks')
+    renderTabs()
+    const ta = el('textarea', {
+      id: 'channel-tasks-editor',
+      style: 'width:100%;min-height:460px;background:var(--panel);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:10px;font-family:var(--mono);font-size:12px;'
+    })
+    ta.value = c.raw || '# channel-tasks.yaml 不存在；点击“生成模板”创建带中文注释的配置\\n'
+    const msg = el('div', { id: 'channel-tasks-msg', style: 'margin-top:8px;' })
+    const save = el('button', { onclick: async () => {
+      msg.textContent = '保存中…'; msg.className = 'muted'
+      try {
+        const r = await fetch('/api/channel-tasks', { method: 'PUT', headers: { 'content-type': 'text/plain' }, body: ta.value })
+        if (!r.ok) { const e = await r.json(); throw new Error(e.error || ('HTTP ' + r.status)) }
+        msg.textContent = '已保存；重启 agent/daemon 后生效'; msg.className = 'pill ok'
+        setTimeout(render, 300)
+      } catch (err) { msg.textContent = '保存失败：' + (err.message || err); msg.className = 'err-box' }
+    }}, '保存 channel-tasks.yaml')
+    const gen = el('button', { style: 'margin-left:8px;', onclick: async () => {
+      msg.textContent = '生成模板中…'; msg.className = 'muted'
+      try {
+        const r = await fetch('/api/channel-tasks/template', { method: 'POST' })
+        const js = await r.json()
+        if (!r.ok) throw new Error(js.error || ('HTTP ' + r.status))
+        ta.value = js.raw
+        msg.textContent = '模板已生成；请编辑后保存并重启 agent/daemon'; msg.className = 'pill ok'
+        setTimeout(render, 300)
+      } catch (err) { msg.textContent = '生成失败：' + (err.message || err); msg.className = 'err-box' }
+    }}, '生成中文注释模板')
+    const del = el('button', { style: 'margin-left:8px;', onclick: async () => {
+      if (!confirm('确认删除 channel-tasks.yaml？（频道任务监听将关闭）')) return
+      try {
+        const r = await fetch('/api/channel-tasks', { method: 'DELETE' })
+        if (!r.ok) throw new Error('HTTP ' + r.status)
+        msg.textContent = '已删除；重启 agent/daemon 后生效'; msg.className = 'pill ok'
+        setTimeout(render, 300)
+      } catch (err) { msg.textContent = '删除失败：' + (err.message || err); msg.className = 'err-box' }
+    }}, '删除 channel-tasks.yaml')
+    const validation = c.validation && c.validation.ok
+      ? el('div', { class: 'pill ok' }, 'schema 校验通过')
+      : el('div', { class: 'err-box' }, 'schema 校验失败：' + (c.validation && c.validation.error || 'unknown'))
+    const summary = c.parsed
+      ? JSON.stringify({
+          enabled: c.parsed.enabled,
+          ruleCount: c.parsed.rules.length,
+          rules: c.parsed.rules.map(r => ({
+            id: r.id,
+            enabled: r.enabled,
+            channelIds: r.channelIds,
+            userIds: r.source.userIds,
+            botIds: r.source.botIds,
+            appIds: r.source.appIds,
+          })),
+        }, null, 2)
+      : '配置无法解析，请修复 YAML 后保存。'
+    return el('section', {}, [
+      el('h2', {}, 'Channel Tasks'),
+      el('div', { class: 'muted', style: 'margin-bottom:6px;' }, c.exists ? '已存在：.agent-slack/channel-tasks.yaml' : 'channel-tasks.yaml 不存在，频道任务监听关闭'),
+      el('p', { class: 'muted' }, '保存后需要重启 agent-slack start 或 daemon 才会生效。Dashboard 会原样保存 raw YAML，不会重排或删除中文注释。'),
+      validation,
+      ta,
+      el('div', { class: 'actions', style: 'margin-top:8px;' }, [save, gen, del]),
+      msg,
+      el('h3', {}, 'Parsed Summary (只读)'),
+      el('pre', {}, summary),
     ])
   },
 

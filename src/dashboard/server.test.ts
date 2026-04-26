@@ -72,4 +72,87 @@ describe('startDashboardServer', () => {
       }
     }
   })
+
+  it('Channel Tasks API 支持模板生成、保存校验和删除', async () => {
+    const server = await startDashboardServer({
+      cwd: workspaceDir,
+      host: '127.0.0.1',
+      port: 0,
+      logger: stubLogger,
+    })
+
+    try {
+      const initial = (await (await fetch(`${server.url}/api/channel-tasks`)).json()) as {
+        exists: boolean
+        parsed: { enabled: boolean; rules: unknown[] }
+        validation: { ok: boolean }
+      }
+      expect(initial.exists).toBe(false)
+      expect(initial.parsed.enabled).toBe(false)
+      expect(initial.parsed.rules).toEqual([])
+      expect(initial.validation.ok).toBe(true)
+
+      const templateResp = await fetch(`${server.url}/api/channel-tasks/template`, {
+        method: 'POST',
+      })
+      expect(templateResp.ok).toBe(true)
+      const template = (await templateResp.json()) as { raw: string; created: boolean }
+      expect(template.created).toBe(true)
+      expect(template.raw).toContain('Slack 频道任务监听配置')
+
+      const duplicateTemplateResp = await fetch(`${server.url}/api/channel-tasks/template`, {
+        method: 'POST',
+      })
+      expect(duplicateTemplateResp.status).toBe(409)
+
+      const invalidResp = await fetch(`${server.url}/api/channel-tasks`, {
+        method: 'PUT',
+        headers: { 'content-type': 'text/plain' },
+        body: 'version: 1\nenabled: true\nrules:\n  - id: bad\n    task:\n      prompt: ""\n',
+      })
+      expect(invalidResp.status).toBe(400)
+
+      const validYaml = [
+        'version: 1',
+        'enabled: true',
+        'rules:',
+        '  - id: rule-1',
+        '    channelIds: [C1]',
+        '    source:',
+        '      userIds: [U1]',
+        '    task:',
+        '      prompt: 处理消息',
+        '',
+      ].join('\n')
+      const saveResp = await fetch(`${server.url}/api/channel-tasks`, {
+        method: 'PUT',
+        headers: { 'content-type': 'text/plain' },
+        body: validYaml,
+      })
+      expect(saveResp.ok).toBe(true)
+      const saved = (await saveResp.json()) as {
+        parsed: { enabled: boolean; rules: Array<{ id: string }> }
+        raw: string
+      }
+      expect(saved.raw).toBe(validYaml)
+      expect(saved.parsed.enabled).toBe(true)
+      expect(saved.parsed.rules[0]?.id).toBe('rule-1')
+
+      const loaded = (await (await fetch(`${server.url}/api/channel-tasks`)).json()) as {
+        exists: boolean
+        parsed: { enabled: boolean; rules: Array<{ id: string }> }
+        validation: { ok: boolean }
+      }
+      expect(loaded.exists).toBe(true)
+      expect(loaded.validation.ok).toBe(true)
+      expect(loaded.parsed.rules[0]?.id).toBe('rule-1')
+
+      const deleteResp = await fetch(`${server.url}/api/channel-tasks`, { method: 'DELETE' })
+      expect(deleteResp.ok).toBe(true)
+      const deleted = (await deleteResp.json()) as { deleted: boolean }
+      expect(deleted.deleted).toBe(true)
+    } finally {
+      await server.stop().catch(() => {})
+    }
+  })
 })
