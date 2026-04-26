@@ -35,12 +35,12 @@
 - **env** 只放凭证（`SLACK_*` / `LITELLM_*` / `ANTHROPIC_*`）、部署差异（`*_BASE_URL`）、调试（`LOG_LEVEL` / `SLACK_RENDER_DEBUG`）。
 - 禁止重新引入 `AGENT_MODEL` / `AGENT_PROVIDER` / `PROVIDER_NAME` 这类行为类 env 变量；如确需加新行为选项，加到 `src/workspace/config.ts` schema。
 
-### Env 变更联动规则
-对任何 env 变量的引入/修改/删除，必须**同步**更新以下处：
-1. `src/application/createApplication.ts`（以及相关校验 / `loadProviderEnv` 分支）
-2. `src/cli/templates.ts` 的 `defaultEnv`（onboard 写入模板）
-3. `.env.example`（开源示例）
-4. `.env`（本地开发模板，存在时追加注释块即可，**不动已有值**）
+### Env / Config 变更联动规则
+对任何 env 变量或配置文件字段的引入/修改/删除，必须**同步检查**以下处：
+1. 运行时加载/校验：`src/application/createApplication.ts`、`src/workspace/config.ts`、`src/channelTasks/config.ts`（按变更范围选择）
+2. onboard/dashboard 模板：`src/cli/templates.ts`、`src/channelTasks/config.ts` 的模板常量
+3. 根目录 example：`.env.example`、`.env.local.example`、`config.yaml.example`、`channel-tasks.yaml.example`、`system.md.example`
+4. `.env` / `.agent-slack/.env.local`（本地开发模板存在时只追加注释块，**不动已有值**）
 5. 相关 spec / README 对应段落
 
 ### Changing architecture
