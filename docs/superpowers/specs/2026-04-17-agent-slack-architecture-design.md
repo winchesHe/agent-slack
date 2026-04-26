@@ -3,6 +3,7 @@
 **日期**：2026-04-17
 **状态**：已确认，待 spec review
 **局部替换**：§2.2 `AgentExecutionEvent` / `EventSink` 定义、§2.3 节流策略、§4 数据流 SlackEventSink → SlackRenderer 段、§4.1 Cost 路径、§4.2 Abort 路径、§6.2 Agent Errors 行、§7.1 M2 里程碑描述 均被 [`2026-04-19-slack-render-flow-redesign.md`](./2026-04-19-slack-render-flow-redesign.md) 覆盖；本文件保留为**历史基线**，以新 spec 为准
+**增量设计**：Slack 频道普通消息 / bot 消息自动触发任务见 [`2026-04-26-slack-channel-task-listener-design.md`](./2026-04-26-slack-channel-task-listener-design.md)
 
 ## 1. 项目目标
 
@@ -11,7 +12,7 @@
 ### 一期目标
 
 - **Agent 基座**：Vercel AI SDK + LiteLLM（统一模型层代理）
-- **IM 入口**：Slack（socket mode，@mention 触发；本期新增 @mention command router，首个 command 为 `compact`）
+- **IM 入口**：Slack（socket mode，@mention 触发；本期新增 @mention command router，首个 command 为 `compact`；频道任务监听见独立增量 spec）
 - **Workspace 模式**：进程启动时绑定 `cwd`，所有数据落在 `<cwd>/.agent-slack/`
 - **运行方式**：`pnpm dev`（开发，dogfooding agent-slack 仓库本身）和 `agent-slack` CLI（分发给其他项目使用）
 - **交互丰富度**：thinking、tool-use、cost/token 展示齐全
@@ -600,6 +601,17 @@ src/agents/
 6. 成功后在当前 thread 发送一条可见说明；失败时发送错误说明，并记录日志。
 
 `compact` command 只做手动压缩，不触发 agent 回复、不执行工具、不修改 memory。权限沿用 Slack workspace/channel 可见性；更细粒度权限（如仅 thread 参与者可 compact）作为后续增强。
+
+### 4.6 Slack 频道任务监听（增量 spec）
+
+监听指定频道消息、按 user/bot 来源匹配并自动启动任务的设计不直接并入本历史基线文档；当前权威设计见 [`2026-04-26-slack-channel-task-listener-design.md`](./2026-04-26-slack-channel-task-listener-design.md)。
+
+该增量设计的核心边界：
+
+- 使用可选独立配置 `.agent-slack/channel-tasks.yaml`，文件缺失即关闭。
+- 支持匹配 user message 与 bot message，并在触发消息 thread 中回复。
+- 命中规则后复用 `ConversationOrchestrator.handle()`，不新增 agent 编排 SDK，不暴露为主 agent tool。
+- Dashboard 通过独立 Channel Tasks tab/API 管理 raw YAML，并保留中文注释模板。
 
 ---
 
