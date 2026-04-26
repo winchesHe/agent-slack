@@ -257,6 +257,48 @@ describe('SlackEventSink', () => {
     expect(sink.terminalPhase).toBe('completed')
   })
 
+  it('单个 bash 命令读取多个 SKILL.md 时按文件数统计 skill', async () => {
+    const { sink, renderer } = makeSink()
+    const usage: SessionUsageInfo = {
+      durationMs: 1,
+      totalCostUSD: 0,
+      modelUsage: [],
+    }
+
+    await sink.onEvent({ type: 'usage-info', usage })
+    await sink.onEvent({
+      type: 'lifecycle',
+      phase: 'completed',
+      finalMessages: [
+        {
+          role: 'assistant',
+          id: 'msg-1',
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'call-1',
+              toolName: 'bash',
+              args: {
+                cmd: [
+                  'cat /workspace/.agent-slack/skills/slack/SKILL.md',
+                  "printf '\\n---SKILL END---\\n'",
+                  'cat /workspace/.agent-slack/skills/browser-use/SKILL.md',
+                  "printf '\\n---SKILL END---\\n'",
+                  'cat /workspace/.agent-slack/skills/datadog/SKILL.md',
+                ].join(' && '),
+              },
+            },
+          ],
+        },
+      ],
+    })
+    await sink.finalize()
+
+    const usageCalls = getMethodCalls(renderer, 'postSessionUsage')
+    expect(usageCalls).toHaveLength(1)
+    expect(usageCalls[0]?.args[4]).toEqual({ memories: 0, tools: 0, skills: 3 })
+  })
+
   it('未收到 lifecycle:started 时 finalize 不移除 ack reaction', async () => {
     const { sink, renderer } = makeSink()
 

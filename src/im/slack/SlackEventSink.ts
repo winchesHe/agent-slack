@@ -94,6 +94,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
+function countSkillFileReads(cmd: string): number {
+  return cmd.match(/\.agent-slack\/skills\/(?:[^'"`\s;&|]+\/)*SKILL\.md/g)?.length ?? 0
+}
+
 function countToolCall(stats: SessionUsageTailStats, toolName: string, args: unknown): void {
   if (toolName === 'save_memory') {
     stats.memories += 1
@@ -107,9 +111,7 @@ function countToolCall(stats: SessionUsageTailStats, toolName: string, args: unk
   if (args.cmd.includes('.agent-slack/memory/')) {
     stats.memories += 1
   }
-  if (args.cmd.includes('.agent-slack/skills/') && args.cmd.includes('SKILL.md')) {
-    stats.skills += 1
-  }
+  stats.skills += countSkillFileReads(args.cmd)
 }
 
 function collectUsageTailStats(
