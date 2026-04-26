@@ -20,7 +20,7 @@ agent:
 
   context:
     # 只限制发给模型的历史上下文视图，不裁剪 messages.jsonl。
-    maxApproxChars: 120000
+    maxApproxChars: 240000
     # 最多加载最近消息数，避免大量短消息导致上下文膨胀。
     keepRecentMessages: 80
     # 最近 N 个工具结果保留完整；更旧工具结果在模型视图中压缩为占位。

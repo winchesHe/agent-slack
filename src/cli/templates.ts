@@ -8,7 +8,7 @@ export function defaultConfigYaml(model: string, provider: 'litellm' | 'anthropi
   maxSteps: 50
   context:
     # 传给模型的历史上下文近似字符预算；只影响模型视图，不裁剪 messages.jsonl
-    maxApproxChars: 120000
+    maxApproxChars: 240000
     # 传给模型的最近消息数上限；用于限制大量短消息导致的上下文膨胀
     keepRecentMessages: 80
     # 保留最近 N 个完整工具结果；更旧的工具结果仅在模型视图中替换为占位提示
@@ -82,7 +82,7 @@ LOG_LEVEL=info
 # ---------- Slack live E2E（可选；真实发 Slack 消息）----------
 # SLACK_E2E_CHANNEL_ID=C...
 # SLACK_E2E_TRIGGER_USER_TOKEN=xoxp-...
-# SLACK_E2E_TIMEOUT_MS=120000
+# SLACK_E2E_TIMEOUT_MS=240000
 # SLACK_E2E_RESULT_PATH=.agent-slack/e2e/result.json
 `
 

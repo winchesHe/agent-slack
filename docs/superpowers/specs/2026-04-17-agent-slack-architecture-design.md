@@ -200,7 +200,7 @@ agent:
   provider: litellm
   maxSteps: 50
   context:
-    maxApproxChars: 120000      # 传给模型的历史上下文近似字符预算；只影响模型视图，不裁剪 messages.jsonl
+    maxApproxChars: 240000      # 传给模型的历史上下文近似字符预算；只影响模型视图，不裁剪 messages.jsonl
     keepRecentMessages: 80      # 传给模型的最近消息数上限；用于限制大量短消息导致的上下文膨胀
     keepRecentToolResults: 20   # 保留最近 N 个完整工具结果；更旧结果仅在模型视图中压缩
 
@@ -263,7 +263,7 @@ im:
 ```yaml
 agent:
   context:
-    maxApproxChars: 120000      # 传给模型的历史上下文近似字符预算；只影响模型视图，不裁剪 messages.jsonl
+    maxApproxChars: 240000      # 传给模型的历史上下文近似字符预算；只影响模型视图，不裁剪 messages.jsonl
     keepRecentMessages: 80      # 传给模型的最近消息数上限；用于限制大量短消息导致的上下文膨胀
     keepRecentToolResults: 20   # 保留最近 N 个完整工具结果；更旧结果仅在模型视图中压缩
     autoCompact:
@@ -272,7 +272,7 @@ agent:
       maxFailures: 2            # 同 session 连续失败 2 次后熔断自动 compact
 ```
 
-- `maxApproxChars`：模型视图的近似字符预算。默认 `120000`，作为跨 provider 的保守上限，避免把文件型 transcript 无限制塞入 prompt。
+- `maxApproxChars`：模型视图的近似字符预算。默认 `240000`，作为跨 provider 的保守上限，避免把文件型 transcript 无限制塞入 prompt。
 - `keepRecentMessages`：最多保留的最近消息数。默认 `80`，用于限制大量短消息导致的无限增长。
 - `keepRecentToolResults`：最多保留的最近完整 tool-result 数。默认 `20`，更旧 tool-result 只在模型视图中替换为占位提示。
 - `autoCompact.enabled`：自动 compact 默认开启。它只在主流程前置阶段运行；手动 `/compact` 不受该开关影响。

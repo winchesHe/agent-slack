@@ -81,7 +81,7 @@ agent:
   provider: anthropic           # litellm | anthropic
   maxSteps: 50
   context:
-    maxApproxChars: 120000      # 只限制发给模型的历史视图，不裁剪 messages.jsonl
+    maxApproxChars: 240000      # 只限制发给模型的历史视图，不裁剪 messages.jsonl
     keepRecentMessages: 80      # 最多加载最近消息数，避免短消息无限增长
     keepRecentToolResults: 20   # 最近 N 个工具结果保留完整；更旧结果仅在模型视图中压缩
     autoCompact:
@@ -111,7 +111,7 @@ LOG_LEVEL=info
 # Slack live E2E（可选；真实发 Slack 消息）
 # SLACK_E2E_CHANNEL_ID=C...
 # SLACK_E2E_TRIGGER_USER_TOKEN=xoxp-...
-# SLACK_E2E_TIMEOUT_MS=120000
+# SLACK_E2E_TIMEOUT_MS=240000
 # SLACK_E2E_RESULT_PATH=.agent-slack/e2e/result.json
 ```
 

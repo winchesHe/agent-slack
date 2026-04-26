@@ -11,7 +11,7 @@ export const ConfigSchema = z.object({
       context: z
         .object({
           // 只限制发给模型的历史视图，不裁剪 messages.jsonl。
-          maxApproxChars: z.number().int().positive().default(120_000),
+          maxApproxChars: z.number().int().positive().default(240_000),
           keepRecentMessages: z.number().int().positive().default(80),
           keepRecentToolResults: z.number().int().positive().default(20),
           autoCompact: z

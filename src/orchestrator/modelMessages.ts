@@ -12,7 +12,7 @@ export interface ModelMessageBudget {
 }
 
 export const DEFAULT_MODEL_MESSAGE_BUDGET: ModelMessageBudget = {
-  maxApproxChars: 120_000,
+  maxApproxChars: 240_000,
   keepRecentMessages: 80,
   keepRecentToolResults: 20,
   autoCompact: {
