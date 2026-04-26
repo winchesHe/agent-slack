@@ -27,7 +27,7 @@
 
 ## 后续未实现
 
-- Phase 4：自动触发与熔断。
+- 后续可继续增强 compact marker 结构化存储，减少自然语言前缀误判。
 
 ## Phase 1 实现结果
 
@@ -83,6 +83,16 @@
 - 自动 compact 成功后追加 `[compact: auto]` summary 并重建 model-view；失败时记录失败计数，回退 Phase 1/2 继续用户请求。
 - 同 session 自动 compact 连续失败 2 次后熔断；手动 `/compact` 绕过熔断并继续向用户显示 compact 结果。
 
+## Phase 4 实现结果
+
+- 新增 `agent.context.autoCompact.enabled/triggerRatio/maxFailures` 配置，默认 `true/0.8/2`，同步 README 与 onboard 模板。
+- `SessionStore` 扩展 `meta.context.autoCompact`，持久化 `failureCount`、`breakerOpen`、最近 attempt/success/failure 信息，并兼容旧 meta。
+- `ContextCompactor.autoCompact()` 生成 `[compact: auto]` finalMessage，不走 Slack 可见 assistant-message。
+- `ConversationOrchestrator` 在主 executor 前基于最后 compact boundary 后候选视图触发 auto compact；期间发送“正在整理上下文…”活动态，完成后 clear 并继续主 executor。
+- auto compact 成功后追加 summary、重建 history/model-view、重置失败状态；失败时记录失败计数并继续 Phase 1/2，达到阈值后熔断。
+- 新增 live E2E `auto-compact`，验证真实 Slack 下自动 compact 后主回复继续、`[compact: auto]` 持久化、不作为 Slack 回复展示、session 进入 idle 后再清理。
+- 新增 live E2E `context-pruning-no-llm`，禁用 auto compact 并压低 `keepRecentMessages`，验证 deterministic pruning 隐藏旧上下文且不生成 `[compact:]` summary。
+
 ## 已验证
 
 - `pnpm vitest run src/orchestrator/ConversationOrchestrator.test.ts src/im/slack/SlackEventSink.test.ts`
@@ -101,3 +111,7 @@
 - `pnpm vitest run src/orchestrator/modelMessages.test.ts src/orchestrator/ConversationOrchestrator.test.ts`
 - `pnpm test`（33 files / 243 tests）
 - `pnpm e2e compact-boundary`（真实 Slack，验证 compact boundary 后不再回看 boundary 前原始历史）
+- `pnpm vitest run src/workspace/config.test.ts src/store/SessionStore.test.ts src/orchestrator/modelMessages.test.ts src/orchestrator/ContextCompactor.test.ts src/orchestrator/ConversationOrchestrator.test.ts src/orchestrator/MentionCommandRouter.test.ts tests/live-e2e-cli.test.ts`
+- `pnpm e2e auto-compact`（真实 Slack，验证自动 compact 和主流程继续）
+- `pnpm e2e context-pruning-no-llm`（真实 Slack，验证无 LLM compact 的 deterministic pruning）
+- `pnpm e2e context-pruning-no-llm compact-command compact-boundary auto-compact`（4 个 compact 覆盖场景全部 PASS）

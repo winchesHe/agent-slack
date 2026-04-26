@@ -3,7 +3,9 @@ import type { CoreMessage } from 'ai'
 import {
   MODEL_CONTEXT_PRUNED_NOTICE_TITLE,
   TOOL_RESULT_COMPACTED_NOTICE_TITLE,
+  buildCompactCandidateMessages,
   buildModelMessages,
+  estimateMessagesChars,
   type ModelMessageBudget,
 } from './modelMessages.ts'
 
@@ -185,6 +187,20 @@ describe('buildModelMessages', () => {
     })
 
     expect(messages).toEqual([compact, user('after-compact'), current])
+  })
+
+  it('compact candidate 只统计最后 compact boundary 后的候选视图', () => {
+    const firstCompact = compactSummary('first')
+    const lastCompact = compactSummary('last')
+    const current = user('current')
+
+    const messages = buildCompactCandidateMessages({
+      history: [user('stale'), firstCompact, user('old-tail'), lastCompact, user('fresh-tail')],
+      userMessage: current,
+    })
+
+    expect(messages).toEqual([lastCompact, user('fresh-tail'), current])
+    expect(estimateMessagesChars(messages)).toBeGreaterThan(0)
   })
 
   it('多次 compact 时只保留最后一次 compact summary', () => {

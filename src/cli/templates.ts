@@ -13,6 +13,11 @@ export function defaultConfigYaml(model: string, provider: 'litellm' | 'anthropi
     keepRecentMessages: 80
     # 保留最近 N 个完整工具结果；更旧的工具结果仅在模型视图中替换为占位提示
     keepRecentToolResults: 20
+    # 自动上下文压缩：达到预算阈值时先整理上下文，再继续本轮主流程
+    autoCompact:
+      enabled: true
+      triggerRatio: 0.8
+      maxFailures: 2
 
 skills:
   enabled: ['*']

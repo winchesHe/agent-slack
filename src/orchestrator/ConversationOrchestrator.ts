@@ -10,10 +10,14 @@ import type { AbortRegistry } from './AbortRegistry.ts'
 import { emitSyntheticFailed } from './emitSyntheticFailed.ts'
 import {
   DEFAULT_MODEL_MESSAGE_BUDGET,
+  buildCompactCandidateMessages,
   buildModelMessages,
+  estimateMessagesChars,
   type ModelMessageBudget,
 } from './modelMessages.ts'
 import type { MentionCommandRouter } from './MentionCommandRouter.ts'
+import type { ContextCompactor } from './ContextCompactor.ts'
+import type { AutoCompactState } from '@/store/SessionStore.ts'
 
 export interface CurrentUser {
   userName: string
@@ -42,6 +46,7 @@ export interface ConversationOrchestratorDeps {
   systemPrompt: string
   modelMessageBudget?: ModelMessageBudget
   mentionCommandRouter?: MentionCommandRouter
+  contextCompactor?: ContextCompactor
   logger: Logger
 }
 
@@ -58,6 +63,46 @@ export function createConversationOrchestrator(
   /** 与 SessionStore 保持一致的 session key 推导规则，用于在首次建档前先进入串行队列。 */
   const sessionKeyFor = (input: InboundMessage): string =>
     `${input.imProvider}:${input.channelId}:${input.threadTs}`
+
+  const autoCompactConfig = modelMessageBudget.autoCompact
+
+  const shouldTriggerAutoCompact = (candidateMessages: CoreMessage[]): boolean => {
+    if (!autoCompactConfig?.enabled || candidateMessages.length < 2) {
+      return false
+    }
+
+    const triggerRatio = Math.min(Math.max(autoCompactConfig.triggerRatio, 0.01), 1)
+    const charThreshold = Math.max(1, Math.ceil(modelMessageBudget.maxApproxChars * triggerRatio))
+    const messageThreshold = Math.max(
+      1,
+      Math.ceil(modelMessageBudget.keepRecentMessages * triggerRatio),
+    )
+
+    return (
+      estimateMessagesChars(candidateMessages) >= charThreshold ||
+      candidateMessages.length >= messageThreshold
+    )
+  }
+
+  const recordAutoCompactFailure = async (
+    session: Session,
+    previousState: AutoCompactState,
+    error: unknown,
+  ): Promise<void> => {
+    const failureCount = previousState.failureCount + 1
+    const maxFailures = autoCompactConfig?.maxFailures ?? 2
+    const now = new Date().toISOString()
+    const message = error instanceof Error ? error.message : String(error)
+
+    await deps.sessionStore.setAutoCompactState(session.id, {
+      ...previousState,
+      failureCount,
+      breakerOpen: failureCount >= maxFailures,
+      lastAttemptAt: now,
+      lastFailureAt: now,
+      lastFailureMessage: message,
+    })
+  }
 
   /**
    * 错误补偿时两个落盘动作都要尝试，避免前一个失败导致 session 永远停在 running。
@@ -142,8 +187,62 @@ export function createConversationOrchestrator(
             }
 
             await deps.sessionStore.appendMessage(session.id, userMsg)
+
+            let modelHistory = history
+            if (deps.contextCompactor && autoCompactConfig?.enabled) {
+              const autoCompactState = await deps.sessionStore.getAutoCompactState(session.id)
+              const candidateMessages = buildCompactCandidateMessages({
+                history,
+                userMessage: userMsg,
+              })
+
+              if (!autoCompactState.breakerOpen && shouldTriggerAutoCompact(candidateMessages)) {
+                let autoCompactActivitySent = false
+                await sink.onEvent({
+                  type: 'activity-state',
+                  state: {
+                    status: '正在整理上下文…',
+                    activities: ['自动压缩历史上下文，完成后继续处理本轮请求'],
+                  },
+                })
+                autoCompactActivitySent = true
+
+                try {
+                  await deps.sessionStore.setAutoCompactState(session.id, {
+                    ...autoCompactState,
+                    lastAttemptAt: new Date().toISOString(),
+                  })
+                  const compactResult = await deps.contextCompactor.autoCompact({
+                    session,
+                    messages: candidateMessages,
+                    trigger: 'budget',
+                  })
+
+                  if (compactResult.status === 'compacted') {
+                    for (const message of compactResult.finalMessages) {
+                      await deps.sessionStore.appendMessage(session.id, message)
+                    }
+                    await deps.sessionStore.setAutoCompactState(session.id, {
+                      failureCount: 0,
+                      breakerOpen: false,
+                      lastAttemptAt: new Date().toISOString(),
+                      lastSuccessAt: new Date().toISOString(),
+                    })
+                    modelHistory = await deps.sessionStore.loadMessages(session.id)
+                  }
+                } catch (error) {
+                  log.warn('auto compact 失败，回退到模型视图裁剪', error)
+                  await recordAutoCompactFailure(session, autoCompactState, error)
+                } finally {
+                  if (autoCompactActivitySent) {
+                    await sink.onEvent({ type: 'activity-state', state: { clear: true } })
+                  }
+                }
+              }
+            }
+
             const modelMessages = buildModelMessages({
-              history,
+              history: modelHistory,
               userMessage: userMsg,
               budget: modelMessageBudget,
               messagesJsonlPath: path.join(session.dir, 'messages.jsonl'),

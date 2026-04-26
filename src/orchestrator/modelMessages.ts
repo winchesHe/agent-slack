@@ -4,12 +4,22 @@ export interface ModelMessageBudget {
   maxApproxChars: number
   keepRecentMessages: number
   keepRecentToolResults: number
+  autoCompact?: {
+    enabled: boolean
+    triggerRatio: number
+    maxFailures: number
+  }
 }
 
 export const DEFAULT_MODEL_MESSAGE_BUDGET: ModelMessageBudget = {
   maxApproxChars: 120_000,
   keepRecentMessages: 80,
   keepRecentToolResults: 20,
+  autoCompact: {
+    enabled: true,
+    triggerRatio: 0.8,
+    maxFailures: 2,
+  },
 }
 
 export interface BuildModelMessagesArgs {
@@ -25,6 +35,10 @@ export const COMPACT_SUMMARY_PREFIX = '[compact:'
 
 function estimateMessageChars(message: CoreMessage): number {
   return JSON.stringify(message).length
+}
+
+export function estimateMessagesChars(messages: CoreMessage[]): number {
+  return messages.reduce((sum, message) => sum + estimateMessageChars(message), 0)
 }
 
 function createPrunedNotice(messagesJsonlPath: string): CoreMessage {
@@ -59,6 +73,14 @@ function splitHistoryAtLastCompact(history: CoreMessage[]): {
   }
 
   return { compactSummary: undefined, tailHistory: history }
+}
+
+export function buildCompactCandidateMessages(input: {
+  history: CoreMessage[]
+  userMessage: CoreMessage
+}): CoreMessage[] {
+  const { compactSummary, tailHistory } = splitHistoryAtLastCompact(input.history)
+  return [...(compactSummary ? [compactSummary] : []), ...tailHistory, input.userMessage]
 }
 
 function assistantToolCallIds(message: CoreMessage): Set<string> {

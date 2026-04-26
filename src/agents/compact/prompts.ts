@@ -34,9 +34,9 @@ ${visibleTranscript}
 `
 }
 
-export function formatCompactSummary(input: { summary: string }): string {
+export function formatCompactSummary(input: { mode?: 'auto' | 'manual'; summary: string }): string {
   const summary = compactSummaryText(input.summary)
-  return `[compact: manual]
+  return `[compact: ${input.mode ?? 'manual'}]
 ${summary}`
 }
 

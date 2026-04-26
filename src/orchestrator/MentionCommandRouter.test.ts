@@ -9,6 +9,11 @@ function routerWithMockCompactor() {
       responseText: 'ok',
       finalMessages: [{ id: 'msg-compact', role: 'assistant' as const, content: 'ok' }],
     })),
+    autoCompact: vi.fn(async () => ({
+      status: 'skipped' as const,
+      reason: 'not_needed',
+      finalMessages: [],
+    })),
   }
   return { router: createMentionCommandRouter({ compactor }), compactor }
 }

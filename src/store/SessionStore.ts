@@ -14,6 +14,15 @@ export interface StepUsage {
   costUSD?: number
 }
 
+export interface AutoCompactState {
+  failureCount: number
+  breakerOpen: boolean
+  lastAttemptAt?: string
+  lastSuccessAt?: string
+  lastFailureAt?: string
+  lastFailureMessage?: string
+}
+
 export interface SessionMeta {
   schemaVersion: 1
   imProvider: 'slack'
@@ -31,6 +40,9 @@ export interface SessionMeta {
     cachedInputTokens: number
     totalCostUSD: number
     stepCount: number
+  }
+  context?: {
+    autoCompact?: AutoCompactState
   }
 }
 
@@ -61,6 +73,8 @@ export interface SessionStore {
   ): Promise<void>
   accumulateUsage(id: string, step: StepUsage): Promise<void>
   accumulateCost(id: string, usd: number): Promise<void>
+  getAutoCompactState(id: string): Promise<AutoCompactState>
+  setAutoCompactState(id: string, state: AutoCompactState): Promise<void>
   setStatus(id: string, status: SessionMeta['status']): Promise<void>
 }
 
@@ -77,6 +91,20 @@ export interface ConfirmActionEvent {
   channelId: string
   messageTs: string
   callbackError?: string
+}
+
+export function defaultAutoCompactState(): AutoCompactState {
+  return {
+    failureCount: 0,
+    breakerOpen: false,
+  }
+}
+
+function normalizeAutoCompactState(meta: SessionMeta): AutoCompactState {
+  return {
+    ...defaultAutoCompactState(),
+    ...meta.context?.autoCompact,
+  }
 }
 
 export function createSessionStore(paths: WorkspacePaths): SessionStore {
@@ -173,6 +201,22 @@ export function createSessionStore(paths: WorkspacePaths): SessionStore {
       const meta = await readMeta(dir)
       // 成本改为事件级单独累加，避免按 modelUsage 循环时重复计费。
       meta.usage.totalCostUSD += usd
+      await writeMeta(dir, meta)
+    },
+
+    async getAutoCompactState(id) {
+      const dir = resolveDir(id)
+      const meta = await readMeta(dir)
+      return normalizeAutoCompactState(meta)
+    },
+
+    async setAutoCompactState(id, state) {
+      const dir = resolveDir(id)
+      const meta = await readMeta(dir)
+      meta.context = {
+        ...meta.context,
+        autoCompact: state,
+      }
       await writeMeta(dir, meta)
     },
 

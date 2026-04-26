@@ -148,6 +148,40 @@ describe('SessionStore', () => {
     expect(reloaded.meta.usage.totalCostUSD).toBeCloseTo(0.035)
   })
 
+  it('auto compact 状态默认向后兼容旧 meta，并可持久化更新', async () => {
+    const { store, session } = await createStoreWithSession('t-auto-compact')
+
+    await expect(store.getAutoCompactState(session.id)).resolves.toEqual({
+      failureCount: 0,
+      breakerOpen: false,
+    })
+
+    await store.setAutoCompactState(session.id, {
+      failureCount: 2,
+      breakerOpen: true,
+      lastAttemptAt: '2026-04-26T00:00:00.000Z',
+      lastFailureAt: '2026-04-26T00:00:01.000Z',
+      lastFailureMessage: 'compact failed',
+    })
+
+    await expect(store.getAutoCompactState(session.id)).resolves.toEqual({
+      failureCount: 2,
+      breakerOpen: true,
+      lastAttemptAt: '2026-04-26T00:00:00.000Z',
+      lastFailureAt: '2026-04-26T00:00:01.000Z',
+      lastFailureMessage: 'compact failed',
+    })
+
+    const reloaded = await store.getOrCreate({
+      imProvider: 'slack',
+      channelId: 'C1',
+      channelName: 'general',
+      threadTs: 't-auto-compact',
+      imUserId: 'U1',
+    })
+    expect(reloaded.meta.context?.autoCompact?.breakerOpen).toBe(true)
+  })
+
   it('按多个 model 循环 accumulateUsage 后只通过一次 accumulateCost 记账', async () => {
     const { store, session } = await createStoreWithSession('t5')
     const modelSteps = [

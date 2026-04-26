@@ -9,6 +9,11 @@ describe('parseConfig', () => {
       maxApproxChars: 120_000,
       keepRecentMessages: 80,
       keepRecentToolResults: 20,
+      autoCompact: {
+        enabled: true,
+        triggerRatio: 0.8,
+        maxFailures: 2,
+      },
     })
   })
 
@@ -27,12 +32,22 @@ describe('parseConfig', () => {
           maxApproxChars: 10_000,
           keepRecentMessages: 12,
           keepRecentToolResults: 3,
+          autoCompact: {
+            enabled: false,
+            triggerRatio: 0.5,
+            maxFailures: 4,
+          },
         },
       },
     })
     expect(cfg.agent.context.maxApproxChars).toBe(10_000)
     expect(cfg.agent.context.keepRecentMessages).toBe(12)
     expect(cfg.agent.context.keepRecentToolResults).toBe(3)
+    expect(cfg.agent.context.autoCompact).toEqual({
+      enabled: false,
+      triggerRatio: 0.5,
+      maxFailures: 4,
+    })
   })
 
   it('未知 provider 报错', () => {

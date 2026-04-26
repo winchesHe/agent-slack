@@ -120,4 +120,53 @@ describe('ContextCompactor', () => {
     expect(result.responseText).not.toContain('Reply exactly')
     expect(result.responseText).not.toContain('Do not use tools')
   })
+
+  it('autoCompact 生成不可直接展示的 auto summary finalMessage', async () => {
+    const compactAgent: CompactAgent = {
+      summarize: vi.fn(async () => '自动摘要'),
+    }
+    const compactor = createContextCompactor({ compactAgent, logger: logger() })
+
+    const result = await compactor.autoCompact({
+      session: session(),
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: 'hello' },
+      ],
+      trigger: 'budget',
+    })
+
+    expect(result.status).toBe('compacted')
+    expect(result.finalMessages).toHaveLength(1)
+    expect(result.finalMessages[0]).toMatchObject({
+      role: 'assistant',
+      content: '[compact: auto]\n自动摘要',
+    })
+    expect(compactAgent.summarize).toHaveBeenCalledWith({
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: 'hello' },
+      ],
+    })
+  })
+
+  it('autoCompact 历史不足时跳过且不调用模型', async () => {
+    const compactAgent: CompactAgent = {
+      summarize: vi.fn(),
+    }
+    const compactor = createContextCompactor({ compactAgent, logger: logger() })
+
+    const result = await compactor.autoCompact({
+      session: session(),
+      messages: [{ role: 'user', content: 'hi' }],
+      trigger: 'budget',
+    })
+
+    expect(result).toEqual({
+      status: 'skipped',
+      reason: 'not_enough_messages',
+      finalMessages: [],
+    })
+    expect(compactAgent.summarize).not.toHaveBeenCalled()
+  })
 })

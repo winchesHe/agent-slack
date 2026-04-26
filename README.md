@@ -69,6 +69,10 @@ agent:
     maxApproxChars: 120000      # 只限制发给模型的历史视图，不裁剪 messages.jsonl
     keepRecentMessages: 80      # 最多加载最近消息数，避免短消息无限增长
     keepRecentToolResults: 20   # 最近 N 个工具结果保留完整；更旧结果仅在模型视图中压缩
+    autoCompact:
+      enabled: true             # 达到预算阈值时自动压缩上下文，然后继续本轮回复
+      triggerRatio: 0.8         # boundary 后候选视图达到预算 80% 时触发
+      maxFailures: 2            # 同 session 连续失败 2 次后自动熔断
 ```
 
 **凭证 / URL / debug 走 `.env.local`**：

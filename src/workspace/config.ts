@@ -14,6 +14,13 @@ export const ConfigSchema = z.object({
           maxApproxChars: z.number().int().positive().default(120_000),
           keepRecentMessages: z.number().int().positive().default(80),
           keepRecentToolResults: z.number().int().positive().default(20),
+          autoCompact: z
+            .object({
+              enabled: z.boolean().default(true),
+              triggerRatio: z.number().positive().max(1).default(0.8),
+              maxFailures: z.number().int().positive().default(2),
+            })
+            .default({}),
         })
         .default({}),
     })

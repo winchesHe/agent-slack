@@ -131,6 +131,7 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
     systemPrompt: ctx.systemPrompt,
     modelMessageBudget: ctx.config.agent.context,
     mentionCommandRouter,
+    contextCompactor,
     logger,
   })
 

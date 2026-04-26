@@ -15,6 +15,7 @@ import type { EventSink, InboundMessage } from '@/im/types.ts'
 import type { Logger } from '@/logger/logger.ts'
 import type { CoreMessage } from 'ai'
 import type { MentionCommandRouter } from './MentionCommandRouter.ts'
+import type { ContextCompactor } from './ContextCompactor.ts'
 
 function stubLogger(overrides: Partial<Logger> = {}): Logger {
   const l: Logger = {
@@ -75,6 +76,23 @@ function makeExecutor(events: AgentExecutionEvent[]): AgentExecutor {
     async *execute(_req: AgentExecutionRequest) {
       for (const e of events) yield e
     },
+  }
+}
+
+function makeContextCompactor(overrides: Partial<ContextCompactor> = {}): ContextCompactor {
+  return {
+    manualCompact: vi.fn(async () => ({
+      status: 'skipped' as const,
+      responseText: 'skipped',
+      finalMessages: [],
+    })),
+    autoCompact: vi.fn(async () => ({
+      status: 'compacted' as const,
+      finalMessages: [
+        { id: 'msg-auto-compact', role: 'assistant' as const, content: '[compact: auto]\n摘要' },
+      ],
+    })),
+    ...overrides,
   }
 }
 
@@ -301,6 +319,176 @@ describe('ConversationOrchestrator 粗事件消费', () => {
     ])
     const persistedMessages = await store.loadMessages(session.id)
     expect(persistedMessages).toEqual([...history, { role: 'user', content: 'current' }])
+  })
+
+  it('达到自动 compact 阈值时先整理上下文，再继续主 executor', async () => {
+    const paths = resolveWorkspacePaths(cwd)
+    const store = createSessionStore(paths)
+    const memoryStore = createMemoryStore(paths)
+    const session = await store.getOrCreate({
+      imProvider: 'slack',
+      channelId: 'C',
+      channelName: 'c',
+      threadTs: 't',
+      imUserId: 'U',
+    })
+    const history: CoreMessage[] = [
+      { role: 'user', content: 'old-1' },
+      { role: 'assistant', content: 'old-2' },
+    ]
+    for (const message of history) {
+      await store.appendMessage(session.id, message)
+    }
+
+    let executorMessages: CoreMessage[] | undefined
+    const executor: AgentExecutor = {
+      async *execute(req) {
+        executorMessages = req.messages
+        yield { type: 'lifecycle', phase: 'completed', finalMessages: [] }
+      },
+    }
+    const contextCompactor = makeContextCompactor()
+    const { sink, events } = mockSink()
+    const orch = createConversationOrchestrator({
+      toolsBuilder: () => ({}),
+      executorFactory: () => executor,
+      sessionStore: store,
+      memoryStore,
+      runQueue: new SessionRunQueue(),
+      abortRegistry: new AbortRegistry<string>(),
+      systemPrompt: '',
+      modelMessageBudget: {
+        maxApproxChars: 10_000,
+        keepRecentMessages: 3,
+        keepRecentToolResults: 20,
+        autoCompact: { enabled: true, triggerRatio: 0.8, maxFailures: 2 },
+      },
+      contextCompactor,
+      logger: stubLogger(),
+    })
+
+    await orch.handle(makeInput({ text: 'current' }), sink)
+
+    expect(contextCompactor.autoCompact).toHaveBeenCalledWith({
+      session: expect.objectContaining({ id: session.id }),
+      messages: [...history, { role: 'user', content: 'current' }],
+      trigger: 'budget',
+    })
+    expect(events[0]).toMatchObject({
+      type: 'activity-state',
+      state: { status: '正在整理上下文…' },
+    })
+    expect(events[1]).toEqual({ type: 'activity-state', state: { clear: true } })
+    expect(executorMessages).toMatchObject([
+      { role: 'assistant', content: '[compact: auto]\n摘要' },
+      { role: 'user', content: 'current' },
+    ])
+    await expect(store.getAutoCompactState(session.id)).resolves.toMatchObject({
+      failureCount: 0,
+      breakerOpen: false,
+    })
+    await expect(store.loadMessages(session.id)).resolves.toMatchObject([
+      ...history,
+      { role: 'user', content: 'current' },
+      { role: 'assistant', content: '[compact: auto]\n摘要' },
+    ])
+  })
+
+  it('自动 compact 失败时记录失败计数并继续主流程', async () => {
+    const paths = resolveWorkspacePaths(cwd)
+    const store = createSessionStore(paths)
+    const memoryStore = createMemoryStore(paths)
+    const session = await store.getOrCreate({
+      imProvider: 'slack',
+      channelId: 'C',
+      channelName: 'c',
+      threadTs: 't',
+      imUserId: 'U',
+    })
+    await store.appendMessage(session.id, { role: 'user', content: 'old' })
+    await store.appendMessage(session.id, { role: 'assistant', content: 'answer' })
+
+    let executorCalled = false
+    const executor: AgentExecutor = {
+      async *execute() {
+        executorCalled = true
+        yield { type: 'lifecycle', phase: 'completed', finalMessages: [] }
+      },
+    }
+    const contextCompactor = makeContextCompactor({
+      autoCompact: vi.fn(async () => {
+        throw new Error('compact failed')
+      }),
+    })
+    const orch = createConversationOrchestrator({
+      toolsBuilder: () => ({}),
+      executorFactory: () => executor,
+      sessionStore: store,
+      memoryStore,
+      runQueue: new SessionRunQueue(),
+      abortRegistry: new AbortRegistry<string>(),
+      systemPrompt: '',
+      modelMessageBudget: {
+        maxApproxChars: 10_000,
+        keepRecentMessages: 3,
+        keepRecentToolResults: 20,
+        autoCompact: { enabled: true, triggerRatio: 0.8, maxFailures: 2 },
+      },
+      contextCompactor,
+      logger: stubLogger(),
+    })
+
+    await orch.handle(makeInput({ text: 'current' }), mockSink().sink)
+
+    expect(executorCalled).toBe(true)
+    await expect(store.getAutoCompactState(session.id)).resolves.toMatchObject({
+      failureCount: 1,
+      breakerOpen: false,
+      lastFailureMessage: 'compact failed',
+    })
+  })
+
+  it('自动 compact 熔断后不再调用 compactor', async () => {
+    const paths = resolveWorkspacePaths(cwd)
+    const store = createSessionStore(paths)
+    const memoryStore = createMemoryStore(paths)
+    const session = await store.getOrCreate({
+      imProvider: 'slack',
+      channelId: 'C',
+      channelName: 'c',
+      threadTs: 't',
+      imUserId: 'U',
+    })
+    await store.appendMessage(session.id, { role: 'user', content: 'old' })
+    await store.appendMessage(session.id, { role: 'assistant', content: 'answer' })
+    await store.setAutoCompactState(session.id, {
+      failureCount: 2,
+      breakerOpen: true,
+    })
+
+    const contextCompactor = makeContextCompactor()
+    const executor = makeExecutor([{ type: 'lifecycle', phase: 'completed', finalMessages: [] }])
+    const orch = createConversationOrchestrator({
+      toolsBuilder: () => ({}),
+      executorFactory: () => executor,
+      sessionStore: store,
+      memoryStore,
+      runQueue: new SessionRunQueue(),
+      abortRegistry: new AbortRegistry<string>(),
+      systemPrompt: '',
+      modelMessageBudget: {
+        maxApproxChars: 10_000,
+        keepRecentMessages: 3,
+        keepRecentToolResults: 20,
+        autoCompact: { enabled: true, triggerRatio: 0.8, maxFailures: 2 },
+      },
+      contextCompactor,
+      logger: stubLogger(),
+    })
+
+    await orch.handle(makeInput({ text: 'current' }), mockSink().sink)
+
+    expect(contextCompactor.autoCompact).not.toHaveBeenCalled()
   })
 
   it('@mention compact command 命中时不进入 executor，并持久化命令回复', async () => {
@@ -973,6 +1161,10 @@ describe('ConversationOrchestrator 粗事件消费', () => {
       async appendEvent() {},
       async accumulateUsage() {},
       async accumulateCost() {},
+      async getAutoCompactState() {
+        return { failureCount: 0, breakerOpen: false }
+      },
+      async setAutoCompactState() {},
       async setStatus(id, status) {
         statusBySession.set(id, status)
       },
