@@ -4,6 +4,8 @@ import type { ConversationOrchestrator } from '@/orchestrator/ConversationOrches
 import type { SlackRenderer } from './SlackRenderer.ts'
 import type { Logger } from '@/logger/logger.ts'
 import type { SessionStore } from '@/store/SessionStore.ts'
+import { parseChannelTasksConfig, type ChannelTasksConfig } from '@/channelTasks/config.ts'
+import type { ChannelTaskTriggerLedger } from '@/channelTasks/triggerLedger.ts'
 import { AbortRegistry } from '@/orchestrator/AbortRegistry.ts'
 import { SessionRunQueue } from '@/orchestrator/SessionRunQueue.ts'
 
@@ -15,12 +17,19 @@ type SlackEventHandler = (args: {
 interface MockSlackClient {
   conversations: {
     info: ReturnType<typeof vi.fn>
+    replies: ReturnType<typeof vi.fn>
   }
   users: {
     info: ReturnType<typeof vi.fn>
   }
   reactions: {
     add: ReturnType<typeof vi.fn>
+  }
+  auth: {
+    test: ReturnType<typeof vi.fn>
+  }
+  chat: {
+    getPermalink: ReturnType<typeof vi.fn>
   }
 }
 
@@ -92,12 +101,21 @@ function createClient(): MockSlackClient {
   return {
     conversations: {
       info: vi.fn(async () => ({ channel: { name: 'general' } })),
+      replies: vi.fn(async () => ({ messages: [] })),
     },
     users: {
       info: vi.fn(async () => ({ user: { real_name: 'Alice', name: 'alice' } })),
     },
     reactions: {
       add: vi.fn(async () => ({ ok: true })),
+    },
+    auth: {
+      test: vi.fn(async () => ({ user_id: 'U_AGENT' })),
+    },
+    chat: {
+      getPermalink: vi.fn(async () => ({
+        permalink: 'https://example.slack.com/archives/C1/p1000000001',
+      })),
     },
   }
 }
@@ -108,6 +126,10 @@ function createDeps(
     abortRegistry?: AbortRegistry<string>
     runQueue?: SessionRunQueue
     logger?: Logger
+    channelTasks?: {
+      config: ChannelTasksConfig
+      ledger: ChannelTaskTriggerLedger
+    }
   } = {},
 ) {
   const orchestrator: ConversationOrchestrator =
@@ -126,11 +148,36 @@ function createDeps(
       getCallback: vi.fn(() => undefined),
     },
     sessionStore: stubSessionStore(),
+    ...(overrides.channelTasks ? { channelTasks: overrides.channelTasks } : {}),
     logger: overrides.logger ?? stubLogger(),
     botToken: 'xoxb-test-token',
     appToken: 'xapp-test-token',
     signingSecret: 'secret-test-value',
   }
+}
+
+function stubChannelTaskLedger(recordIfNew = true): ChannelTaskTriggerLedger {
+  return {
+    load: vi.fn(async () => []),
+    hasTriggered: vi.fn(async () => !recordIfNew),
+    append: vi.fn(async () => {}),
+    recordIfNew: vi.fn(async () => recordIfNew),
+  }
+}
+
+function userChannelTaskConfig(overrides: Record<string, unknown> = {}): ChannelTasksConfig {
+  return parseChannelTasksConfig({
+    enabled: true,
+    rules: [
+      {
+        id: 'rule-1',
+        channelIds: ['C1'],
+        source: { userIds: ['U1'] },
+        task: { prompt: '请处理触发消息' },
+        ...overrides,
+      },
+    ],
+  })
 }
 
 function stubSessionStore() {
@@ -166,6 +213,11 @@ describe('SlackAdapter', () => {
     expect(adapter.id).toBe('slack')
     expect(typeof adapter.start).toBe('function')
     expect(typeof adapter.stop).toBe('function')
+  })
+
+  it('未注入 channelTasks 时不注册 message handler', () => {
+    createSlackAdapter(createDeps())
+    expect(boltMock.handlers.has('message')).toBe(false)
   })
 
   it('reaction_added 为 stop_sign 且 item.type=message 时调用 abortRegistry.abort', async () => {
@@ -252,6 +304,146 @@ describe('SlackAdapter', () => {
       name: 'hourglass_flowing_sand',
     })
     expect(orchestrator.handle).toHaveBeenCalledTimes(1)
+  })
+
+  it('message 命中 user channel task 后在触发消息 thread 调用 orchestrator', async () => {
+    const client = createClient()
+    const ledger = stubChannelTaskLedger()
+    const orchestrator: ConversationOrchestrator = {
+      handle: vi.fn(async () => {}),
+    }
+
+    createSlackAdapter(
+      createDeps({
+        orchestrator,
+        channelTasks: {
+          config: userChannelTaskConfig(),
+          ledger,
+        },
+      }),
+    )
+    const handler = getRegisteredHandler('message')
+
+    await handler({
+      event: {
+        channel: 'C1',
+        ts: '1000.0001',
+        user: 'U1',
+        text: '请看这条消息',
+      },
+      client,
+    })
+
+    expect(ledger.recordIfNew).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ruleId: 'rule-1',
+        channelId: 'C1',
+        messageTs: '1000.0001',
+        threadTs: '1000.0001',
+        actorType: 'user',
+        actorId: 'U1',
+        sessionId: 'slack:C1:1000.0001',
+      }),
+    )
+    expect(orchestrator.handle).toHaveBeenCalledTimes(1)
+    const inbound = vi.mocked(orchestrator.handle).mock.calls[0]?.[0]
+    expect(inbound).toMatchObject({
+      imProvider: 'slack',
+      channelId: 'C1',
+      channelName: 'general',
+      threadTs: '1000.0001',
+      userId: 'U1',
+      userName: 'Alice',
+      messageTs: '1000.0001',
+    })
+    expect(inbound?.text).toContain('[频道任务触发: rule-1]')
+    expect(inbound?.text).toContain('请处理触发消息')
+    expect(inbound?.text).toContain('原始 Slack 消息：\n请看这条消息')
+    expect(client.chat.getPermalink).toHaveBeenCalledWith({
+      channel: 'C1',
+      message_ts: '1000.0001',
+    })
+  })
+
+  it('message 重复触发时按 ledger 跳过 orchestrator', async () => {
+    const ledger = stubChannelTaskLedger(false)
+    const orchestrator: ConversationOrchestrator = {
+      handle: vi.fn(async () => {}),
+    }
+
+    createSlackAdapter(
+      createDeps({
+        orchestrator,
+        channelTasks: {
+          config: userChannelTaskConfig(),
+          ledger,
+        },
+      }),
+    )
+    const handler = getRegisteredHandler('message')
+
+    await handler({
+      event: {
+        channel: 'C1',
+        ts: '1000.0001',
+        user: 'U1',
+        text: '重复消息',
+      },
+      client: createClient(),
+    })
+
+    expect(orchestrator.handle).not.toHaveBeenCalled()
+  })
+
+  it('message 命中 bot channel task 时使用 bot 身份并回复原 thread', async () => {
+    const ledger = stubChannelTaskLedger()
+    const orchestrator: ConversationOrchestrator = {
+      handle: vi.fn(async () => {}),
+    }
+    const config = userChannelTaskConfig({
+      source: {
+        includeUserMessages: false,
+        includeBotMessages: true,
+        userIds: [],
+        botIds: ['B1'],
+        appIds: [],
+      },
+      message: {
+        allowSubtypes: ['bot_message'],
+        includeThreadReplies: true,
+      },
+    })
+
+    createSlackAdapter(
+      createDeps({
+        orchestrator,
+        channelTasks: { config, ledger },
+      }),
+    )
+    const handler = getRegisteredHandler('message')
+
+    await handler({
+      event: {
+        channel: 'C1',
+        ts: '1000.0002',
+        thread_ts: '1000.0001',
+        subtype: 'bot_message',
+        bot_id: 'B1',
+        app_id: 'A1',
+        username: 'Jenkins',
+        text: 'build failed',
+      },
+      client: createClient(),
+    })
+
+    expect(orchestrator.handle).toHaveBeenCalledTimes(1)
+    const inbound = vi.mocked(orchestrator.handle).mock.calls[0]?.[0]
+    expect(inbound).toMatchObject({
+      threadTs: '1000.0001',
+      userId: 'B1',
+      userName: 'Jenkins',
+      messageTs: '1000.0002',
+    })
   })
 
   it('缺 renderer 参数 → TypeScript 编译报错（type-level）', () => {

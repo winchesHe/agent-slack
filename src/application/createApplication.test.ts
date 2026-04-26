@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { createApplication } from './createApplication.ts'
 import { AbortRegistry } from '@/orchestrator/AbortRegistry.ts'
 import { SessionRunQueue } from '@/orchestrator/SessionRunQueue.ts'
+import { resolveWorkspacePaths } from '@/workspace/paths.ts'
 
 const mocks = vi.hoisted(() => {
   const logger = {
@@ -18,6 +22,28 @@ const mocks = vi.hoisted(() => {
     start: vi.fn(async () => {}),
     stop: vi.fn(async () => {}),
   }
+  const paths = {
+    root: '/mock-workspace/.agent-slack',
+    configFile: '/mock-workspace/.agent-slack/config.yaml',
+    channelTasksFile: '/mock-workspace/.agent-slack/channel-tasks.yaml',
+    systemFile: '/mock-workspace/.agent-slack/system.md',
+    experienceFile: '/mock-workspace/.agent-slack/experience.md',
+    channelTasksDir: '/mock-workspace/.agent-slack/channel-tasks',
+    channelTaskTriggersFile: '/mock-workspace/.agent-slack/channel-tasks/triggers.jsonl',
+    sessionsDir: '/mock-workspace/.agent-slack/sessions',
+    memoryDir: '/mock-workspace/.agent-slack/memory',
+    skillsDir: '/mock-workspace/.agent-slack/skills',
+    logsDir: '/mock-workspace/.agent-slack/logs',
+    daemonDir: '/mock-workspace/.agent-slack/daemon',
+    daemonFile: '/mock-workspace/.agent-slack/daemon/daemon.json',
+    daemonPidFile: '/mock-workspace/.agent-slack/daemon/daemon.pid',
+    daemonLockFile: '/mock-workspace/.agent-slack/daemon/daemon.lock',
+    dashboardFile: '/mock-workspace/.agent-slack/daemon/dashboard.json',
+    globalRoot: '/mock-home/.agent-slack',
+    globalEnv: '/mock-home/.agent-slack/.env',
+    globalConfig: '/mock-home/.agent-slack/global.yaml',
+    cwd: '/mock-workspace',
+  }
 
   return {
     createOpenAICompatible: vi.fn(() => ({
@@ -28,13 +54,7 @@ const mocks = vi.hoisted(() => {
     })),
     loadWorkspaceContext: vi.fn(async () => ({
       cwd: '/mock-workspace',
-      paths: {
-        rootDir: '/mock-workspace/.agent-slack',
-        sessionsDir: '/mock-workspace/.agent-slack/sessions',
-        memoryDir: '/mock-workspace/.agent-slack/memory',
-        experienceFile: '/mock-workspace/.agent-slack/experience.md',
-        systemFile: '/mock-workspace/.agent-slack/system.md',
-      },
+      paths,
       config: {
         agent: {
           model: 'test-model',
@@ -76,6 +96,7 @@ const mocks = vi.hoisted(() => {
     createSlackAdapter: vi.fn((_args: unknown) => slackAdapter),
     logger,
     slackAdapter,
+    paths,
   }
 })
 
@@ -179,6 +200,55 @@ describe('createApplication', () => {
     expect(mocks.slackAdapter.stop).toHaveBeenCalledTimes(1)
   })
 
+  it('存在 channel-tasks.yaml 时注入 SlackAdapter channelTasks 依赖', async () => {
+    const workspace = mkdtempSync(path.join(tmpdir(), 'app-channel-tasks-'))
+    const paths = resolveWorkspacePaths(workspace)
+    mkdirSync(paths.root, { recursive: true })
+    writeFileSync(
+      paths.channelTasksFile,
+      [
+        'version: 1',
+        'enabled: true',
+        'rules:',
+        '  - id: rule-1',
+        '    channelIds: [C1]',
+        '    source:',
+        '      userIds: [U1]',
+        '    task:',
+        '      prompt: 处理消息',
+        '',
+      ].join('\n'),
+      'utf8',
+    )
+    mocks.loadWorkspaceContext.mockResolvedValueOnce({
+      cwd: workspace,
+      paths,
+      config: {
+        agent: {
+          model: 'test-model',
+          maxSteps: 8,
+          provider: 'litellm' as const,
+        },
+      },
+      systemPrompt: 'system prompt',
+      skills: [],
+    })
+
+    await createApplication({ workspaceDir: workspace })
+
+    const slackAdapterArgs = mocks.createSlackAdapter.mock.calls[0]?.[0] as
+      | {
+          channelTasks?: {
+            config: { enabled: boolean; rules: Array<{ id: string }> }
+            ledger: unknown
+          }
+        }
+      | undefined
+    expect(slackAdapterArgs?.channelTasks?.config.enabled).toBe(true)
+    expect(slackAdapterArgs?.channelTasks?.config.rules[0]?.id).toBe('rule-1')
+    expect(slackAdapterArgs?.channelTasks?.ledger).toBeDefined()
+  })
+
   it('config 默认 provider=litellm → 调用 createOpenAICompatible', async () => {
     await createApplication({ workspaceDir: '/workspace' })
     expect(mocks.createOpenAICompatible).toHaveBeenCalledWith({
@@ -192,13 +262,7 @@ describe('createApplication', () => {
     process.env.ANTHROPIC_API_KEY = 'sk-ant-xxx'
     mocks.loadWorkspaceContext.mockResolvedValueOnce({
       cwd: '/mock-workspace',
-      paths: {
-        rootDir: '/mock-workspace/.agent-slack',
-        sessionsDir: '/mock-workspace/.agent-slack/sessions',
-        memoryDir: '/mock-workspace/.agent-slack/memory',
-        experienceFile: '/mock-workspace/.agent-slack/experience.md',
-        systemFile: '/mock-workspace/.agent-slack/system.md',
-      },
+      paths: mocks.paths,
       config: {
         agent: { model: 'claude-sonnet-4-5', maxSteps: 8, provider: 'anthropic' as const },
       },
@@ -215,13 +279,7 @@ describe('createApplication', () => {
     process.env.ANTHROPIC_BASE_URL = 'https://gateway.example.com/v1'
     mocks.loadWorkspaceContext.mockResolvedValueOnce({
       cwd: '/mock-workspace',
-      paths: {
-        rootDir: '/mock-workspace/.agent-slack',
-        sessionsDir: '/mock-workspace/.agent-slack/sessions',
-        memoryDir: '/mock-workspace/.agent-slack/memory',
-        experienceFile: '/mock-workspace/.agent-slack/experience.md',
-        systemFile: '/mock-workspace/.agent-slack/system.md',
-      },
+      paths: mocks.paths,
       config: {
         agent: { model: 'claude-sonnet-4-5', maxSteps: 8, provider: 'anthropic' as const },
       },
@@ -238,13 +296,7 @@ describe('createApplication', () => {
   it('config.agent.provider=anthropic 缺 ANTHROPIC_API_KEY → 抛 ConfigError', async () => {
     mocks.loadWorkspaceContext.mockResolvedValueOnce({
       cwd: '/mock-workspace',
-      paths: {
-        rootDir: '/mock-workspace/.agent-slack',
-        sessionsDir: '/mock-workspace/.agent-slack/sessions',
-        memoryDir: '/mock-workspace/.agent-slack/memory',
-        experienceFile: '/mock-workspace/.agent-slack/experience.md',
-        systemFile: '/mock-workspace/.agent-slack/system.md',
-      },
+      paths: mocks.paths,
       config: { agent: { model: 'test-model', maxSteps: 8, provider: 'anthropic' as const } },
       systemPrompt: 'system prompt',
       skills: [],

@@ -25,3 +25,14 @@ describe('slackSessionDir', () => {
     expect(dir).toMatch(/sessions\/slack\/hello_world_x\.C\.t$/)
   })
 })
+
+describe('resolveWorkspacePaths', () => {
+  it('包含频道任务监听相关路径', () => {
+    const p = resolveWorkspacePaths('/tmp/workspace')
+    expect(p.channelTasksFile).toBe('/tmp/workspace/.agent-slack/channel-tasks.yaml')
+    expect(p.channelTasksDir).toBe('/tmp/workspace/.agent-slack/channel-tasks')
+    expect(p.channelTaskTriggersFile).toBe(
+      '/tmp/workspace/.agent-slack/channel-tasks/triggers.jsonl',
+    )
+  })
+})

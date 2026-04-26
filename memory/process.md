@@ -4,8 +4,8 @@
 
 - Slack 频道任务监听设计已新增：`docs/superpowers/specs/2026-04-26-slack-channel-task-listener-design.md`。
 - 设计目标：通过可选独立配置 `.agent-slack/channel-tasks.yaml` 监听指定频道消息，支持 user message 与 bot message，命中规则后复用主 `ConversationOrchestrator` 在触发消息 thread 中执行任务并回复。
-- 当前进度：Chunk 1 已实现，新增 `src/channelTasks/` 纯函数模块与单测，包括配置 schema/template、matcher、inputBuilder、triggerLedger。
-- 下一步：等待 review/提交 Chunk 1；之后进入 Chunk 2，将 Slack `message` event 接入 `SlackAdapter` 并复用 orchestrator。
+- 当前进度：Chunk 1 已提交；Chunk 2 已实现，完成可选 `channel-tasks.yaml` 加载、`SlackAdapter` `message` event 接入、user/bot message 命中后复用 orchestrator、`triggers.jsonl` 去重与单测。
+- 下一步：等待 review/提交 Chunk 2；之后进入 Chunk 3，新增 Dashboard `Channel Tasks` tab/API 管理 raw YAML 与模板。
 
 ## 最近归档
 

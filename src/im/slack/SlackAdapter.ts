@@ -8,6 +8,17 @@ import type { SessionRunQueue } from '@/orchestrator/SessionRunQueue.ts'
 import type { ConfirmSender } from '@/im/types.ts'
 import type { ConfirmBridge } from '@/im/slack/ConfirmBridge.ts'
 import type { SessionStore } from '@/store/SessionStore.ts'
+import type { ChannelTasksConfig } from '@/channelTasks/config.ts'
+import {
+  matchChannelTaskRules,
+  type ChannelTaskMatch,
+  type SlackChannelTaskMessageEvent,
+} from '@/channelTasks/matcher.ts'
+import { buildChannelTaskInput } from '@/channelTasks/inputBuilder.ts'
+import type {
+  ChannelTaskTriggerLedger,
+  ChannelTaskTriggerRecord,
+} from '@/channelTasks/triggerLedger.ts'
 import type { SlackRenderer } from './SlackRenderer.ts'
 import { createSlackEventSink } from './SlackEventSink.ts'
 import {
@@ -27,6 +38,11 @@ export interface SlackAdapterDeps {
   confirmBridge?: ConfirmBridge
   /** 用于在点击确认按钮时追加 confirm_action 事件到 session events.jsonl */
   sessionStore: SessionStore
+  /** 可选频道任务监听配置；缺失时不注册 message event handler。 */
+  channelTasks?: {
+    config: ChannelTasksConfig
+    ledger: ChannelTaskTriggerLedger
+  }
   logger: Logger
   botToken: string
   appToken: string
@@ -145,6 +161,7 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
   const log = deps.logger.withTag('slack')
   const channelNameCache = new Map<string, string>()
   const userNameCache = new Map<string, string>()
+  let agentUserId: string | undefined
 
   const app = new App({
     token: deps.botToken,
@@ -160,32 +177,11 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
       const messageTs = event.ts
       const sessionId = `slack:${channelId}:${threadTs}`
 
-      let channelName: string = channelNameCache.get(channelId) ?? ''
-      if (!channelName) {
-        try {
-          const info = await client.conversations.info({ channel: channelId })
-          channelName = info.channel?.name ?? 'unknown'
-          channelNameCache.set(channelId, channelName)
-        } catch (err) {
-          log.warn('conversations.info failed, falling back to unknown', err)
-          channelName = 'unknown'
-        }
-      }
+      const channelName = await resolveChannelName(client as unknown as WebClient, channelId)
 
       // 解析 userName（优先 real_name，回落 name，再回落 userId）
       const userId = event.user ?? 'unknown'
-      let userName = userNameCache.get(userId) ?? ''
-      if (!userName && userId !== 'unknown') {
-        try {
-          const uinfo = await client.users.info({ user: userId })
-          userName = uinfo.user?.real_name ?? uinfo.user?.name ?? userId
-          userNameCache.set(userId, userName)
-        } catch (err) {
-          log.warn('users.info failed, falling back to userId', err)
-          userName = userId
-        }
-      }
-      if (!userName) userName = userId
+      const userName = await resolveUserName(client as unknown as WebClient, userId)
 
       const sink = createSlackEventSink({
         web: client as unknown as WebClient,
@@ -212,20 +208,11 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
 
       // 构造 IM-agnostic 确认发送器，绑定本次会话的 web/channel/thread。
       // tool 层通过 ToolContext.confirm 调用；不感知 WebClient。
-      const confirmSender: ConfirmSender = {
-        sessionId: threadTs,
-        async send({ items, namespace, labels, onDecision }) {
-          await deps.slackConfirm.send({
-            web: client as unknown as WebClient,
-            channelId,
-            threadTs,
-            items,
-            namespace,
-            ...(labels ? { labels } : {}),
-            onDecision,
-          })
-        },
-      }
+      const confirmSender = createBoundConfirmSender(
+        client as unknown as WebClient,
+        channelId,
+        threadTs,
+      )
 
       if (deps.runQueue.queueDepth(sessionId) > 0) {
         try {
@@ -257,6 +244,39 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
       log.error('app_mention handler failed', err)
     }
   })
+
+  if (deps.channelTasks) {
+    const channelTasks = deps.channelTasks
+    app.event('message', async ({ event, client }) => {
+      try {
+        const messageEvent = toChannelTaskMessageEvent(event)
+        if (!messageEvent) return
+
+        const options = await buildChannelTaskMatchOptions(
+          channelTasks.config,
+          client as unknown as WebClient,
+        )
+        const matches = matchChannelTaskRules(channelTasks.config, messageEvent, options)
+        if (matches.length === 0) return
+
+        const channelName = await resolveChannelName(
+          client as unknown as WebClient,
+          messageEvent.channel,
+        )
+
+        for (const match of matches) {
+          await handleChannelTaskMatch({
+            match,
+            messageEvent,
+            client: client as unknown as WebClient,
+            channelName,
+          })
+        }
+      } catch (err) {
+        log.error('message handler failed', err)
+      }
+    })
+  }
 
   app.event('reaction_added', async ({ event }) => {
     if (event.reaction !== 'stop_sign') return
@@ -323,6 +343,199 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
     })
   })
 
+  async function handleChannelTaskMatch(args: {
+    match: ChannelTaskMatch
+    messageEvent: SlackChannelTaskMessageEvent
+    client: WebClient
+    channelName: string
+  }): Promise<void> {
+    if (!deps.channelTasks) return
+
+    const sessionId = `slack:${args.match.channelId}:${args.match.threadTs}`
+    const record: ChannelTaskTriggerRecord = {
+      schemaVersion: 1,
+      ruleId: args.match.rule.id,
+      channelId: args.match.channelId,
+      messageTs: args.match.messageTs,
+      threadTs: args.match.threadTs,
+      actorType: args.match.actor.type,
+      actorId: args.match.actor.id,
+      triggeredAt: new Date().toISOString(),
+      sessionId,
+    }
+
+    const shouldRun = args.match.rule.dedupe.enabled
+      ? await deps.channelTasks.ledger.recordIfNew(record)
+      : await appendTriggerWithoutDedupe(deps.channelTasks.ledger, record)
+
+    if (!shouldRun) {
+      log.debug('channel task duplicated trigger skipped', {
+        ruleId: args.match.rule.id,
+        channelId: args.match.channelId,
+        messageTs: args.match.messageTs,
+      })
+      return
+    }
+
+    if (deps.runQueue.queueDepth(sessionId) > 0) {
+      try {
+        await args.client.reactions.add({
+          channel: args.match.channelId,
+          timestamp: args.match.messageTs,
+          name: 'hourglass_flowing_sand',
+        })
+      } catch (err) {
+        log.warn('queued channel task hourglass reaction failed', err)
+      }
+    }
+
+    const permalink = args.match.rule.task.includePermalink
+      ? await resolvePermalink(args.client, args.match.channelId, args.match.messageTs)
+      : undefined
+    const text = buildChannelTaskInput({
+      match: args.match,
+      ...(permalink ? { permalink } : {}),
+    })
+    const userName =
+      args.match.actor.type === 'user'
+        ? await resolveUserName(args.client, args.match.actor.id)
+        : (args.messageEvent.username ?? args.match.actor.id)
+    const confirmSender = createBoundConfirmSender(
+      args.client,
+      args.match.channelId,
+      args.match.threadTs,
+    )
+    const sink = createSlackEventSink({
+      web: args.client,
+      channelId: args.match.channelId,
+      threadTs: args.match.threadTs,
+      sourceMessageTs: args.match.messageTs,
+      shouldSuppressUsage: () =>
+        shouldSuppressUsage({
+          client: args.client,
+          channelId: args.match.channelId,
+          logger: log,
+          runQueue: deps.runQueue,
+          sessionId,
+          sourceMessageTs: args.match.messageTs,
+          threadTs: args.match.threadTs,
+          userId: args.match.actor.id,
+        }),
+      ...(deps.workspaceLabel ? { workspaceLabel: deps.workspaceLabel } : {}),
+      renderer: deps.renderer,
+      logger: deps.logger,
+    })
+
+    await deps.orchestrator.handle(
+      {
+        imProvider: 'slack',
+        channelId: args.match.channelId,
+        channelName: args.channelName,
+        threadTs: args.match.threadTs,
+        userId: args.match.actor.id,
+        userName,
+        text,
+        messageTs: args.match.messageTs,
+        confirmSender,
+      },
+      sink,
+    )
+  }
+
+  async function resolveChannelName(client: WebClient, channelId: string): Promise<string> {
+    let channelName: string = channelNameCache.get(channelId) ?? ''
+    if (channelName) return channelName
+
+    try {
+      const info = await client.conversations.info({ channel: channelId })
+      channelName = info.channel?.name ?? 'unknown'
+      channelNameCache.set(channelId, channelName)
+      return channelName
+    } catch (err) {
+      log.warn('conversations.info failed, falling back to unknown', err)
+      return 'unknown'
+    }
+  }
+
+  async function resolveUserName(client: WebClient, userId: string): Promise<string> {
+    if (userId === 'unknown') return userId
+
+    let userName = userNameCache.get(userId) ?? ''
+    if (userName) return userName
+
+    try {
+      const uinfo = await client.users.info({ user: userId })
+      userName = uinfo.user?.real_name ?? uinfo.user?.name ?? userId
+      userNameCache.set(userId, userName)
+      return userName
+    } catch (err) {
+      log.warn('users.info failed, falling back to userId', err)
+      return userId
+    }
+  }
+
+  function createBoundConfirmSender(
+    web: WebClient,
+    channelId: string,
+    threadTs: string,
+  ): ConfirmSender {
+    return {
+      sessionId: threadTs,
+      async send({ items, namespace, labels, onDecision }) {
+        await deps.slackConfirm.send({
+          web,
+          channelId,
+          threadTs,
+          items,
+          namespace,
+          ...(labels ? { labels } : {}),
+          onDecision,
+        })
+      },
+    }
+  }
+
+  async function buildChannelTaskMatchOptions(
+    config: ChannelTasksConfig | undefined,
+    client: WebClient,
+  ): Promise<{ agentUserId?: string }> {
+    const needsAgentUserId = config?.rules.some(
+      (rule) => rule.enabled && rule.message.ignoreAgentMentions,
+    )
+    if (!needsAgentUserId) return {}
+
+    const resolved = await resolveAgentUserId(client)
+    return resolved ? { agentUserId: resolved } : {}
+  }
+
+  async function resolveAgentUserId(client: WebClient): Promise<string | undefined> {
+    if (agentUserId) return agentUserId
+    try {
+      const auth = await client.auth.test()
+      if (typeof auth.user_id === 'string' && auth.user_id.length > 0) {
+        agentUserId = auth.user_id
+        return agentUserId
+      }
+    } catch (err) {
+      log.warn('auth.test failed, channel task cannot ignore agent mentions by id', err)
+    }
+    return undefined
+  }
+
+  async function resolvePermalink(
+    client: WebClient,
+    channelId: string,
+    messageTs: string,
+  ): Promise<string | undefined> {
+    try {
+      const result = await client.chat.getPermalink({ channel: channelId, message_ts: messageTs })
+      return typeof result.permalink === 'string' ? result.permalink : undefined
+    } catch (err) {
+      log.warn('chat.getPermalink failed for channel task', err)
+      return undefined
+    }
+  }
+
   return {
     id: 'slack',
     async start() {
@@ -334,6 +547,36 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
       log.info('slack adapter stopped')
     },
   }
+}
+
+async function appendTriggerWithoutDedupe(
+  ledger: ChannelTaskTriggerLedger,
+  record: ChannelTaskTriggerRecord,
+): Promise<true> {
+  await ledger.append(record)
+  return true
+}
+
+function toChannelTaskMessageEvent(event: unknown): SlackChannelTaskMessageEvent | undefined {
+  if (!isRecord(event)) return undefined
+  if (typeof event.channel !== 'string' || typeof event.ts !== 'string') return undefined
+
+  const message: SlackChannelTaskMessageEvent = {
+    channel: event.channel,
+    ts: event.ts,
+  }
+  if (typeof event.text === 'string') message.text = event.text
+  if (typeof event.user === 'string') message.user = event.user
+  if (typeof event.subtype === 'string') message.subtype = event.subtype
+  if (typeof event.thread_ts === 'string') message.thread_ts = event.thread_ts
+  if (typeof event.bot_id === 'string') message.bot_id = event.bot_id
+  if (typeof event.app_id === 'string') message.app_id = event.app_id
+  if (typeof event.username === 'string') message.username = event.username
+  return message
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
 }
 
 interface ShouldSuppressUsageArgs {

@@ -9,6 +9,7 @@ export interface SlackChannelTaskMessageEvent {
   thread_ts?: string
   bot_id?: string
   app_id?: string
+  username?: string
 }
 
 export type ChannelTaskActor =

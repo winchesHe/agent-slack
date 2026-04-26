@@ -1,4 +1,7 @@
+import { existsSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { z } from 'zod'
+import YAML from 'yaml'
 
 const idSchema = z
   .string()
@@ -127,6 +130,13 @@ export type ChannelTaskMessageSubtype = ChannelTaskRule['message']['allowSubtype
 
 export function parseChannelTasksConfig(raw: unknown): ChannelTasksConfig {
   return ChannelTasksConfigSchema.parse(raw)
+}
+
+export async function loadChannelTasksConfigFile(
+  configFile: string,
+): Promise<ChannelTasksConfig | undefined> {
+  if (!existsSync(configFile)) return undefined
+  return parseChannelTasksConfig(YAML.parse(await readFile(configFile, 'utf8')))
 }
 
 export const CHANNEL_TASKS_CONFIG_TEMPLATE = `# Slack 频道任务监听配置。

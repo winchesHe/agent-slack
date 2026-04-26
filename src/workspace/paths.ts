@@ -5,8 +5,11 @@ export interface WorkspacePaths {
   cwd: string
   root: string
   configFile: string
+  channelTasksFile: string
   systemFile: string
   experienceFile: string
+  channelTasksDir: string
+  channelTaskTriggersFile: string
   sessionsDir: string
   memoryDir: string
   skillsDir: string
@@ -29,8 +32,11 @@ export function resolveWorkspacePaths(cwd: string): WorkspacePaths {
     cwd,
     root,
     configFile: path.join(root, 'config.yaml'),
+    channelTasksFile: path.join(root, 'channel-tasks.yaml'),
     systemFile: path.join(root, 'system.md'),
     experienceFile: path.join(root, 'experience.md'),
+    channelTasksDir: path.join(root, 'channel-tasks'),
+    channelTaskTriggersFile: path.join(root, 'channel-tasks', 'triggers.jsonl'),
     sessionsDir: path.join(root, 'sessions'),
     memoryDir: path.join(root, 'memory'),
     skillsDir: path.join(root, 'skills'),

@@ -25,6 +25,8 @@ import { createSemanticDedup } from '@/agents/selfImprove/semanticDedupAgent.ts'
 import { createCompactAgent } from '@/agents/compact/index.ts'
 import { createContextCompactor } from '@/orchestrator/ContextCompactor.ts'
 import { createMentionCommandRouter } from '@/orchestrator/MentionCommandRouter.ts'
+import { loadChannelTasksConfigFile } from '@/channelTasks/config.ts'
+import { createChannelTaskTriggerLedger } from '@/channelTasks/triggerLedger.ts'
 import { ConfigError } from '@/core/errors.ts'
 import type { Application } from './types.ts'
 
@@ -59,6 +61,7 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
   const bootstrapLogger = createLogger({ level: logLevel, redactor: bootstrapRedactor, logFile })
 
   const ctx = await loadWorkspaceContext(args.workspaceDir, bootstrapLogger)
+  const channelTasksConfig = await loadChannelTasksConfigFile(ctx.paths.channelTasksFile)
 
   // provider 唯一来源：config.agent.provider（env 不参与选择）
   const provider = selectProvider(ctx.config.agent.provider)
@@ -88,6 +91,9 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
   const compactAgent = createCompactAgent({ model: runtime.model, logger })
   const contextCompactor = createContextCompactor({ compactAgent, logger })
   const mentionCommandRouter = createMentionCommandRouter({ compactor: contextCompactor })
+  const channelTaskLedger = channelTasksConfig
+    ? createChannelTaskTriggerLedger(ctx.paths.channelTaskTriggersFile)
+    : undefined
 
   const toolsBuilder = (
     currentUser: { userName: string; userId: string },
@@ -146,6 +152,9 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
     slackConfirm,
     confirmBridge,
     sessionStore,
+    ...(channelTasksConfig && channelTaskLedger
+      ? { channelTasks: { config: channelTasksConfig, ledger: channelTaskLedger } }
+      : {}),
     logger,
     botToken: slackBotToken,
     appToken: slackAppToken,
