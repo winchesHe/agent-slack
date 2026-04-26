@@ -49,7 +49,7 @@ export function matchChannelTaskRules(
   for (const rule of config.rules) {
     if (!rule.enabled) continue
     if (!rule.channelIds.includes(event.channel)) continue
-    if (!rule.message.allowSubtypes.includes(subtype)) continue
+    if (!isSubtypeAllowed(rule, event, subtype)) continue
     if (!matchesMessageScope(rule, isThreadReply)) continue
     if (rule.message.requireText && text.trim().length === 0) continue
     if (rule.message.ignoreAgentMentions && includesAgentMention(text, options.agentUserId)) {
@@ -66,7 +66,7 @@ export function matchChannelTaskRules(
       messageTs: event.ts,
       threadTs,
       text,
-      subtype,
+      subtype: actor.type === 'bot' && hasBotIdentity(event) ? 'bot_message' : subtype,
       isThreadReply,
       actor,
     })
@@ -81,6 +81,19 @@ function normalizeSubtype(subtype: string | undefined): ChannelTaskMessageSubtyp
   return undefined
 }
 
+function isSubtypeAllowed(
+  rule: ChannelTaskRule,
+  event: SlackChannelTaskMessageEvent,
+  subtype: ChannelTaskMessageSubtype,
+): boolean {
+  if (rule.message.allowSubtypes.includes(subtype)) return true
+  return (
+    subtype === 'none' &&
+    hasBotIdentity(event) &&
+    rule.message.allowSubtypes.includes('bot_message')
+  )
+}
+
 function matchesMessageScope(rule: ChannelTaskRule, isThreadReply: boolean): boolean {
   if (isThreadReply) return rule.message.includeThreadReplies
   return rule.message.includeRootMessages
@@ -92,19 +105,32 @@ function resolveActor(
   subtype: ChannelTaskMessageSubtype,
 ): ChannelTaskActor | undefined {
   if (subtype === 'bot_message') {
-    if (!rule.source.includeBotMessages) return undefined
-    if (event.bot_id && rule.source.botIds.includes(event.bot_id)) {
-      return { type: 'bot', id: event.bot_id, matchedBy: 'botId' }
-    }
-    if (event.app_id && rule.source.appIds.includes(event.app_id)) {
-      return { type: 'bot', id: event.app_id, matchedBy: 'appId' }
-    }
-    return undefined
+    return resolveBotActor(rule, event)
   }
 
-  if (!rule.source.includeUserMessages || !event.user) return undefined
-  if (!rule.source.userIds.includes(event.user)) return undefined
-  return { type: 'user', id: event.user, matchedBy: 'userId' }
+  if (rule.source.includeUserMessages && event.user && rule.source.userIds.includes(event.user)) {
+    return { type: 'user', id: event.user, matchedBy: 'userId' }
+  }
+
+  return resolveBotActor(rule, event)
+}
+
+function resolveBotActor(
+  rule: ChannelTaskRule,
+  event: SlackChannelTaskMessageEvent,
+): ChannelTaskActor | undefined {
+  if (!rule.source.includeBotMessages) return undefined
+  if (event.bot_id && rule.source.botIds.includes(event.bot_id)) {
+    return { type: 'bot', id: event.bot_id, matchedBy: 'botId' }
+  }
+  if (event.app_id && rule.source.appIds.includes(event.app_id)) {
+    return { type: 'bot', id: event.app_id, matchedBy: 'appId' }
+  }
+  return undefined
+}
+
+function hasBotIdentity(event: SlackChannelTaskMessageEvent): boolean {
+  return Boolean(event.bot_id || event.app_id)
 }
 
 function matchesText(rule: ChannelTaskRule, text: string): boolean {

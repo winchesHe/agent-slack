@@ -213,6 +213,11 @@ describe('SlackAdapter', () => {
     expect(adapter.id).toBe('slack')
     expect(typeof adapter.start).toBe('function')
     expect(typeof adapter.stop).toBe('function')
+    expect(boltMock.App).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ignoreSelf: false,
+      }),
+    )
   })
 
   it('未注入 channelTasks 时不注册 message handler', () => {
@@ -304,6 +309,29 @@ describe('SlackAdapter', () => {
       name: 'hourglass_flowing_sand',
     })
     expect(orchestrator.handle).toHaveBeenCalledTimes(1)
+  })
+
+  it('app_mention 来自当前 agent 自身时跳过，避免关闭 Bolt ignoreSelf 后自触发', async () => {
+    const client = createClient()
+    const orchestrator: ConversationOrchestrator = {
+      handle: vi.fn(async () => {}),
+    }
+
+    createSlackAdapter(createDeps({ orchestrator }))
+    const handler = getRegisteredHandler('app_mention')
+
+    await handler({
+      event: {
+        channel: 'C1',
+        ts: 'm-self',
+        user: 'U_AGENT',
+        text: '<@U_AGENT> self ping',
+      },
+      client,
+    })
+
+    expect(client.auth.test).toHaveBeenCalledTimes(1)
+    expect(orchestrator.handle).not.toHaveBeenCalled()
   })
 
   it('message 命中 user channel task 后在触发消息 thread 调用 orchestrator', async () => {

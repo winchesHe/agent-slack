@@ -155,6 +155,43 @@ describe('matchChannelTaskRules', () => {
     expect(byAppId[0]?.actor).toEqual({ type: 'bot', id: 'A1', matchedBy: 'appId' })
   })
 
+  it('subtype 缺失但存在 bot_id 或 app_id 时按 bot_message 匹配', () => {
+    const matches = matchChannelTaskRules(
+      configWithRule({
+        source: {
+          includeUserMessages: false,
+          includeBotMessages: true,
+          botIds: ['B1'],
+          appIds: [],
+        },
+        message: { allowSubtypes: ['bot_message'] },
+      }),
+      {
+        channel: 'C1',
+        ts: '1000.0001',
+        text: 'bot says hello',
+        bot_id: 'B1',
+      },
+    )
+
+    expect(matches[0]).toMatchObject({
+      subtype: 'bot_message',
+      actor: { type: 'bot', id: 'B1', matchedBy: 'botId' },
+    })
+  })
+
+  it('subtype 缺失且同时有 user 与 bot_id 时，仍可按 userIds 匹配用户来源', () => {
+    const matches = matchChannelTaskRules(
+      configWithRule({}),
+      rootUserEvent({ bot_id: 'B1', app_id: 'A1' }),
+    )
+
+    expect(matches[0]).toMatchObject({
+      subtype: 'none',
+      actor: { type: 'user', id: 'U1', matchedBy: 'userId' },
+    })
+  })
+
   it('bot_message 需要显式允许 subtype 和 bot 来源', () => {
     const event = rootBotEvent({ bot_id: 'B1' })
 

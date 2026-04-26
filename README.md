@@ -26,8 +26,10 @@ agent-slack start           # 启动（前台阻塞）
 ```
 <your-project>/.agent-slack/
 ├── config.yaml        # agent / model / skills 配置（可选，缺失则用默认值）
+├── channel-tasks.yaml # 频道任务监听配置（可选，缺失则关闭）
 ├── system.md          # system prompt（可选）
 ├── .env.local         # 凭证（git ignore）
+├── channel-tasks/     # 频道任务触发 ledger（JSONL，git ignore）
 ├── sessions/slack/    # 对话历史（JSONL）
 ├── memory/            # 长期记忆（Markdown）
 ├── skills/            # SKILL.md 增强
@@ -103,6 +105,67 @@ LOG_LEVEL=info
 **切换步骤**：编辑 `.agent-slack/config.yaml` 的 `agent.provider` + 对应 `agent.model`，补齐 `.env.local` 凭证，重启进程。`agent-slack onboard` 在交互流程中会直接问一次 provider 并把选择写入 config.yaml。
 
 > **不支持**：运行期多 provider 并存 / per-session 切换 / Claude Agent SDK / OpenAI Responses API（后续 spec 评估）。
+
+---
+
+## Slack 频道任务监听（可选）
+
+默认只有 `@agent-slack` 会触发对话。如果需要“监听某个频道里指定用户或 bot 的消息，并自动在该消息 thread 中执行任务”，可以创建 `.agent-slack/channel-tasks.yaml`。文件缺失时功能关闭；保存后需要重启 `agent-slack start` 或 daemon 才生效。
+
+推荐通过 dashboard 管理：
+
+```bash
+agent-slack dashboard
+```
+
+打开 `Channel Tasks` tab 后，可以生成带中文注释的模板、编辑 raw YAML、保存前做 schema 校验、删除配置。Dashboard 会原样保存 YAML，不会重排或删除中文注释。
+
+最小示例：
+
+```yaml
+version: 1
+enabled: true
+rules:
+  - id: daily-watch
+    enabled: true
+    channelIds: [C0123456789]
+    source:
+      includeUserMessages: true
+      includeBotMessages: false
+      userIds: [U0123456789]
+      botIds: []
+      appIds: []
+    message:
+      includeRootMessages: true
+      includeThreadReplies: false
+      allowSubtypes: [none]
+      requireText: true
+      ignoreAgentMentions: true
+    task:
+      prompt: |
+        请阅读触发消息，判断是否需要处理，并给出简洁结论。
+      includeOriginalMessage: true
+      includePermalink: true
+    reply:
+      inThread: true
+    dedupe:
+      enabled: true
+```
+
+字段说明：
+
+- `userIds`、`botIds`、`appIds` 都是 allowlist。`includeBotMessages` 控制是否处理“由 bot 发送”的 `bot_message`；`ignoreAgentMentions` 控制文本里 @当前 agent 时是否跳过，避免和 `app_mention` 重复。
+- `reply.inThread` 当前固定为 `true`：根消息会创建 thread，thread 回复会沿用原 thread。
+- 运行时触发记录保存在 `.agent-slack/channel-tasks/triggers.jsonl`，用于 Slack 重试去重和审计，建议 git ignore。
+
+Slack App 需要额外开启事件订阅和 scope：
+
+| 能力 | Slack 配置 |
+| --- | --- |
+| 监听公开频道消息 | Event Subscriptions: `message.channels`；Bot Token Scope: `channels:history` |
+| 监听私有频道消息（可选） | Event Subscriptions: `message.groups`；Bot Token Scope: `groups:history` |
+| 回复 thread / reaction | 继续使用 `chat:write` / `reactions:write` |
+| 解析用户名称 | 继续使用 `users:read` |
 
 ---
 

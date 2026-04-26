@@ -23,6 +23,8 @@ export interface SlackAuthTestResponse {
 export interface SlackPostedMessageResponse {
   channel: string
   message?: {
+    app_id?: string
+    bot_id?: string
     text?: string
     thread_ts?: string
     ts?: string
@@ -35,6 +37,7 @@ export interface SlackConversationRepliesResponse {
   has_more?: boolean
   messages?: Array<{
     blocks?: Array<{ type?: string } & Record<string, unknown>>
+    app_id?: string
     bot_id?: string
     text?: string
     thread_ts?: string

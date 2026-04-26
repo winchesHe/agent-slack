@@ -168,10 +168,15 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
     appToken: deps.appToken,
     signingSecret: deps.signingSecret,
     socketMode: true,
+    // 频道任务可显式允许当前 bot 的 bot_message；自提及保护在 app_mention handler 内处理。
+    ignoreSelf: false,
   })
 
   app.event('app_mention', async ({ event, client }) => {
     try {
+      const currentAgentUserId = await resolveAgentUserId(client as unknown as WebClient)
+      if (currentAgentUserId && event.user === currentAgentUserId) return
+
       const channelId = event.channel
       const threadTs = event.thread_ts ?? event.ts
       const messageTs = event.ts

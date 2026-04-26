@@ -117,5 +117,6 @@ export const GITIGNORE_BLOCK = `
 # agent-slack
 .agent-slack/sessions/
 .agent-slack/logs/
+.agent-slack/channel-tasks/
 .agent-slack/.env.local
 `

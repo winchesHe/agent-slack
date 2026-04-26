@@ -169,6 +169,7 @@ describe('runOnboard', () => {
     const gi = fs.files.get(`${cwd}/.gitignore`)
     expect(gi).toContain('.agent-slack/sessions/')
     expect(gi).toContain('.agent-slack/logs/')
+    expect(gi).toContain('.agent-slack/channel-tasks/')
     expect(gi).toContain('.agent-slack/.env.local')
   })
 
