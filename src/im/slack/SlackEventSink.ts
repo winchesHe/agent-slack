@@ -453,6 +453,7 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
                 deps.channelId,
                 deps.threadTs,
                 previousProgressTs,
+                local.terminalStopReason,
               )
             }
           } else if (local.terminalPhase === 'failed') {
@@ -489,7 +490,11 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
           local.progressMessageTs = undefined
         }
 
-        if (local.terminalPhase === 'completed' && local.pendingUsage) {
+        if (
+          (local.terminalPhase === 'completed' ||
+            (local.terminalPhase === 'stopped' && local.terminalStopReason === 'max_steps')) &&
+          local.pendingUsage
+        ) {
           debugCutover('finalize posting usage', {
             channelId: deps.channelId,
             threadTs: deps.threadTs,

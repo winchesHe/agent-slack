@@ -5,7 +5,7 @@ export function defaultConfigYaml(model: string, provider: 'litellm' | 'anthropi
   model: ${model}
   # 可选值: litellm | anthropic；env 不参与选择，需改此处后重启生效
   provider: ${provider}
-  maxSteps: 20
+  maxSteps: 50
 
 skills:
   enabled: ['*']

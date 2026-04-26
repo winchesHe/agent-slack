@@ -197,7 +197,7 @@ agent:
   name: default
   model: claude-sonnet-4-6
   provider: litellm
-  maxSteps: 20
+  maxSteps: 50
 
 skills:
   enabled: ['*']
@@ -293,6 +293,8 @@ im:
        assistant-message     → 独立 postThreadReply（markdown 自动分块）+ 删 progress
        usage-info            → 暂存，completed 时独立 postSessionUsage
        lifecycle:completed   → finalize progress（✅ 完成 · toolHistory）+ addDone(✅)
+       lifecycle:stopped(max_steps)
+                           → 发送 maxSteps 上限总结回复，不标记 ✅ 完成，终态按 stopped 收口
        lifecycle:stopped     → finalize（已被用户中止）+ addStopped(⏹️)
        lifecycle:failed      → finalize（⚠️ 出错）+ addError(❌)
 ```

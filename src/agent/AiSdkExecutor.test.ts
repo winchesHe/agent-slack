@@ -62,12 +62,13 @@ function createToolSet(): ToolSet {
 function createExecutor(
   model: LanguageModel,
   tools: ToolSet = {},
+  maxSteps = 4,
 ): ReturnType<typeof createAiSdkExecutor> {
   return createAiSdkExecutor({
     model,
     modelName: 'mock-model',
     tools,
-    maxSteps: 4,
+    maxSteps,
     logger: stubLogger(),
   })
 }
@@ -375,6 +376,62 @@ describe('AiSdkExecutor 粗事件映射', () => {
     expect(newToolState).toBeDefined()
     expect(toolStatusIndex).toBeGreaterThanOrEqual(0)
     expect(backToThinking).toBeDefined()
+  })
+
+  it('maxSteps 耗尽且仍需继续工具调用时，发总结回复并以 stopped(max_steps) 收口', async () => {
+    const executor = createExecutor(
+      createMockModel([
+        [
+          { type: 'response-metadata', id: 'resp_1', modelId: 'mock-model' },
+          {
+            type: 'tool-call',
+            toolCallType: 'function',
+            toolCallId: 'call_1',
+            toolName: 'read_file',
+            args: '{"path":"a.ts"}',
+          },
+          {
+            type: 'finish',
+            finishReason: 'tool-calls',
+            usage: { promptTokens: 3, completionTokens: 0 },
+            providerMetadata: { litellm: { cost: 0.01 } },
+          },
+        ],
+      ]),
+      createToolSet(),
+      1,
+    )
+
+    const events = await collect(
+      executor.execute({
+        systemPrompt: '',
+        messages: [{ role: 'user', content: 'hi' }],
+        abortSignal: new AbortController().signal,
+      }),
+    )
+
+    const summaries = events.filter(
+      (event): event is Extract<AgentExecutionEvent, { type: 'assistant-message' }> =>
+        event.type === 'assistant-message' && event.text.includes('maxSteps 上限'),
+    )
+    const stopped = events.find(
+      (event): event is Extract<AgentExecutionEvent, { type: 'lifecycle'; phase: 'stopped' }> =>
+        event.type === 'lifecycle' && event.phase === 'stopped',
+    )
+
+    expect(summaries).toHaveLength(1)
+    expect(summaries[0]?.text).toContain('当前已知上下文总结')
+    expect(summaries[0]?.text).toContain('read_file x1')
+    expect(stopped).toMatchObject({
+      type: 'lifecycle',
+      phase: 'stopped',
+      reason: 'max_steps',
+      summary: summaries[0]?.text,
+    })
+    expect(events.find((event) => event.type === 'usage-info')).toBeDefined()
+    expect(
+      events.find((event) => event.type === 'lifecycle' && lifecyclePhase(event) === 'completed'),
+    ).toBeUndefined()
   })
 
   it('同名 tool 重复调用时，每次都会发 newToolCalls 供 sink 累加计数', async () => {

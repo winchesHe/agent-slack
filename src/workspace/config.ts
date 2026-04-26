@@ -5,7 +5,7 @@ export const ConfigSchema = z.object({
     .object({
       name: z.string().default('default'),
       model: z.string().default('gpt-5.4'),
-      maxSteps: z.number().int().positive().default(20),
+      maxSteps: z.number().int().positive().default(50),
       // provider 为唯一权威来源（env 不参与），默认 litellm
       provider: z.enum(['litellm', 'anthropic']).default('litellm'),
     })

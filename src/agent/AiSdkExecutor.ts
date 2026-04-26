@@ -1,4 +1,4 @@
-import { streamText, type LanguageModel, type ToolSet } from 'ai'
+import { streamText, type FinishReason, type LanguageModel, type ToolSet } from 'ai'
 import type { AgentExecutor, AgentExecutionRequest } from './AgentExecutor.ts'
 import type { ActivityState, AgentExecutionEvent, SessionUsageInfo } from '@/core/events.ts'
 import { STATUS, TOOL_PHRASE, getShuffledLoadingMessages } from '@/im/slack/thinking-messages.ts'
@@ -34,6 +34,9 @@ interface AggregatorState {
   lastEmittedActivityKey?: string
 
   stepTextBuffer: string
+  assistantMessages: string[]
+  stepCount: number
+  toolCallCounts: Map<string, number>
   activeTools: Map<string, { toolName: string; status: 'input' | 'running' }>
   composing: boolean
 
@@ -56,11 +59,12 @@ type ExecutorStreamPart =
   | { type: 'tool-result'; toolCallId: string }
   | {
       type: 'step-finish'
+      finishReason: FinishReason
       response: { modelId?: string }
       usage: Record<string, unknown>
       providerMetadata: unknown
     }
-  | { type: 'finish' }
+  | { type: 'finish'; finishReason: FinishReason }
   | { type: 'error'; error: unknown }
 
 const TOOL_LABEL_CMD_MAX_LEN = 40
@@ -99,6 +103,9 @@ function createAggregator(): AggregatorState {
     modelUsage: new Map(),
     defaultLoadingMessages: getShuffledLoadingMessages(8),
     stepTextBuffer: '',
+    assistantMessages: [],
+    stepCount: 0,
+    toolCallCounts: new Map(),
     activeTools: new Map(),
     composing: false,
     currentReasoning: '',
@@ -214,6 +221,45 @@ function buildUsageInfo(agg: AggregatorState): SessionUsageInfo {
   }
 }
 
+function formatToolCallSummary(toolCallCounts: Map<string, number>): string {
+  const parts = Array.from(toolCallCounts.entries()).map(([name, count]) => `${name} x${count}`)
+
+  return parts.length > 0 ? parts.join(' · ') : '无工具调用记录'
+}
+
+function summarizeText(text: string): string {
+  const normalized = text.replace(/\s+/g, ' ').trim()
+
+  if (normalized.length <= 160) {
+    return normalized
+  }
+
+  return `${normalized.slice(0, 157)}…`
+}
+
+function buildMaxStepsSummary(agg: AggregatorState, maxSteps: number): string {
+  const lines = [
+    `⚠️ 已达到 maxSteps 上限（${maxSteps} 步），任务已暂停，未标记为完成。`,
+    '',
+    '当前已知上下文总结：',
+    `- 已执行 ${agg.stepCount} 个模型步骤。`,
+    `- 工具调用：${formatToolCallSummary(agg.toolCallCounts)}。`,
+  ]
+
+  const latestAssistantMessage = [...agg.assistantMessages].reverse().find((text) => text.trim())
+  if (latestAssistantMessage) {
+    lines.push(`- 已产出的最后一段回复：${summarizeText(latestAssistantMessage)}。`)
+  } else {
+    lines.push('- 当前没有可直接交付的最终回复，最后一步仍在请求继续调用工具。')
+  }
+
+  lines.push(
+    '如需继续，请提高 `config.yaml` 中的 `agent.maxSteps` 后重试，或基于当前线程继续处理。',
+  )
+
+  return lines.join('\n')
+}
+
 function isAbortError(error: unknown): boolean {
   if (!(error instanceof Error)) {
     return false
@@ -260,6 +306,7 @@ export function createAiSdkExecutor(deps: AiSdkExecutorDeps): AgentExecutor {
       })
 
       let terminatedByErrorPart = false
+      let terminatedByMaxSteps = false
       let result: ReturnType<typeof streamText> | undefined
 
       try {
@@ -347,6 +394,10 @@ export function createAiSdkExecutor(deps: AiSdkExecutorDeps): AgentExecutor {
             case 'tool-call': {
               clearReasoning(agg)
               agg.activeTools.set(part.toolCallId, { toolName: part.toolName, status: 'running' })
+              agg.toolCallCounts.set(
+                part.toolName,
+                (agg.toolCallCounts.get(part.toolName) ?? 0) + 1,
+              )
               const label = toolDisplayLabel(part.toolName, part.args)
               yield* emitActivity(agg, {
                 status: TOOL_PHRASE.running(part.toolName),
@@ -378,6 +429,7 @@ export function createAiSdkExecutor(deps: AiSdkExecutorDeps): AgentExecutor {
 
             case 'step-finish': {
               clearReasoning(agg)
+              agg.stepCount += 1
               const resolvedModelName =
                 part.response.modelId ?? deps.modelName ?? deps.model.modelId ?? 'unknown'
 
@@ -391,6 +443,7 @@ export function createAiSdkExecutor(deps: AiSdkExecutorDeps): AgentExecutor {
               // 只用 trim 判断 step 是否为空，真正发给 sink 的文本保持原样，避免吞掉首尾空白。
               const finalStepText = agg.stepTextBuffer
               if (finalStepText.trim()) {
+                agg.assistantMessages.push(finalStepText)
                 yield { type: 'assistant-message', text: finalStepText }
               }
 
@@ -400,6 +453,20 @@ export function createAiSdkExecutor(deps: AiSdkExecutorDeps): AgentExecutor {
             }
 
             case 'finish': {
+              // AI SDK v4 在 tool-calls 后若已无剩余 step，会用最后一步的 finishReason 收尾；
+              // final finishReason=tool-calls 且 stepCount 达到上限，即代表 maxSteps 被耗尽。
+              if (part.finishReason === 'tool-calls' && agg.stepCount >= deps.maxSteps) {
+                const summary = buildMaxStepsSummary(agg, deps.maxSteps)
+                yield { type: 'assistant-message', text: summary }
+                yield { type: 'usage-info', usage: buildUsageInfo(agg) }
+                yield {
+                  type: 'lifecycle',
+                  phase: 'stopped',
+                  reason: 'max_steps',
+                  summary,
+                }
+                terminatedByMaxSteps = true
+              }
               break
             }
 
@@ -415,12 +482,12 @@ export function createAiSdkExecutor(deps: AiSdkExecutorDeps): AgentExecutor {
             }
           }
 
-          if (terminatedByErrorPart) {
+          if (terminatedByErrorPart || terminatedByMaxSteps) {
             break
           }
         }
 
-        if (terminatedByErrorPart) {
+        if (terminatedByErrorPart || terminatedByMaxSteps) {
           return
         }
 

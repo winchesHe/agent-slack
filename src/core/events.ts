@@ -4,7 +4,7 @@ import type { CoreAssistantMessage, CoreToolMessage } from 'ai'
 export type LifecyclePhase = 'started' | 'completed' | 'stopped' | 'failed'
 
 // stopped 场景的停止原因。
-export type StopReason = 'user' | 'superseded' | 'shutdown'
+export type StopReason = 'user' | 'superseded' | 'shutdown' | 'max_steps'
 
 interface ActiveActivityState {
   status: string
@@ -58,6 +58,7 @@ type LifecycleEvent =
       phase: 'stopped'
       reason: StopReason
       finalMessages?: LifecycleFinalMessage[]
+      summary?: string
     }
   | {
       type: 'lifecycle'

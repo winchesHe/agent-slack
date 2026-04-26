@@ -274,6 +274,29 @@ describe('SlackEventSink', () => {
     expect(methods).not.toContain('postSessionUsage')
   })
 
+  it('lifecycle:stopped reason=max_steps → finalize 传递上限原因并保留 usage', async () => {
+    const { sink, renderer } = makeSink()
+    const usage: SessionUsageInfo = {
+      durationMs: 1,
+      totalCostUSD: 0,
+      modelUsage: [],
+    }
+
+    await sink.onEvent({ type: 'lifecycle', phase: 'started' })
+    await sink.onEvent({
+      type: 'activity-state',
+      state: { status: '正在 x…', activities: [], newToolCalls: ['x'] },
+    })
+    await sink.onEvent({ type: 'usage-info', usage })
+    await sink.onEvent({ type: 'lifecycle', phase: 'stopped', reason: 'max_steps' })
+    await sink.finalize()
+
+    const stoppedCalls = getMethodCalls(renderer, 'finalizeProgressMessageStopped')
+    expect(stoppedCalls[0]?.args[4]).toBe('max_steps')
+    expect(getMethodCalls(renderer, 'postSessionUsage')).toHaveLength(1)
+    expect(getMethodCalls(renderer, 'addStopped')).toHaveLength(1)
+  })
+
   it('lifecycle:stopped 且 reason=superseded → finalize 直接删除 progress', async () => {
     const { sink, renderer } = makeSink()
 

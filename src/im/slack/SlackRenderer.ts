@@ -1,7 +1,7 @@
 import { markdownToBlocks, splitBlocksWithText, type Block } from 'markdown-to-slack-blocks'
 import type { WebClient } from '@slack/web-api'
 import type { Logger } from '@/logger/logger.ts'
-import type { SessionUsageInfo } from '@/core/events.ts'
+import type { SessionUsageInfo, StopReason } from '@/core/events.ts'
 import { isRenderDebugEnabled } from '@/workspace/config'
 
 export interface SlackRendererDeps {
@@ -58,6 +58,7 @@ export interface SlackRenderer {
     channelId: string,
     threadTs: string,
     prevTs: string,
+    reason?: StopReason,
   ): Promise<void>
   finalizeProgressMessageError(
     client: WebClient,
@@ -334,20 +335,23 @@ export function createSlackRenderer(deps: SlackRendererDeps): SlackRenderer {
         } as Parameters<WebClient['chat']['update']>[0]),
       )
     },
-    async finalizeProgressMessageStopped(client, channelId, threadTs, prevTs) {
+    async finalizeProgressMessageStopped(client, channelId, threadTs, prevTs, reason) {
       void threadTs
       debugRender('finalizeProgressMessageStopped requested', {
         channelId,
         prevTs,
+        reason,
         threadTs,
       })
+      const line =
+        reason === 'max_steps' ? '⏹️ 已达到 maxSteps 上限，任务已暂停' : '⏹️ 已被用户中止'
 
       await safeRender('chat.update(progress-stopped)', () =>
         client.chat.update({
           channel: channelId,
           ts: prevTs,
-          text: '已被用户中止',
-          blocks: [buildContextBlock('⏹️ 已被用户中止')],
+          text: line,
+          blocks: [buildContextBlock(line)],
         } as Parameters<WebClient['chat']['update']>[0]),
       )
     },

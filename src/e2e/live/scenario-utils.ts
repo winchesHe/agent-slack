@@ -17,12 +17,17 @@ export interface LiveE2EContext {
 
 export type SlackThreadMessage = NonNullable<SlackConversationRepliesResponse['messages']>[number]
 
-export async function createLiveE2EContext(runId: string): Promise<LiveE2EContext> {
+export async function createLiveE2EContext(
+  runId: string,
+  options: { workspaceDir?: string } = {},
+): Promise<LiveE2EContext> {
   const channelId = requireEnv('SLACK_E2E_CHANNEL_ID')
   const triggerClient = new SlackApiClient(requireEnv('SLACK_E2E_TRIGGER_USER_TOKEN'))
   const botClient = new SlackApiClient(requireEnv('SLACK_BOT_TOKEN'))
   const botIdentity = await botClient.authTest()
-  const application = await createApplication({ workspaceDir: process.cwd() })
+  const application = await createApplication({
+    workspaceDir: options.workspaceDir ?? process.cwd(),
+  })
 
   return {
     application,
@@ -104,13 +109,22 @@ export async function hasReaction(
   return Boolean(response.message?.reactions?.some((reaction) => reaction.name === name))
 }
 
-export async function readSessionMessages(threadTs: string): Promise<string> {
-  const sessionDir = await findSessionDir(threadTs)
+export async function readSessionMessages(
+  threadTs: string,
+  options: { workspaceDir?: string } = {},
+): Promise<string> {
+  const sessionDir = await findSessionDir(threadTs, options)
   return fs.readFile(path.join(sessionDir, 'messages.jsonl'), 'utf8')
 }
 
-export async function findSessionDir(threadTs: string): Promise<string> {
-  const slackSessionsDir = path.join(resolveWorkspacePaths(process.cwd()).sessionsDir, 'slack')
+export async function findSessionDir(
+  threadTs: string,
+  options: { workspaceDir?: string } = {},
+): Promise<string> {
+  const slackSessionsDir = path.join(
+    resolveWorkspacePaths(options.workspaceDir ?? process.cwd()).sessionsDir,
+    'slack',
+  )
   const entries = await fs.readdir(slackSessionsDir, { withFileTypes: true })
   const match = entries.find((entry) => entry.isDirectory() && entry.name.endsWith(`.${threadTs}`))
 

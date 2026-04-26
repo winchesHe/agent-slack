@@ -161,9 +161,15 @@ export function createConversationOrchestrator(
                         await deps.sessionStore.appendMessage(session.id, m)
                       }
                     }
+                    if (event.reason === 'max_steps' && event.summary) {
+                      await deps.sessionStore.appendMessage(session.id, {
+                        role: 'assistant',
+                        content: event.summary,
+                      })
+                    }
                     await deps.sessionStore.appendMessage(session.id, {
                       role: 'assistant',
-                      content: '[stopped]',
+                      content: event.reason === 'max_steps' ? '[stopped: max_steps]' : '[stopped]',
                     })
                     await deps.sessionStore.setStatus(session.id, 'stopped')
                   } else if (event.phase === 'failed') {

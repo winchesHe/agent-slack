@@ -392,6 +392,36 @@ describe('ConversationOrchestrator 粗事件消费', () => {
     expect(msgs[1]).toMatchObject({ role: 'assistant', content: '[stopped]' })
   })
 
+  it('stopped reason=max_steps → 写总结与专用停止标记', async () => {
+    const paths = resolveWorkspacePaths(cwd)
+    const store = createSessionStore(paths)
+    const memoryStore = createMemoryStore(paths)
+    const summary = '已达到 maxSteps 上限\n\n当前已知上下文总结：...'
+    const executor = makeExecutor([
+      { type: 'lifecycle', phase: 'started' },
+      { type: 'assistant-message', text: summary },
+      { type: 'lifecycle', phase: 'stopped', reason: 'max_steps', summary },
+    ])
+    const { sink } = mockSink()
+    const orch = createConversationOrchestrator({
+      toolsBuilder: () => ({}),
+      executorFactory: () => executor,
+      sessionStore: store,
+      memoryStore,
+      runQueue: new SessionRunQueue(),
+      abortRegistry: new AbortRegistry<string>(),
+      systemPrompt: '',
+      logger: stubLogger(),
+    })
+
+    await orch.handle(makeInput(), sink)
+
+    const msgs = await store.loadMessages('slack:C:t')
+    expect(msgs).toHaveLength(3)
+    expect(msgs[1]).toMatchObject({ role: 'assistant', content: summary })
+    expect(msgs[2]).toMatchObject({ role: 'assistant', content: '[stopped: max_steps]' })
+  })
+
   it('failed → 写 [error: ...] 标记 + status=error，不尝试读 finalMessages', async () => {
     const paths = resolveWorkspacePaths(cwd)
     const store = createSessionStore(paths)

@@ -64,7 +64,7 @@ agent:
   name: default
   model: claude-sonnet-4-5      # provider 对应的模型 ID
   provider: anthropic           # litellm | anthropic
-  maxSteps: 20
+  maxSteps: 50
 ```
 
 **凭证 / URL / debug 走 `.env.local`**：

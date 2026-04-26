@@ -289,6 +289,19 @@ describe('SlackRenderer progress message', () => {
     expect(update?.args.text).toContain('已被用户中止')
   })
 
+  it('finalizeProgressMessageStopped 在 max_steps 时提示上限', async () => {
+    const { web, calls } = mockWeb()
+    const renderer = createSlackRenderer({ logger: stubLogger() })
+
+    await renderer.finalizeProgressMessageStopped(web, 'C1', 't1', 'p1', 'max_steps')
+
+    const update = calls.find((call) => call.method === 'chat.update') as
+      | { args: { text?: string } }
+      | undefined
+
+    expect(update?.args.text).toContain('maxSteps 上限')
+  })
+
   it('finalizeProgressMessageError 带错误文案', async () => {
     const { web, calls } = mockWeb()
     const renderer = createSlackRenderer({ logger: stubLogger() })

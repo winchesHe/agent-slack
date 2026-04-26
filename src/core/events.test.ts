@@ -69,7 +69,7 @@ describe('events types', () => {
 
   it('LifecyclePhase 与 StopReason 仅允许计划中的字面量', () => {
     expectTypeOf<LifecyclePhase>().toEqualTypeOf<'started' | 'completed' | 'stopped' | 'failed'>()
-    expectTypeOf<StopReason>().toEqualTypeOf<'user' | 'superseded' | 'shutdown'>()
+    expectTypeOf<StopReason>().toEqualTypeOf<'user' | 'superseded' | 'shutdown' | 'max_steps'>()
   })
 
   it('lifecycle.finalMessages 对齐 response message 的更窄类型', () => {
@@ -94,6 +94,12 @@ describe('events types', () => {
       phase: 'stopped',
       reason: 'user',
     }
+    const maxStepsStopped: AgentExecutionEvent = {
+      type: 'lifecycle',
+      phase: 'stopped',
+      reason: 'max_steps',
+      summary: '已达到 maxSteps 上限',
+    }
     const failed: AgentExecutionEvent = {
       type: 'lifecycle',
       phase: 'failed',
@@ -102,6 +108,7 @@ describe('events types', () => {
 
     expectTypeOf(completed).toMatchTypeOf<AgentExecutionEvent>()
     expectTypeOf(stopped).toMatchTypeOf<AgentExecutionEvent>()
+    expectTypeOf(maxStepsStopped).toMatchTypeOf<AgentExecutionEvent>()
     expectTypeOf(failed).toMatchTypeOf<AgentExecutionEvent>()
 
     // @ts-expect-error clear-only 之外的状态必须同时带 status 与 activities
