@@ -155,6 +155,7 @@ rules:
 字段说明：
 
 - `userIds`、`botIds`、`appIds` 都是 allowlist。`includeBotMessages` 控制是否处理“由 bot 发送”的 `bot_message`；`ignoreAgentMentions` 控制文本里 @当前 agent 时是否跳过，避免和 `app_mention` 重复。
+- 某些 Slack bot 消息可能带 `bot_id/app_id` 但没有 `subtype`；只要规则允许 `bot_message` 且 `botIds/appIds` 命中，运行时仍会按 bot 来源处理。
 - `reply.inThread` 当前固定为 `true`：根消息会创建 thread，thread 回复会沿用原 thread。
 - 运行时触发记录保存在 `.agent-slack/channel-tasks/triggers.jsonl`，用于 Slack 重试去重和审计，建议 git ignore。
 
