@@ -1,0 +1,50 @@
+# agent-slack 行为配置示例。
+# 复制到你的 workspace: .agent-slack/config.yaml
+# 修改后需要重启 agent-slack start 或 daemon 才会生效。
+
+agent:
+  # 用于日志、dashboard 展示和 workspace 标识。
+  name: default
+
+  # provider 是行为配置的唯一权威来源；不要用 env 切换 provider。
+  # 可选值: litellm | anthropic
+  provider: litellm
+
+  # 模型 ID 需要和 provider 对应：
+  # - litellm: 由你的 LiteLLM 网关决定，例如 gpt-5.4
+  # - anthropic: 例如 claude-sonnet-4-5
+  model: gpt-5.4
+
+  # 单轮 agent run 最多调用模型/工具的步数。
+  maxSteps: 50
+
+  context:
+    # 只限制发给模型的历史上下文视图，不裁剪 messages.jsonl。
+    maxApproxChars: 120000
+    # 最多加载最近消息数，避免大量短消息导致上下文膨胀。
+    keepRecentMessages: 80
+    # 最近 N 个工具结果保留完整；更旧工具结果在模型视图中压缩为占位。
+    keepRecentToolResults: 20
+    autoCompact:
+      # 达到上下文预算阈值时，先整理上下文，再继续当前 run。
+      enabled: true
+      # 当前候选上下文达到预算 80% 时触发。
+      triggerRatio: 0.8
+      # 同 session 连续自动压缩失败次数上限。
+      maxFailures: 2
+
+skills:
+  # ['*'] 表示启用 .agent-slack/skills 下全部 skills。
+  # 也可以改成 ['skill-a', 'skill-b'] 只启用指定 skill。
+  enabled: ['*']
+
+im:
+  provider: slack
+  slack:
+    # true 时会通过 Slack API 解析 channel name；失败时回退 unknown。
+    resolveChannelName: true
+
+daemon:
+  # daemon/dashboard 共用 HTTP 监听地址；默认只绑定本机。
+  host: 127.0.0.1
+  port: 51732

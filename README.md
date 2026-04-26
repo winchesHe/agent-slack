@@ -21,6 +21,19 @@ agent-slack start           # 启动（前台阻塞）
 
 在 Slack 里 `@agent-slack 你好` 即可开始对话。
 
+## 配置示例
+
+仓库内置了可复制的本地配置示例：
+
+| 示例文件 | 复制到 | 说明 |
+| --- | --- | --- |
+| `examples/agent-slack/config.yaml` | `.agent-slack/config.yaml` | agent / provider / model / maxSteps / context / skills / daemon |
+| `examples/agent-slack/channel-tasks.yaml` | `.agent-slack/channel-tasks.yaml` | Slack 频道任务监听规则 |
+| `examples/agent-slack/system.md` | `.agent-slack/system.md` | workspace system prompt |
+| `examples/agent-slack/.env.local.example` | `.agent-slack/.env.local` | Slack / provider 凭证、debug、live E2E env |
+
+这些文件只包含占位符，不包含真实凭证。`.agent-slack/.env.local`、session、logs、channel task ledger 仍应保持 git ignore。
+
 ## 目录
 
 ```
