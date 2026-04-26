@@ -277,7 +277,11 @@ describe('ConversationOrchestrator 粗事件消费', () => {
       runQueue: new SessionRunQueue(),
       abortRegistry: new AbortRegistry<string>(),
       systemPrompt: '',
-      modelMessageBudget: { maxApproxChars: 10_000, keepRecentMessages: 3 },
+      modelMessageBudget: {
+        maxApproxChars: 10_000,
+        keepRecentMessages: 3,
+        keepRecentToolResults: 20,
+      },
       logger: stubLogger(),
     })
 

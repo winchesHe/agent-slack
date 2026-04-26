@@ -1,8 +1,22 @@
 import { describe, expect, it } from 'vitest'
 import type { CoreMessage } from 'ai'
-import { MODEL_CONTEXT_PRUNED_NOTICE_TITLE, buildModelMessages } from './modelMessages.ts'
+import {
+  MODEL_CONTEXT_PRUNED_NOTICE_TITLE,
+  TOOL_RESULT_COMPACTED_NOTICE_TITLE,
+  buildModelMessages,
+  type ModelMessageBudget,
+} from './modelMessages.ts'
 
 const messagesJsonlPath = '/workspace/.agent-slack/sessions/slack/c.C.t/messages.jsonl'
+const defaultBudget: ModelMessageBudget = {
+  maxApproxChars: 10_000,
+  keepRecentMessages: 10,
+  keepRecentToolResults: 20,
+}
+
+function budget(overrides: Partial<ModelMessageBudget>): ModelMessageBudget {
+  return { ...defaultBudget, ...overrides }
+}
 
 function user(content: string): CoreMessage {
   return { role: 'user', content }
@@ -47,7 +61,7 @@ describe('buildModelMessages', () => {
     const messages = buildModelMessages({
       history,
       userMessage: current,
-      budget: { maxApproxChars: 10_000, keepRecentMessages: 10 },
+      budget: defaultBudget,
       messagesJsonlPath,
     })
 
@@ -61,7 +75,7 @@ describe('buildModelMessages', () => {
     const messages = buildModelMessages({
       history,
       userMessage: current,
-      budget: { maxApproxChars: 10_000, keepRecentMessages: 3 },
+      budget: budget({ keepRecentMessages: 3 }),
       messagesJsonlPath,
     })
 
@@ -82,7 +96,7 @@ describe('buildModelMessages', () => {
     const messages = buildModelMessages({
       history: [user('old')],
       userMessage: current,
-      budget: { maxApproxChars: 10, keepRecentMessages: 10 },
+      budget: budget({ maxApproxChars: 10 }),
       messagesJsonlPath,
     })
 
@@ -105,7 +119,7 @@ describe('buildModelMessages', () => {
     const messages = buildModelMessages({
       history,
       userMessage: current,
-      budget: { maxApproxChars: 10_000, keepRecentMessages: 3 },
+      budget: budget({ keepRecentMessages: 3 }),
       messagesJsonlPath,
     })
 
@@ -129,7 +143,7 @@ describe('buildModelMessages', () => {
     const messages = buildModelMessages({
       history,
       userMessage: current,
-      budget: { maxApproxChars: 10_000, keepRecentMessages: 2 },
+      budget: budget({ keepRecentMessages: 2 }),
       messagesJsonlPath,
     })
 
@@ -143,7 +157,7 @@ describe('buildModelMessages', () => {
     const messages = buildModelMessages({
       history,
       userMessage: current,
-      budget: { maxApproxChars: 120, keepRecentMessages: 10 },
+      budget: budget({ maxApproxChars: 120 }),
       messagesJsonlPath,
     })
 
@@ -152,5 +166,48 @@ describe('buildModelMessages', () => {
     expect(messages).toContainEqual(user('c'))
     expect(messages).toContainEqual(current)
     expect(messages).not.toContainEqual(user('a'.repeat(80)))
+  })
+
+  it('仅在模型视图中压缩旧 tool-result，保留最近 N 个完整结果', () => {
+    const oldPair = toolPair('call_old')
+    const recentPair = toolPair('call_recent')
+    const history = [oldPair[0]!, oldPair[1]!, recentPair[0]!, recentPair[1]!]
+    const current = user('current')
+
+    const messages = buildModelMessages({
+      history,
+      userMessage: current,
+      budget: budget({ keepRecentToolResults: 1 }),
+      messagesJsonlPath,
+    })
+
+    expect(messages).toHaveLength(5)
+    expect(messages[0]).toEqual(oldPair[0])
+    expect(messages[1]).toMatchObject({
+      role: 'tool',
+      content: [
+        {
+          type: 'tool-result',
+          toolCallId: 'call_old',
+          toolName: 'bash',
+          result: `${TOOL_RESULT_COMPACTED_NOTICE_TITLE}；完整内容保存在：${messagesJsonlPath}`,
+        },
+      ],
+    })
+    expect(messages[2]).toEqual(recentPair[0])
+    expect(messages[3]).toEqual(recentPair[1])
+    expect(history[1]).toEqual(oldPair[1])
+  })
+
+  it('压缩旧 tool-result 时仍保留 tool-call / tool-result 配对结构', () => {
+    const pair = toolPair('call_1')
+    const messages = buildModelMessages({
+      history: [pair[0]!, pair[1]!],
+      userMessage: user('current'),
+      budget: budget({ keepRecentToolResults: 1 }),
+      messagesJsonlPath,
+    })
+
+    expect(messages).toEqual([pair[0], pair[1], user('current')])
   })
 })

@@ -8,6 +8,7 @@ describe('parseConfig', () => {
     expect(DEFAULT_CONFIG.agent.context).toEqual({
       maxApproxChars: 120_000,
       keepRecentMessages: 80,
+      keepRecentToolResults: 20,
     })
   })
 
@@ -25,11 +26,13 @@ describe('parseConfig', () => {
         context: {
           maxApproxChars: 10_000,
           keepRecentMessages: 12,
+          keepRecentToolResults: 3,
         },
       },
     })
     expect(cfg.agent.context.maxApproxChars).toBe(10_000)
     expect(cfg.agent.context.keepRecentMessages).toBe(12)
+    expect(cfg.agent.context.keepRecentToolResults).toBe(3)
   })
 
   it('未知 provider 报错', () => {

@@ -3,11 +3,13 @@ import type { CoreMessage } from 'ai'
 export interface ModelMessageBudget {
   maxApproxChars: number
   keepRecentMessages: number
+  keepRecentToolResults: number
 }
 
 export const DEFAULT_MODEL_MESSAGE_BUDGET: ModelMessageBudget = {
   maxApproxChars: 120_000,
   keepRecentMessages: 80,
+  keepRecentToolResults: 20,
 }
 
 export interface BuildModelMessagesArgs {
@@ -18,6 +20,7 @@ export interface BuildModelMessagesArgs {
 }
 
 export const MODEL_CONTEXT_PRUNED_NOTICE_TITLE = '[历史上下文已按预算裁剪]'
+export const TOOL_RESULT_COMPACTED_NOTICE_TITLE = '[旧工具结果已压缩]'
 
 function estimateMessageChars(message: CoreMessage): number {
   return JSON.stringify(message).length
@@ -28,6 +31,10 @@ function createPrunedNotice(messagesJsonlPath: string): CoreMessage {
     role: 'user',
     content: `${MODEL_CONTEXT_PRUNED_NOTICE_TITLE}\n本次仅加载最近对话片段；完整会话记录仍保存在：${messagesJsonlPath}`,
   }
+}
+
+function createCompactedToolResultNotice(messagesJsonlPath: string): string {
+  return `${TOOL_RESULT_COMPACTED_NOTICE_TITLE}；完整内容保存在：${messagesJsonlPath}`
 }
 
 function assistantToolCallIds(message: CoreMessage): Set<string> {
@@ -118,6 +125,62 @@ function adjustStartToPreserveToolPairs(history: CoreMessage[], startIndex: numb
   return adjustedStart
 }
 
+function toolResultPositionKey(messageIndex: number, partIndex: number): string {
+  return `${messageIndex}:${partIndex}`
+}
+
+function compactOldToolResults(
+  messages: CoreMessage[],
+  keepRecentToolResults: number,
+  messagesJsonlPath: string,
+): CoreMessage[] {
+  const positionsToCompact = new Set<string>()
+  let seenToolResults = 0
+
+  for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
+    const message = messages[messageIndex]!
+    if (message.role !== 'tool' || !Array.isArray(message.content)) {
+      continue
+    }
+
+    for (let partIndex = message.content.length - 1; partIndex >= 0; partIndex -= 1) {
+      const part = message.content[partIndex]!
+      if (part.type !== 'tool-result') {
+        continue
+      }
+      seenToolResults += 1
+      if (seenToolResults > keepRecentToolResults) {
+        positionsToCompact.add(toolResultPositionKey(messageIndex, partIndex))
+      }
+    }
+  }
+
+  if (positionsToCompact.size === 0) {
+    return messages
+  }
+
+  const compactedNotice = createCompactedToolResultNotice(messagesJsonlPath)
+  return messages.map((message, messageIndex) => {
+    if (message.role !== 'tool' || !Array.isArray(message.content)) {
+      return message
+    }
+
+    let changed = false
+    const content = message.content.map((part, partIndex) => {
+      if (
+        part.type === 'tool-result' &&
+        positionsToCompact.has(toolResultPositionKey(messageIndex, partIndex))
+      ) {
+        changed = true
+        return { ...part, result: compactedNotice }
+      }
+      return part
+    })
+
+    return changed ? { ...message, content } : message
+  })
+}
+
 export function buildModelMessages({
   history,
   userMessage,
@@ -126,6 +189,7 @@ export function buildModelMessages({
 }: BuildModelMessagesArgs): CoreMessage[] {
   const maxApproxChars = Math.max(1, budget.maxApproxChars)
   const keepRecentMessages = Math.max(1, budget.keepRecentMessages)
+  const keepRecentToolResults = Math.max(1, budget.keepRecentToolResults)
   let selectedStart = history.length
   let selectedChars = estimateMessageChars(userMessage)
   let selectedMessageCount = 1
@@ -144,13 +208,25 @@ export function buildModelMessages({
   }
 
   if (selectedStart === 0) {
-    return [...history, userMessage]
+    return compactOldToolResults(
+      [...history, userMessage],
+      keepRecentToolResults,
+      messagesJsonlPath,
+    )
   }
 
   const adjustedStart = adjustStartToPreserveToolPairs(history, selectedStart)
   if (adjustedStart === 0) {
-    return [...history, userMessage]
+    return compactOldToolResults(
+      [...history, userMessage],
+      keepRecentToolResults,
+      messagesJsonlPath,
+    )
   }
 
-  return [createPrunedNotice(messagesJsonlPath), ...history.slice(adjustedStart), userMessage]
+  return compactOldToolResults(
+    [createPrunedNotice(messagesJsonlPath), ...history.slice(adjustedStart), userMessage],
+    keepRecentToolResults,
+    messagesJsonlPath,
+  )
 }

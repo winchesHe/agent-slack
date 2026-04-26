@@ -27,7 +27,6 @@
 
 ## 后续未实现
 
-- Phase 2：旧 tool-result microcompact。
 - Phase 3：LLM compact summary + compact boundary。
 - Phase 4：自动触发与熔断。
 
@@ -60,6 +59,14 @@
 - 新增 `src/agents/selfImprove/collectorAgent.test.ts` 和 `generatorAgent.test.ts`，直接覆盖公共 `src/agents/` 目录中迁移后的 self-improve collector/generator 功能。
 - 新增 live E2E `self-improve-collect`，强制真实 agent loop 调用 `self_improve_collect`，验证迁移后的 collector tool-call / tool-result 会持久化。
 
+## Phase 2 实现结果
+
+- 新增 `agent.context.keepRecentToolResults` 配置，默认值为 `20`，同步 onboard 模板、README 与架构设计文档。
+- `buildModelMessages()` 已在模型视图层保留最近 N 个完整 tool-result，更旧 tool-result 的 `result` 替换为占位提示。
+- tool-result microcompact 只影响传给模型的 messages，不回写 `messages.jsonl`，也不删除 tool-call/tool-result 消息结构。
+- 占位提示包含真实 `messages.jsonl` 路径，便于模型需要时读取完整历史。
+- 单测覆盖旧 tool-result 压缩、最近结果保留、原始 history 不变、tool pair 结构合法。
+
 ## 已验证
 
 - `pnpm vitest run src/orchestrator/ConversationOrchestrator.test.ts src/im/slack/SlackEventSink.test.ts`
@@ -73,3 +80,5 @@
 - `pnpm build`
 - `pnpm e2e compact-command`（含 stale usage/ending、短内容、无路径、无 seed 噪音断言）
 - `pnpm e2e self-improve-collect`（真实 Slack，验证 self_improve_collect 调用与 tool-result 持久化）
+- `pnpm vitest run src/orchestrator/modelMessages.test.ts src/orchestrator/ConversationOrchestrator.test.ts src/workspace/config.test.ts`
+- `pnpm test`（33 files / 239 tests）

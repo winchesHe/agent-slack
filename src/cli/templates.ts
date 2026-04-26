@@ -11,6 +11,8 @@ export function defaultConfigYaml(model: string, provider: 'litellm' | 'anthropi
     maxApproxChars: 120000
     # 传给模型的最近消息数上限；用于限制大量短消息导致的上下文膨胀
     keepRecentMessages: 80
+    # 保留最近 N 个完整工具结果；更旧的工具结果仅在模型视图中替换为占位提示
+    keepRecentToolResults: 20
 
 skills:
   enabled: ['*']

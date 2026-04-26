@@ -201,6 +201,7 @@ agent:
   context:
     maxApproxChars: 120000      # 传给模型的历史上下文近似字符预算；只影响模型视图，不裁剪 messages.jsonl
     keepRecentMessages: 80      # 传给模型的最近消息数上限；用于限制大量短消息导致的上下文膨胀
+    keepRecentToolResults: 20   # 保留最近 N 个完整工具结果；更旧结果仅在模型视图中压缩
 
 skills:
   enabled: ['*']
@@ -263,10 +264,12 @@ agent:
   context:
     maxApproxChars: 120000      # 传给模型的历史上下文近似字符预算；只影响模型视图，不裁剪 messages.jsonl
     keepRecentMessages: 80      # 传给模型的最近消息数上限；用于限制大量短消息导致的上下文膨胀
+    keepRecentToolResults: 20   # 保留最近 N 个完整工具结果；更旧结果仅在模型视图中压缩
 ```
 
 - `maxApproxChars`：模型视图的近似字符预算。默认 `120000`，作为跨 provider 的保守上限，避免把文件型 transcript 无限制塞入 prompt。
 - `keepRecentMessages`：最多保留的最近消息数。默认 `80`，用于限制大量短消息导致的无限增长。
+- `keepRecentToolResults`：最多保留的最近完整 tool-result 数。默认 `20`，更旧 tool-result 只在模型视图中替换为占位提示。
 
 预算是 best-effort：为保护 tool-call/tool-result 配对，实际输出可能略超预算；正确性优先于硬截断。
 
@@ -278,6 +281,7 @@ agent:
 interface ModelMessageBudget {
   maxApproxChars: number
   keepRecentMessages: number
+  keepRecentToolResults: number
 }
 
 function buildModelMessages(args: {
@@ -341,7 +345,7 @@ executor.execute({ systemPrompt, messages: modelMessages, abortSignal })
 
 Phase 1 稳定后，再在模型视图层加入旧 tool-result 轻量压缩：
 
-- 保留最近 N 个完整 tool-result。
+- 保留最近 `agent.context.keepRecentToolResults` 个完整 tool-result，默认 20。
 - 更旧的 tool-result content 替换为占位文本：
 
 ```txt
