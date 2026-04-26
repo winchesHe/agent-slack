@@ -39,7 +39,7 @@
 对任何 env 变量或配置文件字段的引入/修改/删除，必须**同步检查**以下处：
 1. 运行时加载/校验：`src/application/createApplication.ts`、`src/workspace/config.ts`、`src/channelTasks/config.ts`（按变更范围选择）
 2. onboard/dashboard 模板：`src/cli/templates.ts`、`src/channelTasks/config.ts` 的模板常量
-3. 根目录 example：`.env.example`、`.env.local.example`、`config.yaml.example`、`channel-tasks.yaml.example`、`system.md.example`
+3. 根目录 example：`.env.example`、`config.example.yaml`、`channel-tasks.example.yaml`、`system.example.md`
 4. `.env` / `.agent-slack/.env.local`（本地开发模板存在时只追加注释块，**不动已有值**）
 5. 相关 spec / README 对应段落
 

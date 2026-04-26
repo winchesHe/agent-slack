@@ -9,7 +9,7 @@ const repoRoot = process.cwd()
 
 describe('agent-slack 配置示例', () => {
   it('config.yaml 能被 workspace config schema 解析', async () => {
-    const raw = await fs.readFile(path.join(repoRoot, 'config.yaml.example'), 'utf8')
+    const raw = await fs.readFile(path.join(repoRoot, 'config.example.yaml'), 'utf8')
     const parsed = parseConfig(YAML.parse(raw))
 
     expect(parsed.agent.maxSteps).toBe(50)
@@ -17,16 +17,16 @@ describe('agent-slack 配置示例', () => {
   })
 
   it('channel-tasks.yaml 能被 channel task schema 解析', async () => {
-    const raw = await fs.readFile(path.join(repoRoot, 'channel-tasks.yaml.example'), 'utf8')
+    const raw = await fs.readFile(path.join(repoRoot, 'channel-tasks.example.yaml'), 'utf8')
     const parsed = parseChannelTasksConfig(YAML.parse(raw))
 
     expect(parsed.version).toBe(1)
     expect(parsed.rules.map((rule) => rule.id)).toEqual(['daily-watch', 'bot-alert-watch'])
   })
 
-  it('system.md 和 .env.local.example 存在且不包含真实 token', async () => {
-    const system = await fs.readFile(path.join(repoRoot, 'system.md.example'), 'utf8')
-    const env = await fs.readFile(path.join(repoRoot, '.env.local.example'), 'utf8')
+  it('system.example.md 和 .env.example 存在且不包含真实 token', async () => {
+    const system = await fs.readFile(path.join(repoRoot, 'system.example.md'), 'utf8')
+    const env = await fs.readFile(path.join(repoRoot, '.env.example'), 'utf8')
 
     expect(system).toContain('System Prompt 示例')
     expect(env).toContain('SLACK_BOT_TOKEN=xoxb-...')
