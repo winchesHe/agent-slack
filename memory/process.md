@@ -75,6 +75,14 @@
 - 单测覆盖最后 compact summary 续接、多次 compact 取最后一个、boundary 后 tail 裁剪、boundary 后 tool pair 保留。
 - 新增 live E2E `compact-boundary`：先写入会被 compact 过滤的旧 marker，手动 compact 后再发下一轮消息，验证模型不会泄漏 boundary 前原始历史。
 
+## Phase 4 设计决策
+
+- 自动 compact 默认开启：达到 boundary 后候选模型视图预算 80% 时触发。
+- 自动 compact 是主流程前置维护阶段：session 保持 `running`，同 thread 后续消息排队，compact 完成后继续本轮主 `AgentExecutor`。
+- auto compact 等待期间 Slack 显示“正在整理上下文…”活动态；不把 `[compact: auto]` 当成最终回复展示。
+- 自动 compact 成功后追加 `[compact: auto]` summary 并重建 model-view；失败时记录失败计数，回退 Phase 1/2 继续用户请求。
+- 同 session 自动 compact 连续失败 2 次后熔断；手动 `/compact` 绕过熔断并继续向用户显示 compact 结果。
+
 ## 已验证
 
 - `pnpm vitest run src/orchestrator/ConversationOrchestrator.test.ts src/im/slack/SlackEventSink.test.ts`
