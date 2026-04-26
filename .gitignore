@@ -16,3 +16,4 @@ coverage/
 .vitest/
 .agent-slack/
 memory/.test-tmp/
+external-references/
