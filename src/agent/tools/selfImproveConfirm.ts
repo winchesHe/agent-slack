@@ -77,9 +77,7 @@ export function selfImproveConfirmTool(ctx: ToolContext, deps: SelfImproveConfir
             existingExperience,
             existingSystem,
           })
-          const keepIds = new Set(
-            decisions.filter((d) => d.action === 'keep').map((d) => d.id),
-          )
+          const keepIds = new Set(decisions.filter((d) => d.action === 'keep').map((d) => d.id))
           const kept = rules.filter((r) => keepIds.has(r.id))
           processed = [...kept].sort(compareRules)
           dedupMode = 'semantic'
@@ -157,10 +155,7 @@ async function readFileSafe(file: string): Promise<string> {
  * - 若文件内已含相同 content（trim 后完全匹配）则跳过，避免重复写入
  * - 条目纯 content，不加 HTML 注释元信息（减少 agent 每次读文件的 context 开销）
  */
-async function appendAcceptedRuleToExperienceMd(
-  file: string,
-  rule: CandidateRule,
-): Promise<void> {
+async function appendAcceptedRuleToExperienceMd(file: string, rule: CandidateRule): Promise<void> {
   await mkdir(path.dirname(file), { recursive: true })
   const existing = await readFileSafe(file)
   const content = rule.content.trim()
@@ -180,6 +175,7 @@ async function ensureSystemExperienceRef(file: string): Promise<void> {
   const existing = await readFileSafe(file)
   if (existing.includes(SYSTEM_EXPERIENCE_REF_HEADING)) return
   await mkdir(path.dirname(file), { recursive: true })
-  const trailing = existing.length === 0 ? '' : existing.startsWith('\n') ? existing : `\n${existing}`
+  const trailing =
+    existing.length === 0 ? '' : existing.startsWith('\n') ? existing : `\n${existing}`
   await writeFile(file, `${SYSTEM_EXPERIENCE_REF_BODY}\n${trailing}`, 'utf8')
 }

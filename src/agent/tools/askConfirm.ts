@@ -38,10 +38,7 @@ export function askConfirmTool(ctx: ToolContext, deps: AskConfirmDeps) {
       'tool 会等用户全部点完或超时才返回，所以在拿到返回值前不要假设用户已同意。' +
       '返回 decisions 里每个条目可能是 accept / reject / timeout。',
     parameters: z.object({
-      title: z
-        .string()
-        .min(1)
-        .describe('确认卡片顶部总标题'),
+      title: z.string().min(1).describe('确认卡片顶部总标题'),
       items: z.array(askConfirmItemSchema).min(1).max(20),
       timeoutMs: z
         .number()

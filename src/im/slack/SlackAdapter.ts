@@ -89,11 +89,7 @@ export async function handleConfirmAction(ctx: ConfirmActionContext): Promise<vo
       decision: parsed.decision,
       err,
     })
-    await appendConfirmEvent(
-      ctx,
-      parsed,
-      err instanceof Error ? err.message : String(err),
-    )
+    await appendConfirmEvent(ctx, parsed, err instanceof Error ? err.message : String(err))
   }
 
   const resultBlocks = buildConfirmResultBlocks(ctx.messageBlocks, parsed.decision)

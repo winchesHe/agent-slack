@@ -54,7 +54,10 @@ const SYSTEM_PROMPT = `你是规则去重助手。输入一组候选规则 + 已
 
 function buildUserPrompt(input: SemanticDedupInput): string {
   const rulesBlock = input.rules
-    .map((r, i) => `${i + 1}. id=${r.id} category=${r.category} confidence=${r.confidence}\n   content: ${r.content}`)
+    .map(
+      (r, i) =>
+        `${i + 1}. id=${r.id} category=${r.category} confidence=${r.confidence}\n   content: ${r.content}`,
+    )
     .join('\n')
   const exp = input.existingExperience.trim() || '(空)'
   const sys = input.existingSystem.trim() || '(空)'
@@ -98,7 +101,8 @@ export function createSemanticDedup(deps: SemanticDedupDeps): SemanticDedup {
       }
       // 输入里未被 LLM 覆盖的 id 按 keep 处理，避免静默丢规则
       for (const r of input.rules) {
-        if (!seen.has(r.id)) decisions.push({ id: r.id, action: 'keep', reason: 'missing-from-llm-output' })
+        if (!seen.has(r.id))
+          decisions.push({ id: r.id, action: 'keep', reason: 'missing-from-llm-output' })
       }
 
       log.debug('语义去重完成', {

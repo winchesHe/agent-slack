@@ -3,6 +3,7 @@ import { createSlackAdapter } from './SlackAdapter.ts'
 import type { ConversationOrchestrator } from '@/orchestrator/ConversationOrchestrator.ts'
 import type { SlackRenderer } from './SlackRenderer.ts'
 import type { Logger } from '@/logger/logger.ts'
+import type { SessionStore } from '@/store/SessionStore.ts'
 import { AbortRegistry } from '@/orchestrator/AbortRegistry.ts'
 import { SessionRunQueue } from '@/orchestrator/SessionRunQueue.ts'
 
@@ -142,7 +143,7 @@ function stubSessionStore() {
     accumulateUsage: vi.fn(),
     accumulateCost: vi.fn(),
     setStatus: vi.fn(),
-  } as unknown as import('@/store/SessionStore.ts').SessionStore
+  } as unknown as SessionStore
 }
 
 function getRegisteredHandler(name: string): SlackEventHandler {

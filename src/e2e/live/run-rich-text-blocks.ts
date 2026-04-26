@@ -174,10 +174,9 @@ function assertResult(result: RichTextBlocksResult): void {
 
 async function writeResult(result: RichTextBlocksResult): Promise<void> {
   const resultPath = process.env.SLACK_E2E_RESULT_PATH?.trim() || '.agent-slack/e2e/result.json'
-  const absolutePath = path.resolve(process.cwd(), resultPath).replace(
-    /result\.json$/,
-    'rich-text-blocks-result.json',
-  )
+  const absolutePath = path
+    .resolve(process.cwd(), resultPath)
+    .replace(/result\.json$/, 'rich-text-blocks-result.json')
   await fs.mkdir(path.dirname(absolutePath), { recursive: true })
   await fs.writeFile(absolutePath, `${JSON.stringify(result, null, 2)}\n`, 'utf8')
 }

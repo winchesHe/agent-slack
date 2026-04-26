@@ -15,9 +15,7 @@ export interface LiveE2EContext {
   triggerClient: SlackApiClient
 }
 
-export type SlackThreadMessage = NonNullable<
-  SlackConversationRepliesResponse['messages']
->[number]
+export type SlackThreadMessage = NonNullable<SlackConversationRepliesResponse['messages']>[number]
 
 export async function createLiveE2EContext(runId: string): Promise<LiveE2EContext> {
   const channelId = requireEnv('SLACK_E2E_CHANNEL_ID')
@@ -125,10 +123,9 @@ export async function findSessionDir(threadTs: string): Promise<string> {
 
 export async function writeScenarioResult(scenarioId: string, result: unknown): Promise<void> {
   const resultPath = process.env.SLACK_E2E_RESULT_PATH?.trim() || '.agent-slack/e2e/result.json'
-  const absolutePath = path.resolve(process.cwd(), resultPath).replace(
-    /result\.json$/,
-    `${scenarioId}-result.json`,
-  )
+  const absolutePath = path
+    .resolve(process.cwd(), resultPath)
+    .replace(/result\.json$/, `${scenarioId}-result.json`)
   await fs.mkdir(path.dirname(absolutePath), { recursive: true })
   await fs.writeFile(absolutePath, `${JSON.stringify(result, null, 2)}\n`, 'utf8')
 }
