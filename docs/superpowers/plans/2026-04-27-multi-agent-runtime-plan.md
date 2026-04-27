@@ -2378,23 +2378,37 @@ git commit -m "feat(tools): 注册 delegate_to / escalate_to_user / update_task_
 
 ---
 
+
+> **架构基础**：Chunks 4-5 的所有设计基于 [`docs/superpowers/notes/2026-04-28-orchestrator-streaming-architecture.md`](../notes/2026-04-28-orchestrator-streaming-architecture.md)（以下简称 notes）。实施前请先读这份 notes 把 streaming 事件序列、SessionRunQueue tail 链、AbortRegistry 行为吃透；本 plan 引用 notes §X.Y 时不再展开。
+
 ## Chunk 4：ConversationOrchestrator 多 Agent 化
 
-**目标**：把 ConversationOrchestrator 的 sessionKey / runQueue / abortRegistry / sessionStore 路径都加上 `agentId` 维度，并接入 A2A bus（订阅 envelope → 合成 InboundMessage 进入处理流），注入 multiAgent ToolContext，处理 `<waiting/>` 的 turn 暂停。**严格保证现有 42KB 单 Agent 测试在 `agentId='default'` 下全绿**——这是本 chunk 的最重风险。
+**目标**：让 ConversationOrchestrator 支持 multi-agent runtime —— sessionKey 加 agentId 维度；订阅 A2A bus；接入 multiAgent ToolContext + task 黑板渲染；通过 `mark_waiting` tool 实现 turn pause；通过 `say_to_thread(isFinal)` + 自动 reply envelope 完成 §5.4 的 envelope 承运。**严格保证 42KB 单 Agent 测试在 `agentId='default'` 下全绿**。
 
-**核心设计**：
-- 一个 ConversationOrchestrator 实例 = 一个 Agent。createApplication 在 multi 模式起 N 个 orchestrator，每个 subscribe A2A bus 自己 agentId 的 inbox
-- 收到 envelope 时合成 InboundMessage：`text` = envelope.content，`channelId/threadTs` 取自 task.json，`userId` 用 envelope.from（或 originalUser），messageTs 用 envelope.id（保证 abort key 唯一）
-- `<waiting/>` 处理：模型在某 turn 输出含该标记 → orchestrator 不立刻 finalize，标记 session 为 awaiting；下一条 inbound（来自 A2A reply）到达时复用该 session 继续
+**核心改动列表**（所有点都基于 notes）：
+
+| # | 改动 | 来源 |
+|---|---|---|
+| 1 | SessionStore.GetOrCreateArgs 加 agentId（路径 + key 加段） | notes §3、§10 |
+| 2 | ConversationOrchestratorDeps 加可选 agentId / multiAgent | notes §3、§7 |
+| 3 | SessionRunQueue 加 pause/resume + isPaused/hasPending（gate Promise 模式） | notes §4 |
+| 4 | AbortRegistry 加 associateTask / abortTask（task-level group） | notes §5 |
+| 5 | 新增 `mark_waiting` tool 替代 `<waiting/>` 文本标记 | notes §8.1 |
+| 6 | 扩 `say_to_thread` tool 加 `isFinal` 参数（替代 `<final/>` 文本标记） | notes §8.2 |
+| 7 | InboundMessage 增加 `parentEnvelopeId` / `replyTo` / `a2aReferences` 三个 A2A 合成字段 | notes §8 |
+| 8 | ConversationOrchestrator 在 `lifecycle.completed` 拦截：检测 mark_waiting / 自动 reply envelope（仅非 PM） | notes §8.4-8.6 |
+| 9 | ConversationOrchestrator 暴露 `subscribeA2A?` 可选方法（用 envelope.taskId 直传 + 唤醒 paused） | notes §8.5 |
+| 10 | dashboard / IM / e2e 路径与 sessionKey 字符串硬编码迁移 | （沿用上轮设计） |
 
 ### Task 4.1：SessionStore 加 agentId 维度
 
 **Files:**
 - Modify: `src/store/SessionStore.ts`
+- Modify: `src/store/SessionStore.test.ts`
 
-- [ ] **Step 1：先扩 GetOrCreateArgs + 改 key 推导（先写测试）**
+- [ ] **Step 1：先写失败测试**
 
-修改 [`src/store/SessionStore.test.ts`](../../../src/store/SessionStore.test.ts) 加一条：
+`SessionStore.test.ts` 末尾追加：
 
 ```ts
 it('isolates sessions by agentId on the same thread', async () => {
@@ -2409,8 +2423,8 @@ it('isolates sessions by agentId on the same thread', async () => {
   const a = await store.getOrCreate({ ...args, agentId: 'pm' })
   const b = await store.getOrCreate({ ...args, agentId: 'coding' })
   expect(a.id).not.toBe(b.id)
-  expect(a.dir).toContain('/pm')
-  expect(b.dir).toContain('/coding')
+  expect(a.dir.endsWith('/pm')).toBe(true)
+  expect(b.dir.endsWith('/coding')).toBe(true)
 })
 
 it('defaults agentId to "default" when omitted', async () => {
@@ -2419,7 +2433,7 @@ it('defaults agentId to "default" when omitted', async () => {
     imProvider: 'slack', channelId: 'C001', channelName: 'general',
     threadTs: '1.2', imUserId: 'U001',
   })
-  expect(s.dir).toContain('/default')
+  expect(s.dir.endsWith('/default')).toBe(true)
 })
 ```
 
@@ -2427,131 +2441,596 @@ it('defaults agentId to "default" when omitted', async () => {
 
 Run: `pnpm test src/store/SessionStore.test.ts`
 
-- [ ] **Step 3：实现 SessionStore agentId 扩展**
+- [ ] **Step 3：实现**
 
 修改 [`src/store/SessionStore.ts`](../../../src/store/SessionStore.ts)：
 
-1. `GetOrCreateArgs` 增加 `agentId?: string`（缺省 'default'）
-2. session id / 路径推导用 `slackSessionDir(paths, ..., agentId ?? 'default')`
-3. 内部 `sessionKey` 字符串增加 agentId 段：`${args.imProvider}:${args.channelId}:${args.threadTs}:${args.agentId ?? 'default'}`
+1. `GetOrCreateArgs` 增加 `agentId?: string`
+2. 内部 sessionKey 生成函数：`${args.imProvider}:${args.channelId}:${args.threadTs}:${args.agentId ?? 'default'}`
+3. `slackSessionDir(...)` 调用补传 `args.agentId ?? 'default'`（Chunk 1 已实现）
+4. `SessionMeta` 增加 `agentId: string` 字段（path 反推用，dashboard 显示用）
 
-具体改动：
-- [`SessionStore.ts:62-69`](../../../src/store/SessionStore.ts) `GetOrCreateArgs` 加 `agentId?: string`
-- 第 144 行的 key 推导加 agentId 段
-- 第 157 行附近 `slackSessionDir(...)` 调用补传 `agentId ?? 'default'`
+预期下游影响：[`ConversationOrchestrator.ts:175-181`](../../../src/orchestrator/ConversationOrchestrator.ts) 调 `sessionStore.getOrCreate({...})` 不传 agentId，单 agent 模式自动 default —— 现有测试不受影响。
 
 - [ ] **Step 4：跑全套测试**
 
 Run: `pnpm test`
-Expected: SessionStore 新测试通过；现有 SessionStore 测试 + 下游 orchestrator 测试因 path 变化（多了 `/default` 段）可能断言失败。**逐个修断言**——把 `'sessions/slack/<thread>/messages.jsonl'` 类断言改成 `'sessions/slack/<thread>/default/messages.jsonl'`。
+Expected: SessionStore 新增 2 个 it 通过；现有所有测试保持绿（部分 path 断言已在 Chunk 1 改成带 default/）。
 
 - [ ] **Step 5：commit**
 
 ```bash
 git add src/store/SessionStore.ts src/store/SessionStore.test.ts
-git commit -m "feat(store): SessionStore 加 agentId 维度，单 Agent 行为等同（默认 default）"
+git commit -m "feat(store): SessionStore 加 agentId 维度，单 agent 模式默认 default"
 ```
 
-### Task 4.2：ConversationOrchestrator sessionKey + runQueue + abortRegistry 加 agentId
+### Task 4.2：SessionRunQueue 加 pause/resume
 
 **Files:**
-- Modify: `src/orchestrator/ConversationOrchestrator.ts`
-- Test: `src/orchestrator/ConversationOrchestrator.test.ts`
+- Modify: `src/orchestrator/SessionRunQueue.ts`
+- Modify: `src/orchestrator/SessionRunQueue.test.ts`
 
-- [ ] **Step 1：扩 ConversationOrchestratorDeps**
+实现 notes §4 描述的 gate Promise 模式：pause 时把 tail 改成 `tail.then(() => gate)`，resume 时 resolve gate。
 
-修改 [`ConversationOrchestrator.ts:39-51`](../../../src/orchestrator/ConversationOrchestrator.ts) 加：
+- [ ] **Step 1：先写测试**
 
 ```ts
-export interface ConversationOrchestratorDeps {
-  agentId?: string                           // 缺省 'default'，向后兼容
-  toolsBuilder: ToolsBuilder
-  // ...原字段不变
+it('paused queue does not run new tasks until resumed', async () => {
+  const q = new SessionRunQueue()
+  const log: number[] = []
+  q.pause('s1')
+  void q.enqueue('s1', async () => { log.push(1) })
+  void q.enqueue('s1', async () => { log.push(2) })
+  await new Promise((r) => setTimeout(r, 30))
+  expect(log).toEqual([])
+  q.resume('s1')
+  await new Promise((r) => setTimeout(r, 30))
+  expect(log).toEqual([1, 2])
+})
+
+it('isPaused returns true after pause and false after resume', () => {
+  const q = new SessionRunQueue()
+  expect(q.isPaused('k')).toBe(false)
+  q.pause('k')
+  expect(q.isPaused('k')).toBe(true)
+  q.resume('k')
+  expect(q.isPaused('k')).toBe(false)
+})
+
+it('pause is idempotent', () => {
+  const q = new SessionRunQueue()
+  q.pause('k')
+  q.pause('k')
+  expect(q.isPaused('k')).toBe(true)
+})
+
+it('resume of unpaused key is no-op', () => {
+  const q = new SessionRunQueue()
+  q.resume('k')                                // 不应抛错
+  expect(q.isPaused('k')).toBe(false)
+})
+
+it('hasPending(key) reflects depth correctly', async () => {
+  const q = new SessionRunQueue()
+  q.pause('s1')
+  void q.enqueue('s1', async () => {})
+  expect(q.hasPending('s1')).toBe(true)
+  q.resume('s1')
+  await new Promise((r) => setTimeout(r, 20))
+  expect(q.hasPending('s1')).toBe(false)
+})
+
+it('pause does not affect other sessions', async () => {
+  const q = new SessionRunQueue()
+  const log: string[] = []
+  q.pause('s1')
+  void q.enqueue('s1', async () => { log.push('s1') })
+  await q.enqueue('s2', async () => { log.push('s2') })
+  expect(log).toEqual(['s2'])
+  q.resume('s1')
+  await new Promise((r) => setTimeout(r, 20))
+  expect(log).toEqual(['s2', 's1'])
+})
+```
+
+- [ ] **Step 2：跑测试看失败**
+
+Run: `pnpm test src/orchestrator/SessionRunQueue.test.ts`
+
+- [ ] **Step 3：实现**
+
+修改 [`src/orchestrator/SessionRunQueue.ts`](../../../src/orchestrator/SessionRunQueue.ts)，加：
+
+```ts
+interface SessionQueueState {
+  tail: Promise<void>
+  depth: number
+}
+
+export class SessionRunQueue {
+  private readonly states = new Map<string, SessionQueueState>()
+  // 每个 paused 的 sessionId 一个 gate Promise
+  private readonly gates = new Map<string, { promise: Promise<void>; resolve: () => void }>()
+
+  enqueue<T>(sessionId: string, runner: SessionRunner<T>): Promise<T> {
+    let state = this.states.get(sessionId)
+    if (!state) {
+      state = { tail: Promise.resolve(), depth: 0 }
+      this.states.set(sessionId, state)
+    }
+    state.depth += 1
+
+    // 如有 gate（已 paused），先把 gate 串到 tail 之后；resume 时 gate.resolve 才让 runner 起跑
+    const gate = this.gates.get(sessionId)
+    const runPromise = gate
+      ? state.tail.then(() => gate.promise).then(() => runner())
+      : state.tail.then(() => runner())
+
+    state.tail = runPromise.then(() => {}, () => {})
+
+    const cleanup = () => {
+      state!.depth -= 1
+      if (state!.depth === 0) {
+        const cur = this.states.get(sessionId)
+        if (cur === state) this.states.delete(sessionId)
+      }
+    }
+    void runPromise.then(() => cleanup(), () => cleanup())
+
+    return runPromise
+  }
+
+  pause(sessionId: string): void {
+    if (this.gates.has(sessionId)) return // 幂等
+    let resolveFn!: () => void
+    const promise = new Promise<void>((r) => { resolveFn = r })
+    this.gates.set(sessionId, { promise, resolve: resolveFn })
+  }
+
+  resume(sessionId: string): void {
+    const gate = this.gates.get(sessionId)
+    if (!gate) return // resume unpaused 静默
+    this.gates.delete(sessionId)
+    gate.resolve()
+  }
+
+  isPaused(sessionId: string): boolean {
+    return this.gates.has(sessionId)
+  }
+
+  queueDepth(sessionId: string): number {
+    return this.states.get(sessionId)?.depth ?? 0
+  }
+
+  hasPending(sessionId?: string): boolean {
+    if (sessionId !== undefined) {
+      return (this.states.get(sessionId)?.depth ?? 0) > 0
+    }
+    for (const s of this.states.values()) {
+      if (s.depth > 0) return true
+    }
+    return false
+  }
 }
 ```
 
-- [ ] **Step 2：sessionKeyFor 加 agentId**
+⚠️ 关键：pause 需在 enqueue **之前** 调用才能阻塞接下来的 runner。如果 pause 在 enqueue 之后调，**已经在 state.tail.then(runner) 排上的 runner 不会被阻塞**（promise 链已建立）。这与 notes §4 一致：pause 影响的是"还没开始的"，不打断"已经在跑的"。
 
-[`ConversationOrchestrator.ts:64-65`](../../../src/orchestrator/ConversationOrchestrator.ts)：
+- [ ] **Step 4：跑测试通过**
+
+Run: `pnpm test src/orchestrator/SessionRunQueue.test.ts`
+Expected: 6 PASS（含原有用例）
+
+- [ ] **Step 5：commit**
+
+```bash
+git add src/orchestrator/SessionRunQueue.ts src/orchestrator/SessionRunQueue.test.ts
+git commit -m "feat(orchestrator): SessionRunQueue 加 pause/resume + isPaused/hasPending（gate Promise 模式）"
+```
+
+### Task 4.3：AbortRegistry 加 task-level group
+
+**Files:**
+- Modify: `src/orchestrator/AbortRegistry.ts`
+- Modify: `src/orchestrator/AbortRegistry.test.ts`
+
+- [ ] **Step 1：写测试**
+
+```ts
+it('associateTask + abortTask aborts all keys in the task group', () => {
+  const reg = new AbortRegistry<string>()
+  const a = reg.create('msg-1')
+  const b = reg.create('msg-2')
+  const c = reg.create('msg-3')
+  reg.associateTask('tsk_1', 'msg-1')
+  reg.associateTask('tsk_1', 'msg-2')
+  reg.associateTask('tsk_2', 'msg-3')
+  reg.abortTask('tsk_1', 'user stop')
+  expect(a.signal.aborted).toBe(true)
+  expect(b.signal.aborted).toBe(true)
+  expect(c.signal.aborted).toBe(false)
+})
+
+it('delete(key) removes key from its task group', () => {
+  const reg = new AbortRegistry<string>()
+  reg.create('msg-1')
+  reg.associateTask('tsk_1', 'msg-1')
+  reg.delete('msg-1')
+  reg.abortTask('tsk_1', 'after delete')
+  // 不抛错，no-op；group 已被清理
+})
+
+it('abortTask of unknown taskId is no-op', () => {
+  const reg = new AbortRegistry<string>()
+  reg.abortTask('tsk_unknown', 'x') // 不抛
+})
+```
+
+- [ ] **Step 2：实现**
+
+修改 [`src/orchestrator/AbortRegistry.ts`](../../../src/orchestrator/AbortRegistry.ts)：
+
+```ts
+export class AbortRegistry<Key extends string = string> {
+  private readonly controllers = new Map<Key, AbortController>()
+  private readonly taskGroups = new Map<string, Set<Key>>()
+  private readonly keyToTask = new Map<Key, string>()
+
+  create(key: Key): AbortController { /* 不变 */ }
+  abort(key: Key, reason?: unknown): void { /* 不变 */ }
+  abortAll(reason?: unknown): void { /* 不变 */ }
+  keys(): Key[] { /* 不变 */ }
+  size(): number { /* 不变 */ }
+
+  delete(key: Key): void {
+    this.controllers.delete(key)
+    const taskId = this.keyToTask.get(key)
+    if (taskId) {
+      this.keyToTask.delete(key)
+      const group = this.taskGroups.get(taskId)
+      if (group) {
+        group.delete(key)
+        if (group.size === 0) this.taskGroups.delete(taskId)
+      }
+    }
+  }
+
+  associateTask(taskId: string, key: Key): void {
+    let group = this.taskGroups.get(taskId)
+    if (!group) { group = new Set(); this.taskGroups.set(taskId, group) }
+    group.add(key)
+    this.keyToTask.set(key, taskId)
+  }
+
+  abortTask(taskId: string, reason?: unknown): void {
+    const group = this.taskGroups.get(taskId)
+    if (!group) return
+    for (const key of group) {
+      this.abort(key, reason)
+    }
+    // 不在这里清 group / controllers；orchestrator finally 块会调 delete(key) 清理
+  }
+}
+```
+
+- [ ] **Step 3：跑测试 + commit**
+
+```bash
+pnpm test src/orchestrator/AbortRegistry.test.ts && \
+git add src/orchestrator/AbortRegistry.ts src/orchestrator/AbortRegistry.test.ts && \
+git commit -m "feat(orchestrator): AbortRegistry 加 associateTask / abortTask task-level group"
+```
+
+### Task 4.4：mark_waiting tool（替代 `<waiting/>` 文本标记）
+
+**Files:**
+- Create: `src/agent/tools/markWaiting.ts`
+- Modify: `src/agent/tools/index.ts`（注册）
+- Modify: `src/agent/tools/multiAgentTools.test.ts`（加测试）
+
+按 notes §8.1：tool 调用纯 no-op，仅在 `finalMessages` 中留下 toolCall 痕迹供 orchestrator 检测。
+
+- [ ] **Step 1：写测试**
+
+```ts
+describe('mark_waiting tool', () => {
+  it('returns ok and does nothing else', async () => {
+    const { ctx } = await makeCtx('coding')
+    const tool = markWaitingTool(ctx)
+    const r = await tool.execute(
+      { reason: '等 PM 回复' },
+      { toolCallId: 't', messages: [] } as any,
+    )
+    expect(r).toEqual({ ok: true })
+  })
+
+  it('throws when ctx.multiAgent missing', async () => {
+    const tool = markWaitingTool({ cwd: '/tmp', logger: stubLogger })
+    await expect(
+      tool.execute({}, { toolCallId: 't', messages: [] } as any),
+    ).rejects.toThrow(/multi-agent/)
+  })
+})
+```
+
+- [ ] **Step 2：实现**
+
+`src/agent/tools/markWaiting.ts`：
+
+```ts
+import { tool } from 'ai'
+import { z } from 'zod'
+import type { ToolContext } from './bash.ts'
+
+export function markWaitingTool(ctx: ToolContext) {
+  return tool({
+    description:
+      '声明本 turn 在等待其他 Agent 回复或外部输入；调用后请直接结束输出（不要再说话）。' +
+      'Runtime 检测到 mark_waiting 调用后会暂停本 agent 的 SessionRunQueue，' +
+      '直到收到 reply envelope 才继续处理。',
+    parameters: z.object({
+      reason: z.string().optional(),
+    }),
+    async execute() {
+      if (!ctx.multiAgent) throw new Error('mark_waiting 仅在 multi-agent 模式可用')
+      return { ok: true as const }
+    },
+  })
+}
+```
+
+- [ ] **Step 3：注册到 buildBuiltinTools + tools.test.ts 加断言**
+
+[`src/agent/tools/index.ts`](../../../src/agent/tools/index.ts) 加：
+```ts
+import { markWaitingTool } from './markWaiting.ts'
+// return 对象加：
+mark_waiting: markWaitingTool(ctx),
+```
+
+`src/agent/tools/tools.test.ts` 的 buildBuiltinTools 检查中加 `expect(tools).toHaveProperty('mark_waiting')`。
+
+- [ ] **Step 4：跑测试 + commit**
+
+```bash
+pnpm test src/agent/tools/multiAgentTools.test.ts src/agent/tools/tools.test.ts && \
+git add src/agent/tools/markWaiting.ts src/agent/tools/index.ts src/agent/tools/multiAgentTools.test.ts src/agent/tools/tools.test.ts && \
+git commit -m "feat(tools): mark_waiting tool（等 reply envelope 期间用，替代 <waiting/> 文本标记）"
+```
+
+### Task 4.5：扩 say_to_thread 加 isFinal 参数
+
+**Files:**
+- Modify: `src/agent/tools/sayToThread.ts`（Chunk 3 Task 4.6 已建——这里追加 isFinal）
+- Modify: `src/agent/tools/multiAgentTools.test.ts`
+
+按 notes §8.2：`isFinal=true` 写 `intent='final'` + task.state→done；否则 `intent='broadcast'`。
+
+- [ ] **Step 1：扩测试**
+
+在 say_to_thread describe 块加：
+
+```ts
+it('writes intent=final envelope and sets task.state=done when isFinal=true', async () => {
+  const { ctx, tb, taskId, paths } = await makeCtx('pm')
+  const tool = sayToThreadTool(ctx)
+  await tool.execute(
+    { content: '✓ 已合并 PR', isFinal: true },
+    { toolCallId: 't', messages: [] } as any,
+  )
+  const env = await readLastEnvelope(paths, taskId)
+  expect(env.intent).toBe('final')
+  expect(env.to).toBe('thread')
+  expect((await tb.read(taskId))?.state).toBe('done')
+})
+
+it('defaults to intent=broadcast when isFinal is omitted', async () => {
+  const { ctx, tb, taskId, paths } = await makeCtx('pm')
+  const tool = sayToThreadTool(ctx)
+  await tool.execute(
+    { content: 'PM → CS：查报错' },
+    { toolCallId: 't', messages: [] } as any,
+  )
+  const env = await readLastEnvelope(paths, taskId)
+  expect(env.intent).toBe('broadcast')
+  expect((await tb.read(taskId))?.state).toBe('active')
+})
+```
+
+`readLastEnvelope` helper：读 `tasks/<id>/envelopes/` 目录，按 createdAt 排序拿最新。inline 在 test 文件即可。
+
+- [ ] **Step 2：扩实现**
+
+修改 [`src/agent/tools/sayToThread.ts`](../../../src/agent/tools/sayToThread.ts)：
+
+```ts
+export function sayToThreadTool(ctx: ToolContext) {
+  return tool({
+    description:
+      'PM 专用：在 thread 里发一条进度短消息（caveman 风，只发重点）。' +
+      'isFinal=true 表示任务已完成，task 状态置为 done；否则只是过程性消息。',
+    parameters: z.object({
+      content: z.string().min(1),
+      isFinal: z.boolean().optional(),
+    }),
+    async execute({ content, isFinal }) {
+      if (!ctx.multiAgent) throw new Error('say_to_thread 仅在 multi-agent 模式可用')
+      const { agentId, taskId, bus, taskBoard } = ctx.multiAgent
+      if (agentId !== 'pm') throw new Error(`say_to_thread 仅 PM 可用（当前 agent=${agentId}）`)
+      const envelope = {
+        id: newEnvelopeId(),
+        taskId,
+        from: 'pm' as const,
+        to: 'thread' as const,
+        intent: (isFinal ? 'final' : 'broadcast') as 'final' | 'broadcast',
+        content,
+        createdAt: new Date().toISOString(),
+      }
+      await bus.post(envelope)
+      if (isFinal) {
+        await taskBoard.update(taskId, { state: 'done' })
+      }
+      return { envelopeId: envelope.id, isFinal: !!isFinal }
+    },
+  })
+}
+```
+
+- [ ] **Step 3：跑测试 + commit**
+
+```bash
+pnpm test src/agent/tools/multiAgentTools.test.ts && \
+git add src/agent/tools/sayToThread.ts src/agent/tools/multiAgentTools.test.ts && \
+git commit -m "feat(tools): say_to_thread 加 isFinal 参数（intent=final + task→done）"
+```
+
+### Task 4.6：扩 InboundMessage + IMContext 加 multi-agent 字段
+
+**Files:**
+- Modify: `src/im/types.ts`（InboundMessage）
+- Modify: `src/orchestrator/ConversationOrchestrator.ts`（IMContext type）
+
+- [ ] **Step 1：扩 InboundMessage**
+
+修改 [`src/im/types.ts:49-61`](../../../src/im/types.ts) `InboundMessage`：
+
+```ts
+export interface InboundMessage {
+  imProvider: 'slack'
+  channelId: string
+  channelName: string
+  threadTs: string
+  userId: string
+  userName: string
+  text: string
+  messageTs: string
+  confirmSender?: ConfirmSender
+
+  // ↓↓↓ A2A 合成消息独有 ↓↓↓
+  /** 合成 InboundMessage 的来源 envelope id；orchestrator 写 reply envelope 时填入 parentId */
+  parentEnvelopeId?: string
+  /**
+   * Reply 应该发给谁。'thread' = 用户 mention 路径；agentId = 由其他 agent delegate 过来的路径。
+   * orchestrator 在非 PM 自动写 reply envelope 时使用。
+   */
+  replyTo?: 'thread' | string
+  /** envelope.references 的透传副本，供 ToolContext / 模型上下文使用 */
+  a2aReferences?: Array<{ kind: 'file' | 'url' | 'session' | 'envelope'; value: string }>
+}
+```
+
+- [ ] **Step 2：扩 IMContext**
+
+[`src/orchestrator/ConversationOrchestrator.ts`](../../../src/orchestrator/ConversationOrchestrator.ts) 内（搜 `interface IMContext` 或类似定义；如果没有显式 type，加一个）：
+
+```ts
+import type { A2ABus } from '@/multiAgent/A2ABus.ts'
+import type { TaskBoardManager } from '@/multiAgent/TaskBoard.ts'
+import type { AgentId } from '@/multiAgent/types.ts'
+
+export interface IMContext {
+  confirm?: ConfirmSender
+  multiAgent?: {
+    agentId: AgentId
+    taskId: string
+    bus: A2ABus
+    taskBoard: TaskBoardManager
+  }
+}
+```
+
+`toolsBuilder` 接受 IMContext 后透传，最终在 `buildBuiltinTools` 内 ctx 里。
+
+- [ ] **Step 3：跑全套测试 + typecheck**
+
+Run: `pnpm test && pnpm typecheck`
+Expected: 全绿（仅扩可选字段，不破坏现有调用）。
+
+- [ ] **Step 4：commit**
+
+```bash
+git add src/im/types.ts src/orchestrator/ConversationOrchestrator.ts
+git commit -m "feat(types): InboundMessage / IMContext 加 multi-agent 字段（parentEnvelopeId/replyTo/a2aReferences/multiAgent）"
+```
+
+### Task 4.7：ConversationOrchestrator 多 Agent 主链路改造
+
+**Files:**
+- Modify: `src/orchestrator/ConversationOrchestrator.ts`
+- Modify: `src/application/createApplication.ts`（toolsBuilder 闭包透传 multiAgent）
+
+按 notes §3 / §7 / §8.4：
+
+1. `ConversationOrchestratorDeps` 加可选 `agentId` + 可选 `multiAgent: { bus, taskBoard, resolveTaskId }`
+2. sessionKeyFor 加 agentId 段
+3. handle 入口拿 taskId（multi 模式）+ 注入 IMContext.multiAgent
+4. handle 内拼装 systemPrompt 时 prepend task board 段
+5. `lifecycle.completed` 拦截：检测 mark_waiting / 自动 reply envelope（仅非 PM）
+6. AbortController create 后调 `abortRegistry.associateTask(taskId, messageTs)`
+
+具体改动落到代码：
+
+#### Step 1：扩 deps
+
+```ts
+export interface ConversationOrchestratorDeps {
+  agentId?: string                    // 缺省 'default'
+  toolsBuilder: ToolsBuilder          // 签名扩成 (currentUser, IMContext) => ToolSet
+  // ...原字段
+  multiAgent?: {
+    bus: A2ABus
+    taskBoard: TaskBoardManager
+    /** 由 application 提供：根据 InboundMessage 解析 / 创建 task */
+    resolveTaskId(input: InboundMessage): Promise<string>
+  }
+}
+```
+
+#### Step 2：sessionKeyFor + sessionStore.getOrCreate 加 agentId
 
 ```ts
 const agentId = deps.agentId ?? 'default'
 const sessionKeyFor = (input: InboundMessage): string =>
   `${input.imProvider}:${input.channelId}:${input.threadTs}:${agentId}`
+
+// handle 内：
+session = await deps.sessionStore.getOrCreate({
+  // ...原参数
+  agentId,
+})
 ```
 
-- [ ] **Step 3：getOrCreate 时透传 agentId**
+#### Step 3：handle 入口拿 taskId + 注入 IMContext.multiAgent
 
-[`ConversationOrchestrator.ts:175-181`](../../../src/orchestrator/ConversationOrchestrator.ts) `sessionStore.getOrCreate({...})` 加 `agentId`。
-
-- [ ] **Step 4：跑现有 orchestrator 测试**
-
-Run: `pnpm test src/orchestrator/ConversationOrchestrator.test.ts`
-Expected: 全绿（向后兼容：`deps.agentId` 缺省时走 'default'，sessionKey 多一段不影响行为）。如有失败，逐条排查是否 fixture 期望 sessionKey 没有最后一段。
-
-- [ ] **Step 5：commit**
-
-```bash
-git add src/orchestrator/ConversationOrchestrator.ts
-git commit -m "feat(orchestrator): sessionKey/runQueue 加 agentId 维度，向后兼容默认 default"
-```
-
-### Task 4.3：注入 multiAgent ToolContext + task 黑板 prompt 渲染
-
-**Files:**
-- Modify: `src/orchestrator/ConversationOrchestrator.ts`
-
-- [ ] **Step 1：扩 deps（可选 multiAgent）**
+在现有 `await deps.runQueue.enqueue(sessionKey, async () => { ... })` 外层（不能在 enqueue 内，因为要在系统 prompt 拼装前就拿到 taskId）解析 task：
 
 ```ts
-export interface ConversationOrchestratorDeps {
-  // ...
-  multiAgent?: {
-    bus: A2ABus
-    taskBoard: TaskBoardManager
-    /** 入站 InboundMessage 找到 / 创建对应 task 的回调；缺省（单 Agent）时不绑 task */
-    resolveTaskId(input: InboundMessage): Promise<string | undefined>
-  }
-}
-```
-
-`resolveTaskId` 由 application 层提供：根据 `(channelId, threadTs)` 查找已有 task；如果是 PM 收到的初次 mention，则创建新 task 并返回 id。Chunk 5 实现该回调；Chunk 4 仅暴露接口。
-
-- [ ] **Step 2：在 toolsBuilder 之前装配 multiAgent ToolContext**
-
-[`createApplication.ts:98-118`](../../../src/application/createApplication.ts) 现有 `toolsBuilder` 拿 `currentUser` + `imContext`。Chunk 4 仅改 orchestrator 内部：在 `handle` 内拿到 `taskId` 后传 multiAgent 上下文给 `toolsBuilder`：
-
-```ts
-// 在 handle 入口附近：
 let taskId: string | undefined
 if (deps.multiAgent) {
   taskId = await deps.multiAgent.resolveTaskId(input)
 }
-// ...构造 toolsBuilder context 时
-const toolCtxExtra = deps.multiAgent && taskId
-  ? {
-      multiAgent: {
-        agentId,
-        taskId,
-        bus: deps.multiAgent.bus,
-        taskBoard: deps.multiAgent.taskBoard,
-      },
-    }
-  : {}
-const tools = deps.toolsBuilder(currentUser, { confirm: ..., ...toolCtxExtra })
 ```
 
-注意：`toolsBuilder` 当前签名是 `(currentUser, { confirm? })`。需要把第二个参数扩成可包 `multiAgent`。修 application 层 [`createApplication.ts`](../../../src/application/createApplication.ts) 的 `toolsBuilder` 闭包签名以接受多余字段，原样透传给 `buildBuiltinTools(ctx, deps)` 的 `ctx`。
-
-- [ ] **Step 3：把 task 黑板渲染到 systemPrompt**
-
-[`ConversationOrchestrator.ts:278-300`](../../../src/orchestrator/ConversationOrchestrator.ts) 现有：
+进入 enqueue 内部，原 `imContext` 构造改成：
 
 ```ts
-const systemPromptWithMemory = `${deps.systemPrompt}${memoryHint}`
+const imContext: IMContext = {
+  ...(input.confirmSender ? { confirm: input.confirmSender } : {}),
+  ...(deps.multiAgent && taskId
+    ? {
+        multiAgent: {
+          agentId,
+          taskId,
+          bus: deps.multiAgent.bus,
+          taskBoard: deps.multiAgent.taskBoard,
+        },
+      }
+    : {}),
+}
+const tools = deps.toolsBuilder(currentUser, imContext)
 ```
 
-改为：
+#### Step 4：systemPrompt 拼接 task board
 
 ```ts
 let taskBoardSection = ''
@@ -2562,83 +3041,271 @@ if (deps.multiAgent && taskId) {
 const systemPromptWithMemory = `${deps.systemPrompt}${memoryHint}${taskBoardSection}`
 ```
 
-- [ ] **Step 4：写 multi-agent 模式的集成测试（mock multiAgent deps）**
+#### Step 5：AbortController associate task
 
-`src/orchestrator/ConversationOrchestrator.test.ts` 末尾追加 `describe('multi-agent mode')`：用真 A2ABus + TaskBoard、mock executorFactory（返回固定 model output）、断言：
-
-(a) `handle` 时 toolsBuilder 收到的 ctx 含 `multiAgent: { agentId, taskId, bus, taskBoard }`
-(b) systemPrompt 中包含 `## Task Board` 段
-(c) `agentId='default'` 时（无 multiAgent deps）行为完全等同今天
-
-具体细节：现有 `ConversationOrchestrator.test.ts` 用 `createConversationOrchestrator` 直接 wire；mock executor 返回 `{ steps: [], finalText: 'done', usage: ... }` 即可；toolsBuilder 用 spy 记录传入的 ctx。
-
-- [ ] **Step 5：跑测试通过**
-
-Run: `pnpm test src/orchestrator/ConversationOrchestrator.test.ts`
-Expected: 现有 + 新增全绿
-
-- [ ] **Step 6：commit**
-
-```bash
-git add src/orchestrator/ConversationOrchestrator.ts src/orchestrator/ConversationOrchestrator.test.ts src/application/createApplication.ts
-git commit -m "feat(orchestrator): 注入 multiAgent ToolContext + 渲染 task 黑板到 system prompt"
+```ts
+const ctrl = deps.abortRegistry.create(input.messageTs)
+if (deps.multiAgent && taskId) {
+  deps.abortRegistry.associateTask(taskId, input.messageTs)
+}
 ```
 
-### Task 4.4：A2A envelope inbox 订阅 → 合成 InboundMessage
+#### Step 6：拦截 lifecycle.completed 做 marker 检测 / auto-envelope
+
+把现有的：
+
+```ts
+for await (const event of executor.execute({...})) {
+  await sink.onEvent(event)
+  // ... usage-info / lifecycle 处理
+}
+```
+
+改成：
+
+```ts
+for await (const event of executor.execute({...})) {
+  // 拦截 lifecycle.completed 做 multi-agent 后处理
+  if (
+    event.type === 'lifecycle' &&
+    event.phase === 'completed' &&
+    deps.multiAgent &&
+    taskId
+  ) {
+    const finalMessages = event.finalMessages ?? []
+    const isWaiting = detectMarkWaiting(finalMessages)
+    if (isWaiting) {
+      // pause runQueue：当前 turn 已经在跑，pause 影响接下来 enqueue 的 runner
+      // （即用户后续消息 / reply envelope 都得等 resume）
+      deps.runQueue.pause(sessionKey)
+      log.info(`agent=${agentId} mark_waiting 调用，runQueue paused`)
+    } else if (agentId !== 'pm') {
+      // 非 PM 自动写 reply envelope
+      const finalText = extractLastAssistantText(finalMessages)
+      const replyTo = input.replyTo
+      if (finalText && replyTo && replyTo !== 'thread') {
+        await deps.multiAgent.bus.post({
+          id: newEnvelopeId(),
+          taskId,
+          from: agentId as 'pm' | 'coding' | 'cs',
+          to: replyTo,
+          intent: 'reply',
+          content: finalText,
+          ...(input.parentEnvelopeId ? { parentId: input.parentEnvelopeId } : {}),
+          createdAt: new Date().toISOString(),
+        })
+      }
+    }
+    // PM 不做 auto-envelope（依赖 say_to_thread / delegate_to 显式调用）
+  }
+
+  await sink.onEvent(event)
+
+  // 原 usage-info / lifecycle handling 不变
+  if (event.type === 'usage-info') { /* ... */ }
+  if (event.type === 'lifecycle') { /* ... */ }
+}
+```
+
+辅助函数（放在 ConversationOrchestrator.ts 内或单独 helpers 文件）：
+
+```ts
+function detectMarkWaiting(finalMessages: LifecycleFinalMessage[]): boolean {
+  for (const m of finalMessages) {
+    if (m.role !== 'assistant') continue
+    const content = Array.isArray(m.content) ? m.content : []
+    if (content.some((p) => p.type === 'tool-call' && p.toolName === 'mark_waiting')) {
+      return true
+    }
+  }
+  return false
+}
+
+function extractLastAssistantText(finalMessages: LifecycleFinalMessage[]): string {
+  for (let i = finalMessages.length - 1; i >= 0; i--) {
+    const m = finalMessages[i]!
+    if (m.role !== 'assistant') continue
+    if (typeof m.content === 'string') return m.content
+    const parts = Array.isArray(m.content) ? m.content : []
+    const text = parts
+      .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
+      .map((p) => p.text)
+      .join('')
+    if (text.trim()) return text
+  }
+  return ''
+}
+```
+
+⚠️ `LifecycleFinalMessage` 类型路径：从 [`src/core/events.ts`](../../../src/core/events.ts) 导出（当前是模块内 type，要改为 export）。
+
+#### Step 7：写 multi-agent 集成测试
+
+放 `ConversationOrchestrator.test.ts` 末尾新 describe：
+
+```ts
+describe('multi-agent mode', () => {
+  it('injects multiAgent ToolContext when deps.multiAgent provided', async () => {
+    const fixture = await setupMA({ agentId: 'pm', mockTurns: [{ kind: 'text', text: 'hi' }] })
+    let capturedCtx: any
+    fixture.toolsBuilderSpy = (cu, ic) => {
+      capturedCtx = ic
+      return {} as ToolSet
+    }
+    await fixture.orchestrator.handle(makeMentionInbound('hi'), spySink())
+    expect(capturedCtx.multiAgent).toBeDefined()
+    expect(capturedCtx.multiAgent.agentId).toBe('pm')
+    expect(capturedCtx.multiAgent.taskId).toMatch(/^tsk_/)
+  })
+
+  it('renders task board into system prompt', async () => {
+    const fixture = await setupMA({ agentId: 'pm', goalOnBoard: '修 bug' })
+    let capturedSystemPrompt = ''
+    fixture.executorSpy = (req) => { capturedSystemPrompt = req.systemPrompt; return [] }
+    await fixture.orchestrator.handle(makeMentionInbound('go'), spySink())
+    expect(capturedSystemPrompt).toContain('## Task Board')
+    expect(capturedSystemPrompt).toContain('Goal: 修 bug')
+  })
+
+  it('mark_waiting tool call → runQueue paused, no auto-envelope', async () => {
+    const fixture = await setupMA({
+      agentId: 'pm',
+      mockTurns: [{ kind: 'tool', toolName: 'mark_waiting', args: {} }],
+    })
+    await fixture.orchestrator.handle(makeMentionInbound('go'), spySink())
+    expect(fixture.runQueue.isPaused(fixture.sessionKey)).toBe(true)
+    const envs = await readEnvelopes(fixture.paths, fixture.taskId)
+    expect(envs).toHaveLength(0)
+  })
+
+  it('non-PM finalText auto-writes reply envelope to replyTo', async () => {
+    const fixture = await setupMA({
+      agentId: 'coding',
+      mockTurns: [{ kind: 'text', text: '已修复' }],
+      inboundReplyTo: 'pm',
+    })
+    await fixture.orchestrator.handle(makeA2AInbound({ from: 'pm', text: '修 foo' }), spySink())
+    const envs = await readEnvelopes(fixture.paths, fixture.taskId)
+    const reply = envs.find((e) => e.intent === 'reply')
+    expect(reply).toBeDefined()
+    expect(reply?.to).toBe('pm')
+    expect(reply?.content).toBe('已修复')
+  })
+
+  it('PM does NOT auto-write envelope; relies on say_to_thread/delegate_to', async () => {
+    const fixture = await setupMA({
+      agentId: 'pm',
+      mockTurns: [{ kind: 'text', text: '处理中' }],
+    })
+    await fixture.orchestrator.handle(makeMentionInbound('go'), spySink())
+    const envs = await readEnvelopes(fixture.paths, fixture.taskId)
+    expect(envs).toHaveLength(0) // PM 没显式调 say_to_thread，runtime 不替它发
+  })
+
+  it('AbortController is associated with task on creation', async () => {
+    const fixture = await setupMA({ agentId: 'pm', mockTurns: [{ kind: 'text', text: 'hi' }] })
+    const inbound = makeMentionInbound('go')
+    void fixture.orchestrator.handle(inbound, spySink())
+    await new Promise((r) => setTimeout(r, 10))
+    fixture.abortRegistry.abortTask(fixture.taskId, 'test')
+    // 不抛错 + 当前 turn 收到 abort 信号
+  })
+})
+```
+
+`setupMA` / `makeMentionInbound` / `makeA2AInbound` / `readEnvelopes` / `mockExecutorFromTurns` 需在 testHelpers 提供（Chunk 5 Task 5.2 落地；本 task 内 inline 简化版）。
+
+#### Step 8：跑测试 + commit
+
+```bash
+pnpm test src/orchestrator/ && \
+git add src/orchestrator/ConversationOrchestrator.ts src/orchestrator/ConversationOrchestrator.test.ts src/application/createApplication.ts && \
+git commit -m "feat(orchestrator): multi-agent 主链路（taskId 解析 + IMContext 注入 + task 黑板渲染 + mark_waiting 检测 + 非 PM auto-reply + abort task 关联）"
+```
+
+### Task 4.8：ConversationOrchestrator 暴露 subscribeA2A 可选方法
 
 **Files:**
 - Modify: `src/orchestrator/ConversationOrchestrator.ts`
 
-- [ ] **Step 1：把 subscribeA2A 设为 optional 方法（避免接口污染）**
+按 notes §8.5。要点：
+- `subscribeA2A` 是 **optional method**，单 agent 模式不存在
+- envelope 直接用 `envelope.taskId`，不回扫
+- 收到 reply envelope 时 **先 resume runQueue**，再 handle
 
-修改 `ConversationOrchestrator` 接口：
-
-```ts
-export interface ConversationOrchestrator {
-  handle(input: InboundMessage, sink: EventSink): Promise<void>
-  /**
-   * 仅 multi-agent 模式提供：订阅 A2A bus 自己 agentId 的 inbox。返回 unsubscribe 函数。
-   * 单 agent 模式（deps.multiAgent 缺失）下此字段 undefined。
-   */
-  subscribeA2A?: () => () => void
-}
-```
-
-只有在 `deps.multiAgent` 存在时才赋值；单 agent 调用方拿到的 orchestrator 上根本没有这个属性。
-
-- [ ] **Step 2：实现 subscribeA2A（直接用 envelope.taskId，透传 references，标记 replyTo）**
-
-关键设计：
-- **envelope.taskId 直接作为合成 InboundMessage 的 task 上下文**，不回扫 channelId+threadTs。
-- envelope.references 透传到合成 InboundMessage 上的新增字段 `a2aReferences`，下游 ToolContext 可读。
-- envelope.from 记录到合成消息的 `replyTo` 字段——`turn` 结束自动写 reply envelope 时用作 to。
-- envelope.id 记录到 `parentEnvelopeId`，写 reply envelope 时填入 `parentId`。
-
-先扩 InboundMessage 类型 [`src/im/types.ts`](../../../src/im/types.ts)：
+#### Step 1：写测试
 
 ```ts
-export interface InboundMessage {
-  // ...原字段
-  /** A2A 合成消息独有：来源 envelope id，用于写 reply envelope 时的 parentId */
-  parentEnvelopeId?: string
-  /** A2A 合成消息独有：reply 应该发给谁。'thread' = PM 收到首次 mention；agent id = 对方 agent */
-  replyTo?: 'thread' | string
-  /** A2A 合成消息独有：envelope 自带的引用列表 */
-  a2aReferences?: Array<{ kind: 'file' | 'url' | 'session' | 'envelope'; value: string }>
-}
+it('subscribeA2A is undefined when deps.multiAgent missing', async () => {
+  const fixture = await setupMA({ agentId: 'default', singleMode: true })
+  expect(fixture.orchestrator.subscribeA2A).toBeUndefined()
+})
+
+it('subscribeA2A processes envelope and resumes paused runQueue', async () => {
+  const fixture = await setupMA({
+    agentId: 'coding',
+    mockTurns: [{ kind: 'text', text: '已修复' }],
+  })
+  fixture.runQueue.pause(fixture.sessionKey)            // 模拟之前 PM mark_waiting 留下的 paused
+  expect(fixture.orchestrator.subscribeA2A).toBeDefined()
+  fixture.orchestrator.subscribeA2A!()
+  await fixture.bus.post({
+    id: 'env_test', taskId: fixture.taskId,
+    from: 'pm', to: 'coding', intent: 'delegate',
+    content: '修 foo bug',
+    createdAt: new Date().toISOString(),
+  })
+  await new Promise((r) => setTimeout(r, 50))
+  expect(fixture.runQueue.isPaused(fixture.sessionKey)).toBe(false)
+  // 已合成 InboundMessage 进入 handle，coding session 已建
+  const sessionDir = path.join(fixture.paths.sessionsDir, 'slack', 'general.C001.1.2', 'coding')
+  expect(existsSync(sessionDir)).toBe(true)
+})
+
+it('subscribeA2A skips when task not found (warns)', async () => {
+  const fixture = await setupMA({ agentId: 'coding' })
+  fixture.orchestrator.subscribeA2A!()
+  await fixture.bus.post({
+    id: 'env_orphan', taskId: 'tsk_not_exist',
+    from: 'pm', to: 'coding', intent: 'delegate',
+    content: 'x', createdAt: new Date().toISOString(),
+  })
+  await new Promise((r) => setTimeout(r, 50))
+  // bus inbox 已消费但 handle 没真跑
+  expect(fixture.bus.inboxSize('coding')).toBe(0)
+})
+
+it('synthesized InboundMessage carries parentEnvelopeId/replyTo/a2aReferences', async () => {
+  const fixture = await setupMA({ agentId: 'coding' })
+  let capturedInbound: InboundMessage | undefined
+  fixture.handleSpy = (input) => { capturedInbound = input }
+  fixture.orchestrator.subscribeA2A!()
+  await fixture.bus.post({
+    id: 'env_a', taskId: fixture.taskId,
+    from: 'pm', to: 'coding', intent: 'delegate',
+    content: '看 src/foo.ts',
+    references: [{ kind: 'file', value: 'src/foo.ts:42' }],
+    createdAt: new Date().toISOString(),
+  })
+  await new Promise((r) => setTimeout(r, 50))
+  expect(capturedInbound?.parentEnvelopeId).toBe('env_a')
+  expect(capturedInbound?.replyTo).toBe('pm')
+  expect(capturedInbound?.a2aReferences).toEqual([{ kind: 'file', value: 'src/foo.ts:42' }])
+})
 ```
 
-实现 subscribeA2A（在 `createConversationOrchestrator` 内）：
+#### Step 2：实现
+
+修改 [`src/orchestrator/ConversationOrchestrator.ts`](../../../src/orchestrator/ConversationOrchestrator.ts) 的 `createConversationOrchestrator` 返回值：
 
 ```ts
 const orchestrator: ConversationOrchestrator = {
-  async handle(input, sink) { /* ...existing... */ },
+  async handle(input, sink) { /* 主链路 */ },
   ...(deps.multiAgent
     ? {
         subscribeA2A() {
           const ma = deps.multiAgent!
           return ma.bus.subscribe(agentId, async (envelope) => {
-            // 直接用 envelope.taskId，不回扫 channelId+threadTs
             const board = await ma.taskBoard.read(envelope.taskId)
             if (!board) {
               log.warn(`收到 envelope 但 task ${envelope.taskId} 不存在，丢弃`)
@@ -2647,21 +3314,25 @@ const orchestrator: ConversationOrchestrator = {
             const synthetic: InboundMessage = {
               imProvider: 'slack',
               channelId: board.channelId,
-              channelName: '<a2a>',                      // 占位 channel name；不影响 sessionStore
+              channelName: '<a2a>',
               threadTs: board.threadTs,
-              messageTs: envelope.id,                    // envelopeId 作 abort key
+              messageTs: envelope.id,
               userId: envelope.from === 'user' ? board.originalUser : envelope.from,
               userName: envelope.from === 'user' ? board.originalUser : envelope.from,
               text: envelope.content,
               parentEnvelopeId: envelope.id,
               replyTo: envelope.from === 'user' ? 'thread' : envelope.from,
               ...(envelope.references ? { a2aReferences: envelope.references } : {}),
-              // ⚠️ 其他必填字段对照 src/im/types.ts 补齐；本 P0 内 channelName/imProvider 已是
-              // 简化必填集合的代表。如有 imThreadId / botUserId 等还需补默认值。
+            }
+            // 先 resume，让排队的 runner 能跑
+            const sessionKey = `${synthetic.imProvider}:${synthetic.channelId}:${synthetic.threadTs}:${agentId}`
+            if (deps.runQueue.isPaused(sessionKey)) {
+              deps.runQueue.resume(sessionKey)
             }
             const noopSink: EventSink = {
-              onEvent: async () => {},
-              finalize: async () => {},
+              async onEvent() {},
+              async finalize() {},
+              terminalPhase: undefined,
             }
             await orchestrator.handle(synthetic, noopSink)
           })
@@ -2672,517 +3343,64 @@ const orchestrator: ConversationOrchestrator = {
 return orchestrator
 ```
 
-注意：`userId` 对 agent-from 的合成不再加 `agent:` 前缀（直接用 agent id）。SessionStore 不校验 userId 格式；memory 路径用 userName，`pm`/`coding`/`cs` 作为路径片段是合法字符。
-
-- [ ] **Step 2：写 A2A 入站集成测试**
-
-`ConversationOrchestrator.test.ts` 加：
-
-```ts
-it('processes A2A envelope as a synthesized InboundMessage', async () => {
-  const { bus, tb, taskId } = await setupMultiAgentFixture()
-  const orchestrator = createConversationOrchestrator({
-    agentId: 'coding',
-    multiAgent: { bus, taskBoard: tb, resolveTaskId: async () => taskId },
-    // 其他 deps...
-    executorFactory: () => mockExecutor((messages) => ({
-      finalText: '收到，开干',
-      steps: [],
-      // ...
-    })),
-  })
-  orchestrator.subscribeA2A()
-
-  await bus.post({
-    id: 'env_test',
-    taskId,
-    from: 'pm',
-    to: 'coding',
-    intent: 'delegate',
-    content: '请修复 foo bug',
-    createdAt: new Date().toISOString(),
-  })
-
-  // 等 handle 完成
-  await new Promise((r) => setTimeout(r, 50))
-
-  // session 已建：sessions/slack/<chan>.<thread>/coding/messages.jsonl 存在
-  // messages.jsonl 含一条 user 消息 = envelope.content
-  // ...
-})
-```
-
-- [ ] **Step 3：跑测试通过**
-
-Run: `pnpm test src/orchestrator/ConversationOrchestrator.test.ts -t "A2A envelope"`
-
-- [ ] **Step 4：commit**
+#### Step 3：跑测试 + commit
 
 ```bash
-git add src/orchestrator/ConversationOrchestrator.ts src/orchestrator/ConversationOrchestrator.test.ts
-git commit -m "feat(orchestrator): subscribeA2A 把 envelope 合成 InboundMessage 进入处理流"
+pnpm test src/orchestrator/ && \
+git add src/orchestrator/ConversationOrchestrator.ts src/orchestrator/ConversationOrchestrator.test.ts && \
+git commit -m "feat(orchestrator): subscribeA2A 可选方法，envelope.taskId 直传 + 唤醒 paused runQueue"
 ```
 
-### Task 4.5：`<waiting/>` 标记处理（turn 暂停）
+### Task 4.9：dashboard / IM / e2e 路径与 sessionKey 字符串迁移
 
 **Files:**
-- Modify: `src/orchestrator/ConversationOrchestrator.ts`
+- Modify: 任何硬编码相关字符串的文件
 
-行为（spec §5.2 时序 + §5.4 Loop 终止 + §9.5 进度短消息的承运点）：
-
-**两个标记的语义**：
-- `<waiting/>`（任何 agent）：本 turn 是中间状态，等 reply。orchestrator：(a) 不 finalize sink (b) **不写 reply/final envelope** (c) 标记 session 为 awaiting，SessionRunQueue paused。
-- `<final/>`（仅 PM 有意义）：PM 判定目标完成。orchestrator 写 `to='thread' intent='final'` envelope；taskBoard.update(state='done')。
-
-**自动 envelope 承运规则**（在 turn 末尾按 agent + replyTo + 标记决定写哪条 envelope）：
-
-| agent | <waiting/> | <final/> | replyTo | runtime 自动写的 envelope |
-|---|---|---|---|---|
-| PM | yes | - | * | 无（paused 等 reply） |
-| PM | no | yes | thread | `to='thread' intent='final'` + task.state→'done' |
-| PM | no | no | thread | `to='thread' intent='broadcast'`（普通进度文本，非终态） |
-| PM | no | no | <agent> | `to=<agent> intent='reply'`（PM 替代用户回 Coding/CS 的反问） |
-| 非 PM | yes | - | * | 无（paused） |
-| 非 PM | no | - | <agent> | `to=<agent> intent='reply'` |
-| 非 PM | no | - | thread | 不允许（warn + 写 broadcast 兜底）—— Coding/CS 不该直接发 thread |
-
-**SessionRunQueue paused 状态（spec §5.2 强约束）**：
-- 现有 SessionRunQueue 是 fifo 串行队列，不支持暂停。需要新增 `pause(sessionKey)` / `resume(sessionKey)` API。
-- paused 期间：新入站 InboundMessage（无论来自 Slack mention 还是 A2A reply）**仍可入队但不消费**；reply envelope 到达触发 resume 后再依次消费。
-- 单 agent 模式不会进入 paused 状态（不会出现 `<waiting/>`）。
-
-- [ ] **Step 1：先扩 SessionRunQueue 加 pause/resume API（先写测试）**
-
-[`src/orchestrator/SessionRunQueue.test.ts`](../../../src/orchestrator/SessionRunQueue.test.ts) 加：
-
-```ts
-it('paused queue does not consume new tasks until resumed', async () => {
-  const q = new SessionRunQueue()
-  const log: number[] = []
-  q.pause('s1')
-  void q.enqueue('s1', async () => { log.push(1) })
-  void q.enqueue('s1', async () => { log.push(2) })
-  await new Promise((r) => setTimeout(r, 30))
-  expect(log).toEqual([])     // paused 期间不跑
-  q.resume('s1')
-  await new Promise((r) => setTimeout(r, 30))
-  expect(log).toEqual([1, 2]) // resume 后按顺序消费
-})
-
-it('paused/resumed key isolation does not affect other sessions', async () => {
-  const q = new SessionRunQueue()
-  const log: string[] = []
-  q.pause('s1')
-  void q.enqueue('s1', async () => { log.push('s1') })
-  await q.enqueue('s2', async () => { log.push('s2') })
-  expect(log).toEqual(['s2'])
-  q.resume('s1')
-  await new Promise((r) => setTimeout(r, 30))
-  expect(log).toEqual(['s2', 's1'])
-})
-```
-
-- [ ] **Step 2：实现 SessionRunQueue.pause/resume**
-
-[`src/orchestrator/SessionRunQueue.ts`](../../../src/orchestrator/SessionRunQueue.ts) 增加：
-
-```ts
-private paused = new Set<string>()
-
-pause(sessionKey: string): void {
-  this.paused.add(sessionKey)
-}
-resume(sessionKey: string): void {
-  this.paused.delete(sessionKey)
-  this.tryDrain(sessionKey)  // 唤醒积压
-}
-```
-
-`enqueue` 内部 drain 循环加判断 `if (this.paused.has(sessionKey)) return`。
-`tryDrain` 是抽出的内部触发函数（如果当前实现没有，需要重构 enqueue 把消费逻辑抽出来）。
-
-- [ ] **Step 3：跑 pause/resume 测试通过**
-
-Run: `pnpm test src/orchestrator/SessionRunQueue.test.ts -t "paused"`
-
-- [ ] **Step 4：写 orchestrator `<waiting/>` + `<final/>` + 自动 envelope 测试**
-
-`ConversationOrchestrator.test.ts`（multi-agent describe 块下）加：
-
-```ts
-it('PM with <waiting/> pauses runQueue and writes no envelope', async () => {
-  const { orchestrator, runQueue, paths, taskId } = await setup({
-    agentId: 'pm',
-    mockFinalText: '在等 CS 回，<waiting/>',
-  })
-  await orchestrator.handle(makeMentionInbound('查一下'), spySink())
-  // runQueue paused 标记被设
-  expect(runQueue.isPaused(`slack:C001:1.2:pm`)).toBe(true)
-  // 没写 envelope（除了模型可能调 delegate_to 写过的；这里 mockFinalText 不调 tool）
-  const envFiles = await fs.readdir(path.join(paths.root, 'tasks', taskId, 'envelopes'))
-  expect(envFiles).toHaveLength(0)
-})
-
-it('PM <final/> writes to=thread intent=final envelope and sets task done', async () => {
-  const { orchestrator, paths, taskBoard, taskId } = await setup({
-    agentId: 'pm',
-    mockFinalText: '✓ 已合并 PR. <final/>',
-  })
-  await orchestrator.handle(makeMentionInbound('修 bug'), spySink())
-  const envs = await readEnvelopes(paths, taskId)
-  const finalEnv = envs.find((e) => e.intent === 'final')
-  expect(finalEnv).toBeDefined()
-  expect(finalEnv?.to).toBe('thread')
-  expect(finalEnv?.content).toContain('已合并')
-  const board = await taskBoard.read(taskId)
-  expect(board?.state).toBe('done')
-})
-
-it('non-PM finalText with replyTo=pm writes intent=reply envelope to PM', async () => {
-  const { orchestrator, paths, taskId } = await setup({
-    agentId: 'coding',
-    mockFinalText: '已修复，commit ab12cd',
-  })
-  // 用 A2A 入站合成 InboundMessage（replyTo='pm', parentEnvelopeId='env_xxx'）
-  await simulateA2AInbound(orchestrator, {
-    from: 'pm', to: 'coding', content: '修 foo bug',
-  })
-  const envs = await readEnvelopes(paths, taskId)
-  const reply = envs.find((e) => e.intent === 'reply')
-  expect(reply).toBeDefined()
-  expect(reply?.to).toBe('pm')
-  expect(reply?.from).toBe('coding')
-  expect(reply?.parentId).toBeDefined()
-})
-```
-
-辅助函数 `setup` / `spySink` / `readEnvelopes` / `simulateA2AInbound` / `makeMentionInbound` 在 testHelpers（Chunk 5 Task 5.2 定义）。先在本 task 内 inline 简化版本，Chunk 5 抽出去。
-
-- [ ] **Step 5：实现 turn 末尾的标记检测 + 自动 envelope 承运**
-
-在 [`ConversationOrchestrator.ts`](../../../src/orchestrator/ConversationOrchestrator.ts) `handle` 的"模型输出后、finalize 前"位置插入：
-
-```ts
-const finalText = modelFinalText  // 保留你现有的变量名
-const WAITING_RE = /<waiting\s*\/>/
-const FINAL_RE = /<final\s*\/>/
-const isWaiting = WAITING_RE.test(finalText)
-const isFinal = FINAL_RE.test(finalText)
-const cleanedText = finalText.replace(WAITING_RE, '').replace(FINAL_RE, '').trim()
-
-if (deps.multiAgent && taskId) {
-  if (isWaiting) {
-    deps.runQueue.pause(sessionKey)
-    log.info(`agent=${agentId} <waiting/>，runQueue paused`)
-    // 不 finalize、不 emit、不写 envelope
-  } else {
-    // 自动写 envelope（按上面规则表）
-    const replyTo = input.replyTo ?? 'thread'
-    const isPM = agentId === 'pm'
-    let envelopeIntent: 'final' | 'reply' | 'broadcast'
-    let envelopeTo: string
-    if (isPM && replyTo === 'thread') {
-      envelopeTo = 'thread'
-      envelopeIntent = isFinal ? 'final' : 'broadcast'
-    } else if (isPM && replyTo !== 'thread') {
-      envelopeTo = replyTo
-      envelopeIntent = 'reply'
-    } else if (!isPM && replyTo !== 'thread') {
-      envelopeTo = replyTo
-      envelopeIntent = 'reply'
-    } else {
-      // 非 PM 收到 mention 直接对话路径（@coding 直接被 mention）
-      // → 走 broadcast 兜底，向 thread 发回结果
-      log.warn(`agent=${agentId} 不应直接 reply thread，broadcast 兜底`)
-      envelopeTo = 'thread'
-      envelopeIntent = 'broadcast'
-    }
-    await deps.multiAgent.bus.post({
-      id: newEnvelopeId(),
-      taskId,
-      from: agentId as 'pm' | 'coding' | 'cs',
-      to: envelopeTo as any,
-      intent: envelopeIntent,
-      content: cleanedText,
-      ...(input.parentEnvelopeId ? { parentId: input.parentEnvelopeId } : {}),
-      createdAt: new Date().toISOString(),
-    })
-    if (isPM && envelopeIntent === 'final') {
-      await deps.multiAgent.taskBoard.update(taskId, { state: 'done' })
-    }
-    // 出口 envelope（to='thread'）也 emit 到 sink，让 P1 接 Slack 时直接走老路径
-    if (envelopeTo === 'thread') {
-      await sink.onEvent({ type: 'assistant-message', text: cleanedText })
-    }
-    await finalizeSink()
-  }
-} else {
-  // 单 agent 模式：行为完全等同今天
-  await sink.onEvent({ type: 'assistant-message', text: cleanedText || finalText })
-  await finalizeSink()
-}
-```
-
-- [ ] **Step 6：subscribeA2A 收到 reply envelope 时 resume runQueue**
-
-修改 Task 4.4 的 subscribeA2A handler：在 `await orchestrator.handle(synthetic, noopSink)` **之前**先 `deps.runQueue.resume(sessionKeyFor(synthetic))`，让 paused 状态被唤醒，handle 才会真正排队消费。
-
-- [ ] **Step 7：跑全部相关测试**
-
-Run: `pnpm test src/orchestrator/`
-Expected: 单 agent 现有套全绿（`<waiting/>` / `<final/>` 检测在 `deps.multiAgent` 缺失时不走新分支） + 三个新 multi-agent 用例通过
-
-- [ ] **Step 8：commit**
+按 notes 提示，重点 grep 三类命中：
 
 ```bash
-git add src/orchestrator/ConversationOrchestrator.ts src/orchestrator/SessionRunQueue.ts src/orchestrator/SessionRunQueue.test.ts src/orchestrator/ConversationOrchestrator.test.ts src/im/types.ts
-git commit -m "feat(orchestrator): <waiting/>/<final/> 标记 + 自动 envelope 承运 + SessionRunQueue paused 状态"
-```
+# 1. sessionKey 字符串
+rg -n "'slack:[A-Za-z0-9_]+:[0-9.]+'" src/ --type ts | grep -v "\.test\."
 
-### Task 4.6：say_to_thread tool（PM 进度短消息）
-
-**Files:**
-- Create: `src/agent/tools/sayToThread.ts`
-- Update: `src/agent/tools/index.ts` 注册
-- Update: `src/agent/tools/multiAgentTools.test.ts` 加测试
-
-spec §9.5 要求 PM 在 delegate / reply 节点向 thread 发短消息（caveman 风）。**自动 envelope 承运（Task 4.5）只在 turn 末尾写一次 envelope，无法满足 PM 在 turn 中段（调 delegate_to 之前）也发一条 "PM → CS：..." 进度的需求**。所以需要这个独立 tool。
-
-行为：
-- PM 专用（运行期校验非 PM 抛错）
-- 立即写 `to='thread' intent='broadcast'` envelope
-- 同步返回 `{envelopeId}`
-- content 应当短小（caveman 风），但不在工具层强制长度，由 system prompt 引导
-
-- [ ] **Step 1：写测试**
-
-```ts
-describe('say_to_thread tool', () => {
-  it('writes a thread broadcast envelope (PM only)', async () => {
-    const { ctx, paths, taskId } = await makeCtx('pm')
-    const tool = sayToThreadTool(ctx)
-    const r = await tool.execute(
-      { content: 'PM → CS：查报错' },
-      { toolCallId: 't', messages: [] } as any,
-    )
-    expect(r).toEqual(expect.objectContaining({ envelopeId: expect.stringMatching(/^env_/) }))
-    const envs = await fs.readdir(path.join(paths.root, 'tasks', taskId, 'envelopes'))
-    expect(envs).toHaveLength(1)
-    const env = JSON.parse(await fs.readFile(path.join(paths.root, 'tasks', taskId, 'envelopes', envs[0]!), 'utf8'))
-    expect(env.to).toBe('thread')
-    expect(env.intent).toBe('broadcast')
-    expect(env.from).toBe('pm')
-  })
-
-  it('throws when called from non-PM agent', async () => {
-    const { ctx } = await makeCtx('coding')
-    const tool = sayToThreadTool(ctx)
-    await expect(
-      tool.execute({ content: 'x' }, { toolCallId: 't', messages: [] } as any),
-    ).rejects.toThrow(/PM/)
-  })
-
-  it('throws when ctx.multiAgent missing', async () => {
-    const tool = sayToThreadTool({ cwd: '/tmp', logger: stubLogger })
-    await expect(
-      tool.execute({ content: 'x' }, { toolCallId: 't', messages: [] } as any),
-    ).rejects.toThrow(/multi-agent/)
-  })
-})
-```
-
-- [ ] **Step 2：实现 sayToThread.ts**
-
-```ts
-import { tool } from 'ai'
-import { z } from 'zod'
-import { newEnvelopeId } from '@/multiAgent/types.ts'
-import type { ToolContext } from './bash.ts'
-
-export function sayToThreadTool(ctx: ToolContext) {
-  return tool({
-    description:
-      'PM 专用：在 thread 里发一条进度短消息（caveman 风，只发重点）。' +
-      '常用于 "PM → CS：<task>" / "← CS：<result>" / "PM ✓ <结论>" 这类节点提示。' +
-      '不会改变 task 状态。',
-    parameters: z.object({
-      content: z.string().min(1),
-    }),
-    async execute({ content }) {
-      if (!ctx.multiAgent) throw new Error('say_to_thread 仅在 multi-agent 模式可用')
-      const { agentId, taskId, bus } = ctx.multiAgent
-      if (agentId !== 'pm') throw new Error(`say_to_thread 仅 PM 可用（当前 agent=${agentId}）`)
-      const envelope = {
-        id: newEnvelopeId(),
-        taskId,
-        from: 'pm' as const,
-        to: 'thread' as const,
-        intent: 'broadcast' as const,
-        content,
-        createdAt: new Date().toISOString(),
-      }
-      await bus.post(envelope)
-      return { envelopeId: envelope.id }
-    },
-  })
-}
-```
-
-- [ ] **Step 3：注册到 buildBuiltinTools**
-
-[`src/agent/tools/index.ts`](../../../src/agent/tools/index.ts) 加 `say_to_thread: sayToThreadTool(ctx)`。
-
-- [ ] **Step 4：跑测试 + commit**
-
-```bash
-pnpm test src/agent/tools/multiAgentTools.test.ts && \
-git add src/agent/tools/sayToThread.ts src/agent/tools/index.ts src/agent/tools/multiAgentTools.test.ts && \
-git commit -m "feat(tools): say_to_thread PM 进度短消息工具"
-```
-
-### Task 4.7：abort 作用域 = 整个 task（spec §5.4）
-
-**Files:**
-- Modify: `src/orchestrator/AbortRegistry.ts`（如可扩；或新增 `TaskAbortRegistry.ts`）
-- Modify: `src/orchestrator/ConversationOrchestrator.ts`
-- Modify: `src/multiAgent/A2ABus.ts`（abort 时清空目标 agent 的 inbox）
-
-spec §5.4：abort 作用于整个 task：
-1. `task.state → 'aborted'`
-2. AbortRegistry 向 task 内所有 agent 的 inflight turn 发 abort 信号
-3. **清空 A2A bus 中该 task 的待投 envelope**
-4. PM 在 thread 发简短"已中止"消息（P0 不接 Slack 仅写 envelope）
-
-- [ ] **Step 1：扩 AbortRegistry 加 task-level group**
-
-[`AbortRegistry.ts`](../../../src/orchestrator/AbortRegistry.ts) 现状：按 messageTs 注册单个 AbortController。需新增"按 taskId 关联多个 messageTs"反向索引。
-
-```ts
-export class AbortRegistry<K extends string> {
-  // ...原有
-  private taskGroups = new Map<string, Set<K>>()
-
-  /** multi-agent: 把 messageTs 关联到 task，便于 abortTask 一次性中止整个 task */
-  associateTask(taskId: string, key: K): void {
-    let s = this.taskGroups.get(taskId)
-    if (!s) { s = new Set(); this.taskGroups.set(taskId, s) }
-    s.add(key)
-  }
-  abortTask(taskId: string, reason: string): void {
-    const keys = this.taskGroups.get(taskId)
-    if (!keys) return
-    for (const k of keys) this.abort(k, reason)
-    this.taskGroups.delete(taskId)
-  }
-}
-```
-
-`delete(key)` 内同步清理 taskGroups 中的对应 key。
-
-- [ ] **Step 2：orchestrator handle 内 associateTask**
-
-handle 创建 AbortController 后（[`ConversationOrchestrator.ts:296`](../../../src/orchestrator/ConversationOrchestrator.ts) 附近）加：
-
-```ts
-if (deps.multiAgent && taskId) {
-  deps.abortRegistry.associateTask(taskId, input.messageTs)
-}
-```
-
-- [ ] **Step 3：A2ABus 加 clearInboxesForTask**
-
-```ts
-// A2ABus.ts
-clearInboxesForTask(taskId: string): void {
-  for (const [agentId, inbox] of inboxes.entries()) {
-    inboxes.set(agentId, inbox.filter((env) => env.taskId !== taskId))
-  }
-}
-```
-
-- [ ] **Step 4：单点 abortTask 入口**
-
-新建 `src/multiAgent/abortTask.ts` 集中编排：
-
-```ts
-export async function abortTask(args: {
-  taskId: string
-  reason: string
-  abortRegistry: AbortRegistry<string>
-  bus: A2ABus
-  taskBoard: TaskBoardManager
-}): Promise<void> {
-  args.abortRegistry.abortTask(args.taskId, args.reason)
-  args.bus.clearInboxesForTask(args.taskId)
-  await args.taskBoard.update(args.taskId, { state: 'aborted' })
-  // P0 不接 Slack；P1 由 PM 在 thread 发"已中止"消息
-}
-```
-
-- [ ] **Step 5：写集成测试**
-
-`src/multiAgent/abortTask.test.ts`：fixture 起 PM + Coding 两个 orchestrator，PM 调 delegate_to coding，coding 进入 paused 等 reply；调用 abortTask；验证：
-- abortRegistry 关联的 PM/Coding messageTs 都收到 abort 信号
-- bus 中 coding 的 inbox 被清空
-- task.json.state = 'aborted'
-
-- [ ] **Step 6：commit**
-
-```bash
-git add src/orchestrator/AbortRegistry.ts src/orchestrator/ConversationOrchestrator.ts src/multiAgent/A2ABus.ts src/multiAgent/abortTask.ts src/multiAgent/abortTask.test.ts
-git commit -m "feat(multiAgent): abort 作用域 = 整个 task，清空 inbox + 所有 inflight turn 中止"
-```
-
-### Task 4.8：dashboard / IM / e2e 路径与 sessionKey 断言迁移
-
-**Files:**
-- Modify: 任何 grep 命中"硬编码 sessions 路径或 sessionKey 字符串"的文件
-
-Chunk 4 加了 sessionKey 多一段 + 路径多 `/default` 一层后，**现有 dashboard / Slack adapter / e2e 里**所有硬编码相关字符串都要批量修。
-
-- [ ] **Step 1：grep 三类命中点**
-
-Run（命中点全集）：
-```bash
-# 1. sessionKey 形态字符串：slack:<chan>:<thread>
-rg -n "slack:[A-Za-z0-9_]+:[0-9.]+" src/ --type ts | grep -v "\.test\."
-
-# 2. sessions 路径硬编码（messages.jsonl 直接挂在 thread 目录下）
+# 2. sessions 路径硬编码（messages.jsonl 直挂 thread 目录）
 rg -n "sessions/slack/.*messages\.jsonl" src/ --type ts | grep -v "\.test\."
 
-# 3. dashboard 渲染读 sessions 子目录的逻辑
+# 3. dashboard 渲染 sessions 子目录
 rg -n "channelTasks|slackSessionDir" src/dashboard/ --type ts
 ```
 
-- [ ] **Step 2：逐项修**
+预期主要命中点：
+- `src/dashboard/api.ts` 列 sessions：`sessions/slack/<thread>/<agentId>/messages.jsonl`
+- `src/dashboard/ui.ts` 渲染（如有路径文案）
+- 其他 grep 命中按需修
 
-预期命中：
-- `src/dashboard/api.ts` 列 sessions 时遍历 `sessions/slack/<thread>/<agentId>/messages.jsonl`
-- `src/im/slack/SlackEventSink.ts` 或类似文件如有引用 sessionId 字符串
-- `src/orchestrator/triggerLedger` 之类间接消费的模块
+#### Step 1-3：grep + 改 + 跑测试
 
-每改一处加一个对应单测 / e2e 断言（dashboard sessions tab 渲染、Slack channel 触发器）。
+```bash
+# 1. grep
+rg -n "sessions/slack" src/ --type ts | grep -v "\.test\."
 
-- [ ] **Step 3：跑全套测试**
+# 2. 逐处改成 walk agentId 子目录
 
-Run: `pnpm test && pnpm typecheck`
-Expected: 全绿
+# 3. 测试
+pnpm test && pnpm typecheck
+```
 
-- [ ] **Step 4：commit**
+#### Step 4：commit
 
 ```bash
 git add -u
 git commit -m "refactor(dashboard/im): 适配 sessions 路径多 agentId 段，单 agent 走 default/"
 ```
 
-### Task 4.9：单 Agent 回归全套测试
+### Task 4.10：单 Agent 回归全套测试
 
-**Files:** 无（仅跑测试 + 修必要断言）
+**Files:** 无（仅跑 + 修必要断言）
 
-- [ ] **Step 1：跑现有 42KB orchestrator 测试套**
+- [ ] **Step 1：跑现有 42KB orchestrator 测试**
 
 Run: `pnpm test src/orchestrator/ConversationOrchestrator.test.ts`
-Expected: 全绿。如有失败，多半是 sessionKey 路径多了 `/default` 段、或 sessionKey 字符串多了一段。逐条修断言。
+Expected: 全绿。如有失败，多半是 sessionKey 字符串多了 `:default` 段或 sessions 路径多了 `/default`。逐条修。
 
 - [ ] **Step 2：跑全套**
 
@@ -3203,10 +3421,12 @@ git commit -m "test(orchestrator): 现有用例适配 agentId='default' 新 sess
 1. **测试与类型全绿**：`pnpm test && pnpm typecheck`
 2. **回归手测**：在测试 workspace 起 daemon，发一条 mention，行为完全等同今天（Slack 回复正常、session 路径多了 `default/` 一层、abort 仍能用）
 3. **关键代码 review**：
-   - `ConversationOrchestrator.subscribeA2A` 实现是否正确把 envelope 转 InboundMessage
-   - `<waiting/>` 检测的位置是否在正确的 turn 末尾
-   - multiAgent ToolContext 是否在所有 toolsBuilder 调用点都注入
-4. **注意**：Chunk 4 完成后，**单 Agent 模式可上线**（向后兼容）；但 multi-agent 模式还需要 Chunk 5 装配 createApplication 才能跑 PM+Coding 端到端。
+   - `ConversationOrchestrator.ts` 的 lifecycle.completed 拦截位置
+   - `mark_waiting` 检测函数 `detectMarkWaiting` 正确扫 finalMessages
+   - `extractLastAssistantText` 正确处理 string / array content 两种形态
+   - `subscribeA2A` 用 envelope.taskId 直传，没回扫
+   - SessionRunQueue gate Promise 的 pause / resume 行为符合预期
+4. **注意**：Chunk 4 完成后，**单 Agent 模式可上线**；multi-agent 模式仍需 Chunk 5 装配 createApplication 才能跑端到端。
 
 只有上面三项都通过，才进 Chunk 5。
 
@@ -3214,16 +3434,17 @@ git commit -m "test(orchestrator): 现有用例适配 agentId='default' 新 sess
 
 ## Chunk 5：createApplication 多 Agent 装配 + 端到端集成测试
 
-**目标**：把所有部件串起来——createApplication 在 multi 模式实例化 N 个 ConversationOrchestrator，共享 A2ABus + TaskBoardManager + WorktreeManager；提供 `resolveTaskId` 实现（PM 创建 task，其他 agent 沿用）；写 PM+Coding 两 Agent 端到端 fixture 集成测试，验证 spec §13 P0 的"两个 Agent 跑通一次完整 A2A 来回"单位价值。
+**目标**：把 P0 所有部件串起来。createApplication 在 multi 模式实例化 N 个 ConversationOrchestrator，共享 A2ABus + TaskBoardManager + WorktreeManager；提供 `resolveTaskId` 实现（仅 mention 路径创建 task）；写 PM+Coding 端到端 fixture 集成测试，验证 spec §13 P0 单位价值。
 
 ### Task 5.1：createApplication multi-agent wiring
 
 **Files:**
 - Modify: `src/application/createApplication.ts`
+- Modify: `src/application/types.ts`
 
-- [ ] **Step 1：装配多 orchestrator + 共享 bus / taskBoard / worktreeManager**
+#### Step 1：装配多 orchestrator + 共享 bus / taskBoard / worktreeManager
 
-[`createApplication.ts`](../../../src/application/createApplication.ts) 改造：
+修改 [`createApplication.ts`](../../../src/application/createApplication.ts)：
 
 ```ts
 import { createA2ABus } from '@/multiAgent/A2ABus.ts'
@@ -3232,90 +3453,33 @@ import { createWorktreeManager } from '@/multiAgent/WorktreeManager.ts'
 import { loadSystemPrompt } from '@/multiAgent/RolePromptLoader.ts'
 import { newTaskId } from '@/multiAgent/types.ts'
 
+// ...原有 ctx / sessionStore / memoryStore / abortRegistry / runQueue ...
+
 const isMultiAgent = ctx.config.agents.length > 1
 const bus = createA2ABus(ctx.paths)
 const taskBoard = createTaskBoardManager(ctx.paths)
 const worktreeManager = createWorktreeManager(ctx.paths, ctx.cwd)
 
-// 启动期清理过期 worktree
-await worktreeManager.cleanupExpired().catch((err) => log.warn('worktree cleanup 失败', err))
+// 启动期清一次过期 worktree
+await worktreeManager.cleanupExpired().catch((err) =>
+  log.warn('启动期 worktree cleanup 失败', err),
+)
 
-const orchestrators: Array<{
-  agentId: string
-  orchestrator: ConversationOrchestrator
-  unsubscribeA2A?: () => void
-}> = []
-
-for (const agentCfg of ctx.config.agents) {
-  const systemPrompt = await loadSystemPrompt(args.workspaceDir, agentCfg.role, logger)
-  const provider = selectProvider(agentCfg.provider)
-  const providerEnv = loadProviderEnv(provider) // P0 共用一组 env，但保留 per-agent 选择能力
-  const runtime = buildProviderRuntime(provider, providerEnv, agentCfg.model)
-
-  const orchestrator = createConversationOrchestrator({
-    agentId: agentCfg.id,
-    toolsBuilder: (currentUser, imContext) =>
-      buildBuiltinTools(
-        { cwd: ctx.cwd, logger, currentUser, ...imContext },
-        { memoryStore, selfImproveCollector, selfImproveGenerator, selfImproveSemanticDedup, confirmBridge, paths: ctx.paths, logger },
-      ),
-    executorFactory: (tools) =>
-      createAiSdkExecutor({
-        model: runtime.model, modelName: runtime.modelName, tools,
-        maxSteps: agentCfg.maxSteps, logger,
-        ...(runtime.providerNameForOptions ? { providerName: runtime.providerNameForOptions } : {}),
-      }),
-    sessionStore, memoryStore, runQueue, abortRegistry,
-    systemPrompt,
-    modelMessageBudget: agentCfg.context,
-    mentionCommandRouter, contextCompactor, logger,
-    ...(isMultiAgent
-      ? {
-          multiAgent: {
-            bus,
-            taskBoard,
-            resolveTaskId: async (input) => resolveTaskIdForInbound(input, agentCfg.id, taskBoard, ctx),
-          },
-        }
-      : {}),
-  })
-
-  const item: typeof orchestrators[number] = { agentId: agentCfg.id, orchestrator }
-  if (isMultiAgent) {
-    item.unsubscribeA2A = orchestrator.subscribeA2A()
-  }
-  orchestrators.push(item)
-}
-```
-
-`resolveTaskIdForInbound` 实现（spec §5.3 单一责任：**仅 mention 路径创建 task**）：
-
-A2A 路径合成的 InboundMessage 自带 `parentEnvelopeId`（Task 4.4 已加），从 envelope 找回 taskId 即可，**不走 resolveTaskIdForInbound**。这里只服务 Slack mention 路径（来自 SlackAdapter 的真实 InboundMessage），其特征是 `parentEnvelopeId` 缺失。
-
-```ts
-async function resolveTaskIdForInbound(
+const resolveTaskIdForInbound = async (
   input: InboundMessage,
   agentId: string,
-  taskBoard: TaskBoardManager,
-  ctx: { paths: WorkspacePaths },
-): Promise<string> {
-  // A2A 合成消息走另一条路径，理论上不会调到这里（subscribeA2A 自己处理 envelope.taskId）
-  // 防御性断言：
+): Promise<string> => {
+  // A2A 路径不该走这里（subscribeA2A 用 envelope.taskId）
   if (input.parentEnvelopeId) {
-    throw new Error('resolveTaskIdForInbound 不应处理 A2A 合成消息（应直接用 envelope.taskId）')
+    throw new Error('resolveTaskIdForInbound 不应处理 A2A 合成消息')
   }
-
-  // mention 路径：用 (channelId, threadTs) 找已有 task；P0 朴素扫描，P1 加反向索引
+  // mention 路径：扫 tasks/ 找已有 task
   const matched = await findExistingTask(ctx.paths, input.channelId, input.threadTs)
   if (matched) return matched
-
-  // 创建新 task。此处不区分 PM / 直接 @coding：spec §9.4 也允许"用户直接 @ 某 Agent"
-  // 走直接对话路径，此时该 agent 也需要 task 上下文（即使 PM 不参与）。
-  // spec §5.3 的"MentionCommandRouter 创建"由 createApplication 这条 wiring 路径承运，
-  // 仍然只在 mention 路径创建——这与 spec 一致。
-  const taskId = newTaskId()
+  // 创建新 task
+  const newId = newTaskId()
   await taskBoard.create({
-    taskId,
+    taskId: newId,
     threadTs: input.threadTs,
     channelId: input.channelId,
     originalUser: input.userId,
@@ -3323,100 +3487,254 @@ async function resolveTaskIdForInbound(
     state: 'active',
     activeAgent: agentId,
   })
-  return taskId
+  return newId
+}
+
+const orchestrators: Array<{ agentId: string; orchestrator: ConversationOrchestrator; unsubscribe?: () => void }> = []
+
+for (const agentCfg of ctx.config.agents) {
+  const systemPrompt = await loadSystemPrompt(args.workspaceDir, agentCfg.role, logger)
+  const provider = selectProvider(agentCfg.provider)
+  const providerEnvForAgent = loadProviderEnv(provider) // P0 共用一组 env
+  const runtime = buildProviderRuntime(provider, providerEnvForAgent, agentCfg.model)
+
+  const toolsBuilder = (currentUser: CurrentUser, imContext: IMContext) =>
+    buildBuiltinTools(
+      {
+        cwd: ctx.cwd,
+        logger,
+        currentUser,
+        ...(imContext.confirm ? { confirm: imContext.confirm } : {}),
+        ...(imContext.multiAgent ? { multiAgent: imContext.multiAgent } : {}),
+      },
+      {
+        memoryStore,
+        selfImproveCollector,
+        selfImproveGenerator,
+        ...(selfImproveSemanticDedup ? { selfImproveSemanticDedup } : {}),
+        confirmBridge,
+        paths: ctx.paths,
+        logger,
+      },
+    )
+
+  const orchestrator = createConversationOrchestrator({
+    agentId: agentCfg.id,
+    toolsBuilder,
+    executorFactory: (tools) =>
+      createAiSdkExecutor({
+        model: runtime.model,
+        modelName: runtime.modelName,
+        tools,
+        maxSteps: agentCfg.maxSteps,
+        logger,
+        ...(runtime.providerNameForOptions ? { providerName: runtime.providerNameForOptions } : {}),
+      }),
+    sessionStore,
+    memoryStore,
+    runQueue,
+    abortRegistry,
+    systemPrompt,
+    modelMessageBudget: agentCfg.context,
+    mentionCommandRouter,
+    contextCompactor,
+    logger,
+    ...(isMultiAgent
+      ? {
+          multiAgent: {
+            bus,
+            taskBoard,
+            resolveTaskId: (input) => resolveTaskIdForInbound(input, agentCfg.id),
+          },
+        }
+      : {}),
+  })
+
+  const item: typeof orchestrators[number] = { agentId: agentCfg.id, orchestrator }
+  if (isMultiAgent && orchestrator.subscribeA2A) {
+    item.unsubscribe = orchestrator.subscribeA2A()
+  }
+  orchestrators.push(item)
 }
 ```
 
-`findExistingTask` 简单实现：扫 `paths.root/tasks/*/task.json` 读 channelId/threadTs（P0 性能可接受，task 数 < 1000 时扫描 < 50ms）。
+`findExistingTask` 实现（朴素扫 `paths.root/tasks/*/task.json`）：
 
-A2A 路径的 taskId 解析（subscribeA2A 内）已在 Task 4.4 用 `envelope.taskId` 直传。
+```ts
+async function findExistingTask(
+  paths: WorkspacePaths,
+  channelId: string,
+  threadTs: string,
+): Promise<string | undefined> {
+  const tasksDir = path.join(paths.root, 'tasks')
+  if (!existsSync(tasksDir)) return undefined
+  const dirs = await fs.readdir(tasksDir, { withFileTypes: true })
+  for (const d of dirs) {
+    if (!d.isDirectory()) continue
+    const file = path.join(tasksDir, d.name, 'task.json')
+    if (!existsSync(file)) continue
+    try {
+      const board = JSON.parse(await fs.readFile(file, 'utf8'))
+      if (board.channelId === channelId && board.threadTs === threadTs) {
+        return board.taskId
+      }
+    } catch {
+      // 跳过损坏的 task.json
+    }
+  }
+  return undefined
+}
+```
 
-- [ ] **Step 2：扩 Application 类型暴露 orchestrators 列表**
+#### Step 2：扩 Application + stop 处理
 
-[`src/application/types.ts`](../../../src/application/types.ts) 增加 `orchestrators` 字段（dashboard / 测试用）。`stop()` 内调每个 unsubscribeA2A。
+[`src/application/types.ts`](../../../src/application/types.ts) 加：
 
-- [ ] **Step 3：跑全套测试**
+```ts
+export interface Application {
+  adapters: ImAdapter[]
+  abortRegistry: AbortRegistry<string>
+  orchestrators: Array<{ agentId: string; orchestrator: ConversationOrchestrator }>
+  worktreeManager: WorktreeManager
+  start(): Promise<void>
+  stop(): Promise<void>
+}
+```
+
+createApplication 末尾 return：
+
+```ts
+const cleanupTimer = setInterval(() => {
+  worktreeManager.cleanupExpired().catch((err) =>
+    log.warn('定时 worktree cleanup 失败', err),
+  )
+}, 24 * 60 * 60 * 1000)
+
+return {
+  adapters: [slack],
+  abortRegistry,
+  orchestrators: orchestrators.map(({ agentId, orchestrator }) => ({ agentId, orchestrator })),
+  worktreeManager,
+  async start() {
+    for (const a of [slack]) await a.start()
+  },
+  async stop() {
+    clearInterval(cleanupTimer)
+    for (const item of orchestrators) item.unsubscribe?.()
+    for (const a of [slack]) await a.stop()
+  },
+}
+```
+
+#### Step 3：跑全套测试 + typecheck
 
 Run: `pnpm test && pnpm typecheck`
-Expected: 全绿
+Expected: 全绿（注意：现有 createApplication.test.ts 可能要小调断言以适应 orchestrators 数组）。
 
-- [ ] **Step 4：commit**
+#### Step 4：commit
 
 ```bash
 git add src/application/createApplication.ts src/application/types.ts
-git commit -m "feat(application): multi 模式装配 N 个 orchestrator + 共享 A2ABus/TaskBoard/Worktree"
+git commit -m "feat(application): multi 模式装配 N 个 orchestrator + 共享 bus/taskBoard/worktree + cleanupTimer"
 ```
 
 ### Task 5.2：testHelpers 具体化（集成测试基础设施）
 
 **Files:**
 - Create: `src/multiAgent/testHelpers.ts`
-- Create: `src/multiAgent/testHelpers.test.ts`（最小自测，确认 helper 自身行为）
+- Create: `src/multiAgent/testHelpers.test.ts`
 
-集成测试（Task 5.3）依赖三个 helper。**先把它们的签名 + 内部行为定下来再写测试**。
+按 notes §8.6：mock executor 是 async generator，按事件序列驱动；高层包装从 `MockTurnIntent[]` 自动生成事件。
 
-#### 5.2.1 `mockExecutorFromScript(script)`
+#### Step 1：定义类型与签名
 
-把脚本数组转成 `AgentExecutor`，模拟模型按预设输出 turn。
-
-**脚本类型**：
 ```ts
-type MockTurn =
-  | { kind: 'text'; finalText: string }                                   // 普通输出
-  | { kind: 'tool'; toolName: string; args: Record<string, unknown> }    // 调一个 tool 后继续下一 turn
-  | { kind: 'mixed'; toolName: string; args: Record<string, unknown>; finalText: string }  // 调 tool 同时输出最终文本
+// src/multiAgent/testHelpers.ts
+import { execFileSync } from 'node:child_process'
+import fs from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { vi } from 'vitest'
+import type { ToolSet, CoreAssistantMessage, CoreToolMessage } from 'ai'
+import type {
+  AgentExecutor,
+  AgentExecutionRequest,
+} from '@/agent/AgentExecutor.ts'
+import type { AgentExecutionEvent } from '@/core/events.ts'
+import type {
+  InboundMessage,
+  EventSink,
+  ConfirmSender,
+} from '@/im/types.ts'
+import { resolveWorkspacePaths, type WorkspacePaths } from '@/workspace/paths.ts'
+import { createA2ABus, type A2ABus } from './A2ABus.ts'
+import { createTaskBoardManager, type TaskBoardManager } from './TaskBoard.ts'
+import { createWorktreeManager, type WorktreeManager } from './WorktreeManager.ts'
+import { newTaskId, type TaskBoard } from './types.ts'
+// ...
+
+export type MockTurnIntent =
+  | { kind: 'text'; text: string }
+  | { kind: 'tool'; toolName: string; args: Record<string, unknown> }
 ```
 
-**mockExecutor 行为**：
-- 第 N 次被调用 `run(...)`，按 script[N] 行为：
-  - `kind: 'text'` → 返回 `{ steps: [], finalText, usage: zeroUsage() }`
-  - `kind: 'tool'` → 真执行 `tools[toolName].execute(args, mockOptions)`（→ 真写 envelope / 真改 task），然后返回 `{ steps: [{toolCall, toolResult}], finalText: '' }`
-  - `kind: 'mixed'` → 同 tool + finalText
-- 第 N+1 次调用：用脚本下一项；脚本耗尽则抛错"unexpected extra turn"
-
-**关键**：mock 必须**真调 tool execute**，否则集成测试只是在测假数据。
-
-实现：
+#### Step 2：实现 mockExecutorFromTurns
 
 ```ts
-import type { AgentExecutor } from '@/agent/AgentExecutor.ts'
-import type { ToolSet } from 'ai'
+type FinalMsg = (CoreAssistantMessage | CoreToolMessage) & { id: string }
 
-export function mockExecutorFromScript(
-  script: MockTurn[],
+export function mockExecutorFromTurns(
+  turns: MockTurnIntent[],
   tools: ToolSet,
 ): AgentExecutor {
-  let cursor = 0
   return {
-    async run() {
-      if (cursor >= script.length) throw new Error('mock executor: unexpected extra turn')
-      const step = script[cursor++]!
-      const usage = { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, totalCostUSD: 0, stepCount: 1 }
-      if (step.kind === 'text') {
-        return { finalText: step.finalText, steps: [], usage }
+    async *execute(_req: AgentExecutionRequest): AsyncGenerator<AgentExecutionEvent> {
+      yield { type: 'lifecycle', phase: 'started' }
+      const finalMessages: FinalMsg[] = []
+      for (const [i, turn] of turns.entries()) {
+        if (turn.kind === 'text') {
+          yield { type: 'assistant-message', text: turn.text }
+          finalMessages.push({
+            id: `mock-${i}`,
+            role: 'assistant',
+            content: [{ type: 'text', text: turn.text }],
+          })
+        } else if (turn.kind === 'tool') {
+          const toolDef = (tools as Record<string, { execute?: Function }>)[turn.toolName]
+          if (!toolDef?.execute) {
+            throw new Error(`mockExecutor: 未知 tool ${turn.toolName}`)
+          }
+          const toolCallId = `mock-tc-${i}`
+          const result = await toolDef.execute(turn.args, { toolCallId, messages: [] })
+          finalMessages.push({
+            id: `mock-${i}-call`,
+            role: 'assistant',
+            content: [
+              { type: 'tool-call', toolCallId, toolName: turn.toolName, args: turn.args },
+            ],
+          })
+          finalMessages.push({
+            id: `mock-${i}-result`,
+            role: 'tool',
+            content: [{ type: 'tool-result', toolCallId, toolName: turn.toolName, result }],
+          })
+        }
       }
-      const toolDef = (tools as any)[step.toolName]
-      if (!toolDef?.execute) throw new Error(`mock executor: 未知 tool ${step.toolName}`)
-      const toolResult = await toolDef.execute(step.args, { toolCallId: 'mock-' + cursor, messages: [] })
-      const finalText = step.kind === 'mixed' ? step.finalText : ''
-      return {
-        finalText,
-        steps: [{ toolCall: { toolName: step.toolName, args: step.args }, toolResult }],
-        usage,
+      yield {
+        type: 'usage-info',
+        usage: { durationMs: 0, totalCostUSD: 0, modelUsage: [] },
       }
+      yield { type: 'lifecycle', phase: 'completed', finalMessages }
     },
-  } as AgentExecutor
+  }
 }
 ```
 
-**注意**：实际 `AgentExecutor` 接口可能复杂（streaming / tool-roundtrip 多 step）。先简化为"每次 run 返回一个 turn"，足够 P0 集成测试需要。如果 ConversationOrchestrator.handle 期望 executor 自己跑多步骤循环，则 mock 内自己实现 while-loop（看现有 `AiSdkExecutor.ts`）。
-
-#### 5.2.2 `setupMultiAgentApp(scripts)` / `setupSingleAgentApp(script)`
-
-启动 mini application（不接 Slack），返回 orchestrators + 共享上下文：
+#### Step 3：实现 setupMultiAgentApp / makeUserInbound / drain / spySink
 
 ```ts
-interface MultiAgentTestApp {
+export interface MultiAgentTestApp {
   paths: WorkspacePaths
   pm: ConversationOrchestrator
   coding: ConversationOrchestrator
@@ -3426,19 +3744,19 @@ interface MultiAgentTestApp {
   worktreeManager: WorktreeManager
   abortRegistry: AbortRegistry<string>
   runQueue: SessionRunQueue
-  taskId: string                    // 第一个 PM mention 创建的 task
+  taskId(): string
   drain(timeoutMs?: number): Promise<void>
   noopSink(): EventSink
-  spySink(): EventSink & { events: EventSinkEvent[]; finalize: ReturnType<typeof vi.fn> }
+  spySink(): EventSink & { events: AgentExecutionEvent[]; finalize: ReturnType<typeof vi.fn> }
 }
 
-async function setupMultiAgentApp(args: {
-  pm: MockTurn[]
-  coding: MockTurn[]
-  cs?: MockTurn[]
+export async function setupMultiAgentApp(args: {
+  pm: MockTurnIntent[]
+  coding: MockTurnIntent[]
+  cs?: MockTurnIntent[]
 }): Promise<MultiAgentTestApp> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-slack-it-'))
-  // git init + commit 让 worktree 能用
+  // git init 让 worktree 能用
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir })
   execFileSync('git', ['config', 'user.email', 'it@example.com'], { cwd: dir })
   execFileSync('git', ['config', 'user.name', 'it'], { cwd: dir })
@@ -3455,76 +3773,130 @@ async function setupMultiAgentApp(args: {
   const runQueue = new SessionRunQueue()
   const sessionStore = createSessionStore(paths)
   const memoryStore = createMemoryStore(paths)
-  const stubLogger: Logger = { /* ... */ }
+  const stubLogger: Logger = {
+    withTag: () => stubLogger,
+    trace: () => {}, debug: () => {}, info: () => {}, warn: () => {}, error: () => {},
+  }
 
-  // 三个 orchestrator 共享上述实例
-  const buildOrch = (agentId: 'pm' | 'coding' | 'cs', script: MockTurn[]) => {
-    const tools = buildBuiltinTools(/* ctx with multiAgent injected by orchestrator */)
-    return createConversationOrchestrator({
+  let resolvedTaskId = ''
+  const resolveTaskIdForInbound = async (
+    input: InboundMessage,
+    agentId: string,
+  ): Promise<string> => {
+    if (input.parentEnvelopeId) {
+      throw new Error('resolveTaskIdForInbound 不应处理 A2A 合成消息')
+    }
+    if (resolvedTaskId) return resolvedTaskId
+    resolvedTaskId = newTaskId()
+    await taskBoard.create({
+      taskId: resolvedTaskId,
+      threadTs: input.threadTs,
+      channelId: input.channelId,
+      originalUser: input.userId,
+      goal: '',
+      state: 'active',
+      activeAgent: agentId,
+    })
+    return resolvedTaskId
+  }
+
+  const buildOrch = (agentId: 'pm' | 'coding' | 'cs', turns: MockTurnIntent[]) => {
+    const orch = createConversationOrchestrator({
       agentId,
-      toolsBuilder: (cu, ic) =>
-        buildBuiltinTools({ cwd: dir, logger: stubLogger, currentUser: cu, ...ic }, {
-          memoryStore, selfImproveCollector: {} as any, selfImproveGenerator: {} as any,
-          confirmBridge: {} as any, paths, logger: stubLogger,
-        }),
-      executorFactory: (tools) => mockExecutorFromScript(script, tools),
-      sessionStore, memoryStore, runQueue, abortRegistry,
+      toolsBuilder: (cu, imContext) => {
+        // multi-agent 透传：把 imContext.multiAgent 注入 ToolContext
+        return buildBuiltinTools(
+          {
+            cwd: dir,
+            logger: stubLogger,
+            currentUser: cu,
+            ...(imContext.confirm ? { confirm: imContext.confirm } : {}),
+            ...(imContext.multiAgent ? { multiAgent: imContext.multiAgent } : {}),
+          },
+          {
+            memoryStore,
+            selfImproveCollector: {} as any,
+            selfImproveGenerator: {} as any,
+            confirmBridge: {} as any,
+            paths,
+            logger: stubLogger,
+          },
+        )
+      },
+      executorFactory: (tools) => mockExecutorFromTurns(turns, tools),
+      sessionStore,
+      memoryStore,
+      runQueue,
+      abortRegistry,
       systemPrompt: '',
       logger: stubLogger,
       multiAgent: {
         bus,
         taskBoard,
-        resolveTaskId: async (input) => resolveTaskIdForInbound(input, agentId, taskBoard, { paths }),
+        resolveTaskId: (input) => resolveTaskIdForInbound(input, agentId),
       },
     })
+    return orch
   }
 
   const pm = buildOrch('pm', args.pm)
   const coding = buildOrch('coding', args.coding)
   const cs = args.cs ? buildOrch('cs', args.cs) : undefined
-  pm.subscribeA2A!()
-  coding.subscribeA2A!()
+  pm.subscribeA2A?.()
+  coding.subscribeA2A?.()
   cs?.subscribeA2A?.()
-
-  let taskId = ''  // 第一次 PM handle 时填充
 
   return {
     paths, pm, coding, cs, bus, taskBoard, worktreeManager,
     abortRegistry, runQueue,
-    get taskId() { return taskId },
+    taskId: () => resolvedTaskId,
     async drain(timeoutMs = 5000) {
       const start = Date.now()
-      // 轮询直到所有 agent 的 inbox 空 + runQueue 无积压且无 paused
       while (Date.now() - start < timeoutMs) {
+        // task 完成（done / aborted）即视为 drain 成功
+        if (resolvedTaskId) {
+          const board = await taskBoard.read(resolvedTaskId)
+          if (board && (board.state === 'done' || board.state === 'aborted')) return
+        }
+        // 或者所有 agent 都 idle（无 inbox + 无 pending + 无 paused）
         const idle =
           bus.inboxSize('pm') === 0 &&
           bus.inboxSize('coding') === 0 &&
           bus.inboxSize('cs') === 0 &&
-          !runQueue.hasPending() &&  // 需要 SessionRunQueue 暴露 hasPending()
-          runQueue.pausedCount() === 0
+          !runQueue.hasPending() &&
+          !runQueue.isPaused('slack:C001:1.2:pm') &&
+          !runQueue.isPaused('slack:C001:1.2:coding') &&
+          !runQueue.isPaused('slack:C001:1.2:cs')
         if (idle) return
         await new Promise((r) => setTimeout(r, 20))
       }
-      throw new Error(`drain timeout after ${timeoutMs}ms`)
+      throw new Error(
+        `drain timeout after ${timeoutMs}ms. taskState=${resolvedTaskId ? (await taskBoard.read(resolvedTaskId))?.state : 'none'}, ` +
+        `inbox(pm/coding/cs)=${bus.inboxSize('pm')}/${bus.inboxSize('coding')}/${bus.inboxSize('cs')}`,
+      )
     },
-    noopSink: () => ({ onEvent: async () => {}, finalize: async () => {} }),
+    noopSink: () => ({
+      async onEvent() {},
+      async finalize() {},
+      terminalPhase: undefined,
+    }),
     spySink: () => {
-      const events: EventSinkEvent[] = []
+      const events: AgentExecutionEvent[] = []
       const finalize = vi.fn(async () => {})
-      return { onEvent: async (e) => { events.push(e) }, finalize, events }
+      return {
+        async onEvent(e) { events.push(e) },
+        finalize,
+        events,
+        terminalPhase: undefined,
+      }
     },
   }
 }
-```
 
-#### 5.2.3 `makeUserInbound(text, options?)`
-
-构造一条来自 Slack mention 的 InboundMessage：
-
-```ts
-function makeUserInbound(text: string, opts: {
-  channelId?: string; threadTs?: string; userId?: string
-} = {}): InboundMessage {
+export function makeUserInbound(
+  text: string,
+  opts: { channelId?: string; threadTs?: string; userId?: string } = {},
+): InboundMessage {
   return {
     imProvider: 'slack',
     channelId: opts.channelId ?? 'C001',
@@ -3534,284 +3906,296 @@ function makeUserInbound(text: string, opts: {
     userId: opts.userId ?? 'U999',
     userName: opts.userId ?? 'U999',
     text,
-    // 不带 parentEnvelopeId / replyTo / a2aReferences（mention 路径）
   }
 }
 ```
 
-- [ ] **Step 1：扩 SessionRunQueue 暴露 hasPending / pausedCount**
+#### Step 4：写自测
 
 ```ts
-hasPending(): boolean { return [...this.queues.values()].some((q) => q.length > 0 || q.running) }
-pausedCount(): number { return this.paused.size }
-isPaused(sessionKey: string): boolean { return this.paused.has(sessionKey) }
-```
-
-加测试覆盖（同 Task 4.5 Step 2 的 pause/resume 测试一并补）。
-
-- [ ] **Step 2：实现 testHelpers.ts**
-
-按上面三个 section 落地代码到 `src/multiAgent/testHelpers.ts`。
-
-- [ ] **Step 3：写 testHelpers 自测**
-
-`src/multiAgent/testHelpers.test.ts`：
-
-```ts
-it('mockExecutorFromScript invokes tool.execute when kind=tool', async () => {
-  const fakeTool = {
-    execute: vi.fn(async (args) => ({ ok: true, args })),
-  }
-  const tools = { fake: fakeTool } as any
-  const exec = mockExecutorFromScript(
-    [{ kind: 'tool', toolName: 'fake', args: { x: 1 } }],
-    tools,
-  )
-  const result = await exec.run()
-  expect(fakeTool.execute).toHaveBeenCalledWith({ x: 1 }, expect.objectContaining({ toolCallId: expect.any(String) }))
-  expect(result.steps).toHaveLength(1)
-})
-
-it('setupMultiAgentApp creates 3 isolated orchestrators sharing bus/taskBoard', async () => {
-  const app = await setupMultiAgentApp({
-    pm: [{ kind: 'text', finalText: 'hi <final/>' }],
-    coding: [],
+// src/multiAgent/testHelpers.test.ts
+describe('mockExecutorFromTurns', () => {
+  it('emits started/completed lifecycle with synthesized finalMessages', async () => {
+    const exec = mockExecutorFromTurns(
+      [{ kind: 'text', text: 'hello' }],
+      {} as any,
+    )
+    const events = []
+    for await (const e of exec.execute({ systemPrompt: '', messages: [], abortSignal: new AbortController().signal })) {
+      events.push(e)
+    }
+    expect(events[0]).toEqual({ type: 'lifecycle', phase: 'started' })
+    const completed = events.find((e) => e.type === 'lifecycle' && (e as any).phase === 'completed') as any
+    expect(completed.finalMessages).toHaveLength(1)
+    expect(completed.finalMessages[0].role).toBe('assistant')
   })
-  expect(app.pm).toBeDefined()
-  expect(app.coding).toBeDefined()
-  expect(app.bus.inboxSize('pm')).toBe(0)
+
+  it('invokes tool.execute when kind=tool', async () => {
+    const fakeExec = vi.fn(async () => ({ ok: true }))
+    const tools = { fake: { execute: fakeExec } } as any
+    const exec = mockExecutorFromTurns(
+      [{ kind: 'tool', toolName: 'fake', args: { x: 1 } }],
+      tools,
+    )
+    for await (const _ of exec.execute({ systemPrompt: '', messages: [], abortSignal: new AbortController().signal })) {}
+    expect(fakeExec).toHaveBeenCalledWith({ x: 1 }, expect.objectContaining({ toolCallId: expect.any(String) }))
+  })
+
+  it('throws on unknown tool', async () => {
+    const exec = mockExecutorFromTurns(
+      [{ kind: 'tool', toolName: 'unknown', args: {} }],
+      {} as any,
+    )
+    await expect(async () => {
+      for await (const _ of exec.execute({ systemPrompt: '', messages: [], abortSignal: new AbortController().signal })) {}
+    }).rejects.toThrow(/未知 tool/)
+  })
 })
 
-it('drain timeout throws clear message', async () => {
-  const app = await setupMultiAgentApp({ pm: [], coding: [] })
-  app.bus.post({  // 强行投一个永远没人订阅的 envelope（pm/coding 已订阅，所以投个 unknown）
-    /* ... */
-  } as any).catch(() => {})  // 实际很难造 timeout，这里测试 timeout error 文案
+describe('setupMultiAgentApp', () => {
+  it('creates 3 isolated orchestrators sharing infrastructure', async () => {
+    const app = await setupMultiAgentApp({
+      pm: [], coding: [], cs: [],
+    })
+    expect(app.pm).toBeDefined()
+    expect(app.coding).toBeDefined()
+    expect(app.cs).toBeDefined()
+    expect(app.bus.inboxSize('pm')).toBe(0)
+  })
+
+  it('drain returns when task reaches done state', async () => {
+    const app = await setupMultiAgentApp({
+      pm: [{ kind: 'tool', toolName: 'say_to_thread', args: { content: 'done', isFinal: true } }],
+      coding: [],
+    })
+    void app.pm.handle(makeUserInbound('go'), app.spySink())
+    await app.drain(2000)
+    expect((await app.taskBoard.read(app.taskId()))?.state).toBe('done')
+  })
+
+  it('drain throws timeout when no completion', async () => {
+    const app = await setupMultiAgentApp({
+      pm: [{ kind: 'tool', toolName: 'mark_waiting', args: {} }],
+      coding: [],
+    })
+    void app.pm.handle(makeUserInbound('go'), app.spySink())
+    await expect(app.drain(200)).rejects.toThrow(/drain timeout/)
+  })
 })
 ```
 
-- [ ] **Step 4：跑 testHelpers 自测**
-
-Run: `pnpm test src/multiAgent/testHelpers.test.ts`
-Expected: 全绿
-
-- [ ] **Step 5：commit**
+#### Step 5：跑测试 + commit
 
 ```bash
-git add src/multiAgent/testHelpers.ts src/multiAgent/testHelpers.test.ts src/orchestrator/SessionRunQueue.ts src/orchestrator/SessionRunQueue.test.ts
-git commit -m "test(multiAgent): testHelpers（mockExecutorFromScript / setupMultiAgentApp / makeUserInbound）"
+pnpm test src/multiAgent/testHelpers.test.ts && \
+git add src/multiAgent/testHelpers.ts src/multiAgent/testHelpers.test.ts && \
+git commit -m "test(multiAgent): testHelpers（mockExecutorFromTurns / setupMultiAgentApp / makeUserInbound / drain）"
 ```
 
-### Task 5.3：端到端 fixture 集成测试（PM + Coding）
+### Task 5.3：端到端集成测试（PM + Coding）
 
 **Files:**
 - Create: `src/multiAgent/integration.test.ts`
 
-测试场景（spec §13 P0 单位价值）：
-- 启动 mini application：PM + Coding，mock executor 按 Task 5.2 的 `MockTurn[]` 脚本运行
-- PM 收到模拟用户 mention「修 foo bug」
-- PM turn 1：调 `say_to_thread('PM → Coding：修 foo')` + 调 `delegate_to(coding, 'fix foo')` + 输出 `<waiting/>`
-- Coding turn 1：处理 envelope，输出 'fixed at commit ab12cd'（无 `<waiting/>`，自动写 reply envelope to PM）
-- PM turn 2（被 reply envelope 唤醒）：输出 '✓ 已合并 PR. <final/>'
+测试 spec §13 P0 单位价值："PM + Coding 跑通一次完整 A2A 来回 + worktree"。
 
-**预期 envelope 序列**（dev 时间序）：
-1. `pm → thread, broadcast`（say_to_thread）
-2. `pm → coding, delegate`（delegate_to）
-3. `coding → pm, reply`（auto-envelope 承运）
-4. `pm → thread, final`（auto-envelope 承运 + task.state→done）
-
-**脚本**（采用 Task 5.2 的 MockTurn 类型）：
+#### 脚本设计
 
 ```ts
 const scripts = {
   pm: [
-    // turn 1：先发进度短消息 → 再 delegate → 输出 <waiting/>
+    // turn 1（用户 mention 触发）：先发进度短消息 → 派给 coding → mark_waiting
     { kind: 'tool', toolName: 'say_to_thread', args: { content: 'PM → Coding：修 foo' } },
     { kind: 'tool', toolName: 'delegate_to', args: { agent: 'coding', content: 'fix foo bug' } },
-    { kind: 'text', finalText: '在等 Coding 回复 <waiting/>' },
-    // turn 2：被 reply envelope 唤醒
-    { kind: 'text', finalText: '✓ 已合并 PR. <final/>' },
+    { kind: 'tool', toolName: 'mark_waiting', args: { reason: '等 Coding 回' } },
+    // turn 2（被 reply envelope 唤醒）：发完成消息 + isFinal
+    { kind: 'tool', toolName: 'say_to_thread', args: { content: '✓ 已合并 PR', isFinal: true } },
   ],
   coding: [
-    // turn 1：直接输出最终文本，runtime 自动写 reply envelope
-    { kind: 'text', finalText: 'fixed at commit ab12cd' },
+    // turn 1（被 PM delegate 唤醒）：直接回 finalText，runtime 自动 reply
+    { kind: 'text', text: 'fixed at commit ab12cd' },
   ],
-} satisfies { pm: MockTurn[]; coding: MockTurn[] }
+} satisfies { pm: MockTurnIntent[]; coding: MockTurnIntent[] }
 ```
 
-注意 mock script 把 PM 的 turn 1 拆成 3 个 mock-turn（每个 mock-turn 对应一次 executor.run）：先 say_to_thread、再 delegate_to、最后 finalText `<waiting/>`。如果 ConversationOrchestrator 期待单次 run 内完成多 step，则 mock 需自己实现循环——在 Task 5.2 实现时按现有 `AiSdkExecutor.ts` 的接口契合。
+注：`drain` 等 task.state===done 即返回；reply 触发 PM resume → PM turn 2 跑完 say_to_thread(isFinal=true)。
 
-**断言**（按 envelope 类别 + 路径 + 状态分维度）：
-
-```ts
-// 内部 envelope（task 内 agent 间）
-const internal = envelopes.filter((e) => e.to !== 'thread')
-expect(internal.find((e) => e.from === 'pm' && e.to === 'coding' && e.intent === 'delegate')).toBeDefined()
-expect(internal.find((e) => e.from === 'coding' && e.to === 'pm' && e.intent === 'reply')).toBeDefined()
-
-// 出口 envelope（→ thread）：至少一条 broadcast 进度 + 一条 final
-const outbound = envelopes.filter((e) => e.to === 'thread')
-expect(outbound.find((e) => e.intent === 'broadcast')).toBeDefined()
-expect(outbound.find((e) => e.intent === 'final')).toBeDefined()
-
-// task 状态
-expect((await app.taskBoard.read(app.taskId))?.state).toBe('done')
-
-// sessions 双向落盘
-const pmMsgs = path.join(app.paths.sessionsDir, 'slack/general.C001.1.2/pm/messages.jsonl')
-const codingMsgs = path.join(app.paths.sessionsDir, 'slack/general.C001.1.2/coding/messages.jsonl')
-expect(existsSync(pmMsgs)).toBe(true)
-expect(existsSync(codingMsgs)).toBe(true)
-```
-
-- [ ] **Step 1：写集成测试**
+#### 断言
 
 ```ts
-// src/multiAgent/integration.test.ts
-import { describe, it, expect } from 'vitest'
-import fs from 'node:fs/promises'
-import path from 'node:path'
-import { setupMultiAgentApp, makeUserInbound } from './testHelpers.ts'  // 新建辅助
-
 describe('Multi-Agent end-to-end (P0 fixture)', () => {
   it('PM → Coding → PM completes a delegate-reply-final round trip', async () => {
-    const app = await setupMultiAgentApp({
-      pm: [
-        { delegateTo: { agent: 'coding', content: 'fix foo' }, waiting: true },
-        { finalText: '✓ 已合并', finalEnvelope: true },
-      ],
-      coding: [
-        { replyTo: { agent: 'pm', content: '已修复' } },
-      ],
-    })
+    const app = await setupMultiAgentApp({ pm: scripts.pm, coding: scripts.coding })
+    void app.pm.handle(makeUserInbound('修 foo bug'), app.noopSink())
+    await app.drain(5000)
 
-    await app.pm.handle(makeUserInbound('修复 foo bug'), app.noopSink())
+    const taskId = app.taskId()
+    const envelopes = await readAllEnvelopes(app.paths, taskId)
 
-    // 等所有 A2A 流转完成
-    await app.drain()
+    // 内部 envelope（agent 间）
+    const internal = envelopes.filter((e) => e.to !== 'thread')
+    expect(internal.find((e) => e.from === 'pm' && e.to === 'coding' && e.intent === 'delegate'))
+      .toBeDefined()
+    expect(internal.find((e) => e.from === 'coding' && e.to === 'pm' && e.intent === 'reply'))
+      .toBeDefined()
 
-    const envelopes = await fs.readdir(
-      path.join(app.paths.root, 'tasks', app.taskId, 'envelopes'),
-    )
-    expect(envelopes.length).toBeGreaterThanOrEqual(3)
+    // 出口 envelope（→ thread）：至少一条 broadcast 进度 + 一条 final
+    const outbound = envelopes.filter((e) => e.to === 'thread')
+    expect(outbound.find((e) => e.intent === 'broadcast')).toBeDefined()
+    expect(outbound.find((e) => e.intent === 'final')).toBeDefined()
 
-    const board = await app.taskBoard.read(app.taskId)
+    // task 状态
+    const board = await app.taskBoard.read(taskId)
     expect(board?.state).toBe('done')
 
-    expect(
-      await fs
-        .stat(
-          path.join(
-            app.paths.sessionsDir,
-            'slack',
-            `<chan>.<id>.<ts>/pm/messages.jsonl`,
-          ),
-        )
-        .then(() => true)
-        .catch(() => false),
-    ).toBe(true)
+    // sessions 双向落盘
+    const pmMsgs = path.join(app.paths.sessionsDir, 'slack/general.C001.1.2/pm/messages.jsonl')
+    const codingMsgs = path.join(app.paths.sessionsDir, 'slack/general.C001.1.2/coding/messages.jsonl')
+    expect(existsSync(pmMsgs)).toBe(true)
+    expect(existsSync(codingMsgs)).toBe(true)
   })
 
   it('runs single-agent mode unchanged (regression guard)', async () => {
-    const app = await setupSingleAgentApp({ default: [{ finalText: 'hi' }] })
+    // 单 agent 模式起 mini app（agents 长度 1）：不接 multiAgent deps，不订阅 A2A
+    const app = await setupSingleAgentApp({
+      default: [{ kind: 'text', text: 'hi' }],
+    })
     const sink = app.spySink()
     await app.default.handle(makeUserInbound('hi'), sink)
     expect(sink.finalize).toHaveBeenCalled()
-    // 没有 task / envelope 文件
-    expect(
-      await fs
-        .stat(path.join(app.paths.root, 'tasks'))
-        .then(() => true)
-        .catch(() => false),
-    ).toBe(false)
+    // 没有 task 文件
+    expect(existsSync(path.join(app.paths.root, 'tasks'))).toBe(false)
   })
 })
 ```
 
-- [ ] **Step 2：实现 testHelpers**
+`setupSingleAgentApp` 在 testHelpers 实现：与 setupMultiAgentApp 类似但 deps 不含 multiAgent，agentId='default'。
 
-`src/multiAgent/testHelpers.ts` 提供：
-- `setupMultiAgentApp(scripts)` / `setupSingleAgentApp(scripts)`：起 mini app（无 Slack）
-- `makeUserInbound(text)`：构造 InboundMessage
-- `mockExecutorFromScript(script)`：模型脚本 → AgentExecutor mock
+`readAllEnvelopes(paths, taskId)`：读 `tasks/<id>/envelopes/*.json` 并 parse。
 
-- [ ] **Step 3：跑集成测试**
+#### Step 1：写集成测试
+
+按上面脚本 + 断言落到 `src/multiAgent/integration.test.ts`。
+
+#### Step 2：跑测试
 
 Run: `pnpm test src/multiAgent/integration.test.ts`
 Expected: 2 PASS
 
-- [ ] **Step 4：commit**
+如果 PM turn 2 不被触发，调试：reply envelope 写文件后 bus 是否 dispatch 给 PM？PM 是否真的 resume 了？打 log 跟踪 envelope.id + sessionKey。
+
+#### Step 3：commit
 
 ```bash
 git add src/multiAgent/integration.test.ts src/multiAgent/testHelpers.ts
-git commit -m "test(multiAgent): P0 端到端 fixture 集成测试，PM+Coding 完整 A2A 来回"
+git commit -m "test(multiAgent): P0 端到端集成 PM+Coding A2A 完整来回 + 单 Agent 回归 guard"
 ```
 
-### Task 5.4：daemon worktree 定时清理任务
+### Task 5.4：abortTask 触发器（仅落机制，不接入 Slack）
 
 **Files:**
-- Modify: TBD（先预研，见 Step 1）
+- Create: `src/multiAgent/abortTask.ts`
+- Create: `src/multiAgent/abortTask.test.ts`
 
-spec §6.5 要求 daemon 启动 + 每天凌晨扫一次 cleanupExpired。启动期清理已在 Task 5.1 createApplication 中做了；这里只加每日定时器。
-
-- [ ] **Step 1：预研 daemon 入口**
-
-```bash
-ls src/daemon/
-rg -n "createApplication|setInterval|app\.start\b" src/daemon/ src/cli/commands/daemon.ts
-```
-
-确定挂载点：通常是 daemon 启动期 `app.start()` 之后立刻设 timer + `app.stop()` 时清 timer。如 daemon 是事件驱动而非"main loop"，timer 仍然挂在 `app` 生命周期上即可（Node 事件循环会保活）。
-
-- [ ] **Step 2：在 application 内挂 timer**
-
-把 timer 挂在 [`src/application/createApplication.ts`](../../../src/application/createApplication.ts) 返回的 application 实例上，这样 daemon / CLI / e2e 都共享同一处：
+按 spec §5.4 + notes §5：单点编排函数，由 P1 接入 Slack stop 命令 / reaction 触发。P0 只落机制 + 单测，**不在 SlackAdapter / mentionCommandRouter 接入**。
 
 ```ts
-const cleanupTimer = setInterval(() => {
-  worktreeManager.cleanupExpired().catch((err) =>
-    log.warn('定时 worktree cleanup 失败', err),
-  )
-}, 24 * 60 * 60 * 1000)
+// src/multiAgent/abortTask.ts
+import type { A2ABus } from './A2ABus.ts'
+import type { TaskBoardManager } from './TaskBoard.ts'
+import type { AbortRegistry } from '@/orchestrator/AbortRegistry.ts'
 
-return {
-  // ...
-  async stop() {
-    clearInterval(cleanupTimer)
-    for (const a of [slack]) await a.stop()
-    for (const o of orchestrators) o.unsubscribeA2A?.()
-  },
+export async function abortTask(args: {
+  taskId: string
+  reason?: string
+  abortRegistry: AbortRegistry<string>
+  bus: A2ABus
+  taskBoard: TaskBoardManager
+}): Promise<void> {
+  args.abortRegistry.abortTask(args.taskId, args.reason)
+  args.bus.clearInboxesForTask(args.taskId)
+  await args.taskBoard.update(args.taskId, { state: 'aborted' })
 }
 ```
 
-注意 `stop()` 还要 unsubscribe 所有 orchestrator 的 A2A handler（Task 5.1 Step 2 已声明）。
+A2ABus.clearInboxesForTask 实现（修改 [`src/multiAgent/A2ABus.ts`](../../../src/multiAgent/A2ABus.ts) 加方法）：
 
-- [ ] **Step 3：commit**
+```ts
+export interface A2ABus {
+  // ... 原有
+  clearInboxesForTask(taskId: string): void
+}
 
-```bash
-git add src/application/createApplication.ts
-git commit -m "feat(application): 每日定时清理过期 worktree + stop() 时取消所有 A2A 订阅"
+// 实现：
+clearInboxesForTask(taskId) {
+  for (const [id, inbox] of inboxes.entries()) {
+    inboxes.set(id, inbox.filter((env) => env.taskId !== taskId))
+  }
+},
 ```
 
-### ✅ Chunk 5 验证（也是 P0 终验）
+测试（abortTask.test.ts）：
+
+```ts
+it('abortTask aborts all task-associated turns + clears inbox + sets task state', async () => {
+  const app = await setupMultiAgentApp({
+    pm: [{ kind: 'tool', toolName: 'mark_waiting', args: {} }],
+    coding: [],
+  })
+  void app.pm.handle(makeUserInbound('go'), app.noopSink())
+  await new Promise((r) => setTimeout(r, 100))   // 让 PM 跑完进入 paused
+  // 投个 inbox envelope（不 dispatch 因为 coding 在 pauseed 之前已 subscribe；
+  // 这里我们直接 mark coding 的 inbox 有数据）
+  await app.bus.post({
+    id: 'env_x', taskId: app.taskId(),
+    from: 'pm', to: 'cs', intent: 'delegate',  // cs 没订阅，会 buffer
+    content: 'x', createdAt: new Date().toISOString(),
+  })
+  expect(app.bus.inboxSize('cs')).toBeGreaterThan(0)
+
+  await abortTask({
+    taskId: app.taskId(),
+    reason: 'user stop',
+    abortRegistry: app.abortRegistry,
+    bus: app.bus,
+    taskBoard: app.taskBoard,
+  })
+
+  expect(app.bus.inboxSize('cs')).toBe(0)
+  expect((await app.taskBoard.read(app.taskId()))?.state).toBe('aborted')
+})
+```
+
+#### Step 1-3：实现 + 测试 + commit
+
+```bash
+pnpm test src/multiAgent/abortTask.test.ts && \
+git add src/multiAgent/abortTask.ts src/multiAgent/abortTask.test.ts src/multiAgent/A2ABus.ts && \
+git commit -m "feat(multiAgent): abortTask 单点编排 + bus.clearInboxesForTask（P0 仅机制，触发器留 P1）"
+```
+
+### ✅ Chunk 5 验证（P0 终验）
 
 完成后请用户做以下 review：
 
 1. **测试 + 类型全绿**：`pnpm test && pnpm typecheck`
-2. **集成测试断言**：`src/multiAgent/integration.test.ts` 两个 case 都绿
+2. **集成测试断言**：`src/multiAgent/integration.test.ts` 两个 case 都绿（PM+Coding 端到端 + 单 Agent 回归 guard）
 3. **手测单 Agent 回归**：在真 workspace 跑现有所有 e2e（`pnpm e2e`），全绿
-4. **手测 multi 模式雏形**（不接 Slack）：写一段 `tsx` 脚本起 mini application，手动 push 一条 envelope，看到 envelope 文件落盘 + task.json 状态变化 + sessions 多个 agentId 子目录
+4. **手测 multi 雏形**（不接 Slack）：起 setupMultiAgentApp 脚本，验证：
+   - `tasks/<id>/envelopes/` 至少 4 条 envelope（broadcast / delegate / reply / final）
+   - `task.json.state === 'done'`
+   - `sessions/slack/<thread>/{pm,coding}/messages.jsonl` 都存在
 5. **spec §12 单 Agent 回归测试清单逐项验证**：
-   - [ ] 单 mention 触发 → 单 turn 完整跑完 → Slack 回复（手测）
-   - [ ] 多轮 thread 对话 → session 持久化正确（路径多了 `default/` 一层）（手测）
+   - [ ] 单 mention 触发 → 单 turn 跑完 → Slack 回复（手测）
+   - [ ] 多轮 thread 对话 → session 持久化（多了 `default/` 一层）（手测）
    - [ ] channel-tasks 触发 → agent run + 回复（手测）
-   - [ ] context compact 在 maxApproxChars 触达后正常压缩（沿用现有 e2e）
-   - [ ] abort 能中止当前 turn（手测 stop 命令）
-   - [ ] memory / skill 调用结果与今天一致（手测）
+   - [ ] context compact 在 maxApproxChars 触达后正常压缩
+   - [ ] abort 中止当前 turn（手测 stop 命令）
+   - [ ] memory / skill 调用一致
    - [ ] dashboard 各 tab 正常
-   - [ ] 老 `agent.*` 配置自动迁移生效（手测一份旧 yaml）
+   - [ ] 老 `agent.*` 配置自动迁移生效（手测旧 yaml）
 
-P0 = 上述全部通过。可以进入 P1（Slack 多 SocketMode 接入 + onboard 模式选择 + upgrade CLI）。
+P0 = 上述全部通过。可以进入 P1（Slack 多 SocketMode 接入 + onboard 模式选择 + upgrade CLI + abort 触发器接入）。
 
 ---
 
