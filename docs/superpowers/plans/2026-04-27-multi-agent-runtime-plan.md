@@ -1626,12 +1626,712 @@ git commit -m "feat(multiAgent): WorktreeManager per-task git worktree 创建/�
 
 ---
 
-## Chunk 3-N（占位，后续写）
+## Chunk 3：A2ABus + 三个 multi-agent tool
 
-剩余 chunks 待 Chunk 2 review 通过后再写：
+**目标**：把 A2A 总线（内存事件路由 + envelope 文件落盘）+ 三个新 tool（`delegate_to` / `escalate_to_user` / `update_task_board`）做完。Chunk 完成后这些都还是孤立组件，**Chunk 4 才把它们接入 ConversationOrchestrator**。
 
-- **Chunk 3**：A2ABus（内存总线 + envelope 文件落盘）+ 三个 tool（delegate_to / escalate_to_user / update_task_board）
-- **Chunk 4**：ConversationOrchestrator 多 Agent 化（sessionKey 加 agentId、A2A inbox、`<waiting/>` turn pause/resume），单 Agent 回归套件保持全绿
+### Task 3.1：A2ABus
+
+**Files:**
+- Create: `src/multiAgent/A2ABus.ts`
+- Create: `src/multiAgent/A2ABus.test.ts`
+
+接口：
+
+```ts
+interface A2ABus {
+  post(envelope: A2AEnvelope): Promise<void>
+  subscribe(agentId: AgentId, handler: EnvelopeHandler): Unsubscribe
+  // 取已订阅 inbox 内待消费 envelope 数量（dashboard / 测试用）
+  inboxSize(agentId: AgentId): number
+}
+
+type EnvelopeHandler = (envelope: A2AEnvelope) => Promise<void> | void
+type Unsubscribe = () => void
+```
+
+行为：
+- `post`：先按 spec §5.1 写文件 `tasks/<taskId>/envelopes/<id>.json`；`to !== 'thread'` 时再 dispatch 给对应 agent 的订阅者
+- `to === 'thread'` 落盘但**不 dispatch**（出口 envelope 由调用方自行处理 thread 推送，P0 没接 Slack 所以仅落盘）
+- 单 agent 多 subscriber：本 v1 一个 agent 同一时刻仅一个 ConversationOrchestrator subscriber，多 subscribe 取最新（覆盖前者，前者收到 unsubscribe 信号）
+- subscriber 未注册时收到的 envelope：**先 buffer 在 inbox 队列**，subscribe 时按时间序 flush
+
+- [ ] **Step 1：写失败测试**
+
+```ts
+import { describe, it, expect } from 'vitest'
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { existsSync } from 'node:fs'
+import { createA2ABus } from './A2ABus.ts'
+import { resolveWorkspacePaths } from '@/workspace/paths.ts'
+import { newEnvelopeId, newTaskId, type A2AEnvelope } from './types.ts'
+
+async function makeBus() {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-slack-bus-'))
+  const paths = resolveWorkspacePaths(dir)
+  const taskId = newTaskId()
+  await fs.mkdir(path.join(paths.root, 'tasks', taskId, 'envelopes'), { recursive: true })
+  const bus = createA2ABus(paths)
+  return { dir, paths, bus, taskId }
+}
+
+function envelope(taskId: string, partial: Partial<A2AEnvelope> = {}): A2AEnvelope {
+  return {
+    id: newEnvelopeId(),
+    taskId,
+    from: 'pm',
+    to: 'coding',
+    intent: 'delegate',
+    content: 'do thing',
+    createdAt: new Date().toISOString(),
+    ...partial,
+  }
+}
+
+describe('A2ABus', () => {
+  it('post writes envelope file to tasks/<taskId>/envelopes/<id>.json', async () => {
+    const { paths, bus, taskId } = await makeBus()
+    const env = envelope(taskId)
+    await bus.post(env)
+    const file = path.join(paths.root, 'tasks', taskId, 'envelopes', `${env.id}.json`)
+    expect(existsSync(file)).toBe(true)
+    const raw = JSON.parse(await fs.readFile(file, 'utf8'))
+    expect(raw.id).toBe(env.id)
+    expect(raw.content).toBe('do thing')
+  })
+
+  it('post dispatches to subscribed agent immediately', async () => {
+    const { bus, taskId } = await makeBus()
+    const received: A2AEnvelope[] = []
+    bus.subscribe('coding', (e) => { received.push(e) })
+    await bus.post(envelope(taskId))
+    expect(received).toHaveLength(1)
+    expect(received[0].content).toBe('do thing')
+  })
+
+  it('post buffers in inbox when no subscriber, flushes on later subscribe', async () => {
+    const { bus, taskId } = await makeBus()
+    await bus.post(envelope(taskId, { content: 'a' }))
+    await bus.post(envelope(taskId, { content: 'b' }))
+    expect(bus.inboxSize('coding')).toBe(2)
+    const received: A2AEnvelope[] = []
+    bus.subscribe('coding', (e) => { received.push(e) })
+    // 异步 flush，等一帧
+    await new Promise((r) => setTimeout(r, 10))
+    expect(received.map((e) => e.content)).toEqual(['a', 'b'])
+    expect(bus.inboxSize('coding')).toBe(0)
+  })
+
+  it('post with to=thread writes file but does not dispatch', async () => {
+    const { paths, bus, taskId } = await makeBus()
+    const received: A2AEnvelope[] = []
+    bus.subscribe('coding', (e) => { received.push(e) })
+    const env = envelope(taskId, { to: 'thread', intent: 'final', content: 'done' })
+    await bus.post(env)
+    const file = path.join(paths.root, 'tasks', taskId, 'envelopes', `${env.id}.json`)
+    expect(existsSync(file)).toBe(true)
+    expect(received).toHaveLength(0)
+  })
+
+  it('latter subscribe replaces former (former unsubscribed)', async () => {
+    const { bus, taskId } = await makeBus()
+    const aSeen: string[] = []
+    const bSeen: string[] = []
+    bus.subscribe('coding', (e) => { aSeen.push(e.content) })
+    bus.subscribe('coding', (e) => { bSeen.push(e.content) })
+    await bus.post(envelope(taskId, { content: 'after-replace' }))
+    expect(aSeen).toEqual([])
+    expect(bSeen).toEqual(['after-replace'])
+  })
+
+  it('unsubscribe stops dispatch', async () => {
+    const { bus, taskId } = await makeBus()
+    const received: A2AEnvelope[] = []
+    const unsub = bus.subscribe('coding', (e) => { received.push(e) })
+    unsub()
+    await bus.post(envelope(taskId))
+    expect(received).toHaveLength(0)
+  })
+})
+```
+
+- [ ] **Step 2：跑测试看失败**
+
+Run: `pnpm test src/multiAgent/A2ABus.test.ts`
+
+- [ ] **Step 3：实现 A2ABus.ts**
+
+```ts
+import fs from 'node:fs/promises'
+import { type AgentId, type A2AEnvelope } from './types.ts'
+import { envelopeFile, type WorkspacePaths } from '@/workspace/paths.ts'
+
+export type EnvelopeHandler = (envelope: A2AEnvelope) => Promise<void> | void
+export type Unsubscribe = () => void
+
+export interface A2ABus {
+  post(envelope: A2AEnvelope): Promise<void>
+  subscribe(agentId: AgentId, handler: EnvelopeHandler): Unsubscribe
+  inboxSize(agentId: AgentId): number
+}
+
+export function createA2ABus(paths: WorkspacePaths): A2ABus {
+  const handlers = new Map<AgentId, EnvelopeHandler>()
+  const inboxes = new Map<AgentId, A2AEnvelope[]>()
+
+  async function persist(envelope: A2AEnvelope): Promise<void> {
+    const file = envelopeFile(paths, envelope.taskId, envelope.id)
+    await fs.mkdir(path.dirname(file), { recursive: true })
+    await fs.writeFile(file, JSON.stringify(envelope, null, 2))
+  }
+
+  async function dispatch(agentId: AgentId, envelope: A2AEnvelope): Promise<void> {
+    const handler = handlers.get(agentId)
+    if (handler) {
+      await handler(envelope)
+    } else {
+      const inbox = inboxes.get(agentId) ?? []
+      inbox.push(envelope)
+      inboxes.set(agentId, inbox)
+    }
+  }
+
+  return {
+    async post(envelope) {
+      await persist(envelope)
+      if (envelope.to === 'thread') return
+      await dispatch(envelope.to, envelope)
+    },
+
+    subscribe(agentId, handler) {
+      handlers.set(agentId, handler)
+      // flush 已 buffer 的（异步）
+      const buffered = inboxes.get(agentId) ?? []
+      if (buffered.length > 0) {
+        inboxes.set(agentId, [])
+        ;(async () => {
+          for (const env of buffered) {
+            await handler(env)
+          }
+        })().catch(() => {
+          // 单测期望 dispatch 异常被 swallow，让 bus 继续可用；
+          // 真生产场景下 ConversationOrchestrator 的 handler 自带 try/catch + logger
+        })
+      }
+      return () => {
+        // 仅当当前注册的 handler 还是 self 时才清除
+        if (handlers.get(agentId) === handler) {
+          handlers.delete(agentId)
+        }
+      }
+    },
+
+    inboxSize(agentId) {
+      return inboxes.get(agentId)?.length ?? 0
+    },
+  }
+}
+```
+
+需在文件顶部 `import path from 'node:path'`。
+
+- [ ] **Step 4：跑测试通过**
+
+Run: `pnpm test src/multiAgent/A2ABus.test.ts`
+Expected: 6 PASS
+
+- [ ] **Step 5：commit**
+
+```bash
+git add src/multiAgent/A2ABus.ts src/multiAgent/A2ABus.test.ts
+git commit -m "feat(multiAgent): A2ABus 内存路由 + envelope 文件落盘 + inbox buffer"
+```
+
+### Task 3.2：扩展 ToolContext，注入 multi-agent 依赖
+
+**Files:**
+- Modify: `src/agent/tools/bash.ts`（`ToolContext` 类型定义在这里）
+
+为后续三个 tool 提供运行期上下文。沿用现有 ToolContext 风格——追加可选字段，单 agent 模式下为 undefined。
+
+- [ ] **Step 1：扩展 ToolContext**
+
+修改 [`src/agent/tools/bash.ts:6-19`](../../../src/agent/tools/bash.ts) 的 `ToolContext`：
+
+```ts
+import type { AgentId } from '@/multiAgent/types.ts'
+import type { A2ABus } from '@/multiAgent/A2ABus.ts'
+import type { TaskBoardManager } from '@/multiAgent/TaskBoard.ts'
+
+export interface ToolContext {
+  cwd: string
+  logger: {
+    debug(m: string, meta?: unknown): void
+    info(m: string, meta?: unknown): void
+    warn(m: string, meta?: unknown): void
+    error(m: string, meta?: unknown): void
+    withTag(t: string): ToolContext['logger']
+  }
+  currentUser?: { userName: string; userId: string }
+  confirm?: ConfirmSender
+  // 以下三项仅 multi-agent 模式注入；single 模式下整体 undefined
+  multiAgent?: {
+    agentId: AgentId
+    taskId: string
+    bus: A2ABus
+    taskBoard: TaskBoardManager
+  }
+}
+```
+
+- [ ] **Step 2：跑全套测试 + typecheck**
+
+Run: `pnpm test && pnpm typecheck`
+Expected: 全绿（仅扩展 optional 字段，不破坏现有调用）
+
+- [ ] **Step 3：commit**
+
+```bash
+git add src/agent/tools/bash.ts
+git commit -m "feat(tools): ToolContext 增加 multiAgent 可选上下文（agentId/taskId/bus/taskBoard）"
+```
+
+### Task 3.3：delegate_to tool
+
+**Files:**
+- Create: `src/agent/tools/delegateTo.ts`
+- Test: `src/agent/tools/multiAgentTools.test.ts`（三个 tool 共用一个测试文件）
+
+行为（spec §5.2）：
+- 校验 `agent !== self`、`agent ∈ {'pm','coding','cs'}`
+- 构造 envelope（intent='delegate'）+ post 到 bus
+- 同步返回 `{ envelopeId, status: 'queued' }`
+- 单 agent 模式下（`ctx.multiAgent` 不存在）调用 → 抛错"该工具仅在 multi-agent 模式可用"
+
+- [ ] **Step 1：先写所有三个 tool 的失败测试（共用文件）**
+
+创建 `src/agent/tools/multiAgentTools.test.ts`：
+
+```ts
+import { describe, it, expect, beforeEach } from 'vitest'
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { delegateToTool } from './delegateTo.ts'
+import { escalateToUserTool } from './escalateToUser.ts'
+import { updateTaskBoardTool } from './updateTaskBoard.ts'
+import { createA2ABus } from '@/multiAgent/A2ABus.ts'
+import { createTaskBoardManager } from '@/multiAgent/TaskBoard.ts'
+import { resolveWorkspacePaths } from '@/workspace/paths.ts'
+import { newTaskId, type A2AEnvelope } from '@/multiAgent/types.ts'
+import type { ToolContext } from './bash.ts'
+
+const stubLogger: ToolContext['logger'] = {
+  withTag: () => stubLogger,
+  debug: () => {}, info: () => {}, warn: () => {}, error: () => {},
+}
+
+async function makeCtx(agentId: 'pm' | 'coding' | 'cs') {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-slack-mat-'))
+  const paths = resolveWorkspacePaths(dir)
+  const bus = createA2ABus(paths)
+  const tb = createTaskBoardManager(paths)
+  const taskId = newTaskId()
+  const board = await tb.create({
+    taskId, threadTs: '1.2', channelId: 'C001', originalUser: 'U999',
+    goal: '', state: 'active', activeAgent: 'pm',
+  })
+  const ctx: ToolContext = {
+    cwd: dir,
+    logger: stubLogger,
+    multiAgent: { agentId, taskId, bus, taskBoard: tb },
+  }
+  return { dir, paths, bus, tb, ctx, taskId, board }
+}
+
+describe('delegate_to tool', () => {
+  it('posts a delegate envelope and returns envelopeId+queued', async () => {
+    const { ctx, taskId, bus } = await makeCtx('pm')
+    const received: A2AEnvelope[] = []
+    bus.subscribe('coding', (e) => { received.push(e) })
+    const tool = delegateToTool(ctx)
+    const r = await tool.execute(
+      { agent: 'coding', content: 'fix the bug', references: [] },
+      { toolCallId: 't1', messages: [] } as any,
+    )
+    expect(r).toEqual(expect.objectContaining({ envelopeId: expect.stringMatching(/^env_/), status: 'queued' }))
+    expect(received).toHaveLength(1)
+    expect(received[0].from).toBe('pm')
+    expect(received[0].to).toBe('coding')
+    expect(received[0].intent).toBe('delegate')
+    expect(received[0].taskId).toBe(taskId)
+  })
+
+  it('rejects delegate to self', async () => {
+    const { ctx } = await makeCtx('pm')
+    const tool = delegateToTool(ctx)
+    await expect(
+      tool.execute({ agent: 'pm', content: 'x' }, { toolCallId: 't', messages: [] } as any),
+    ).rejects.toThrow(/self/)
+  })
+
+  it('throws when ctx.multiAgent missing (single-agent mode)', async () => {
+    const tool = delegateToTool({ cwd: '/tmp', logger: stubLogger })
+    await expect(
+      tool.execute({ agent: 'coding', content: 'x' }, { toolCallId: 't', messages: [] } as any),
+    ).rejects.toThrow(/multi-agent/)
+  })
+})
+
+describe('escalate_to_user tool', () => {
+  it('writes a thread envelope and sets task state to awaiting_user', async () => {
+    const { ctx, tb, taskId, paths } = await makeCtx('pm')
+    const tool = escalateToUserTool(ctx)
+    const r = await tool.execute(
+      { reason: '需要密钥' },
+      { toolCallId: 't', messages: [] } as any,
+    )
+    expect(r).toEqual({ status: 'escalated' })
+    const board = await tb.read(taskId)
+    expect(board?.state).toBe('awaiting_user')
+    // 落盘的 envelope
+    const envelopeDir = path.join(paths.root, 'tasks', taskId, 'envelopes')
+    const files = await fs.readdir(envelopeDir)
+    expect(files).toHaveLength(1)
+    const env = JSON.parse(await fs.readFile(path.join(envelopeDir, files[0]!), 'utf8'))
+    expect(env.to).toBe('thread')
+    expect(env.from).toBe('pm')
+    expect(env.content).toContain('需要密钥')
+  })
+
+  it('throws when called from non-PM agent', async () => {
+    const { ctx } = await makeCtx('coding')
+    const tool = escalateToUserTool(ctx)
+    await expect(
+      tool.execute({ reason: 'x' }, { toolCallId: 't', messages: [] } as any),
+    ).rejects.toThrow(/PM/)
+  })
+})
+
+describe('update_task_board tool', () => {
+  it('appends scratchpad facts/decisions/openQuestions', async () => {
+    const { ctx, tb, taskId } = await makeCtx('coding')
+    const tool = updateTaskBoardTool(ctx)
+    await tool.execute(
+      { facts: ['fact 1'], decisions: ['decided X'] },
+      { toolCallId: 't', messages: [] } as any,
+    )
+    const board = await tb.read(taskId)
+    expect(board?.scratchpad.facts).toEqual(['fact 1'])
+    expect(board?.scratchpad.decisions).toEqual(['decided X'])
+  })
+
+  it('PM uses it to set goal via goal patch (special path)', async () => {
+    const { ctx, tb, taskId } = await makeCtx('pm')
+    const tool = updateTaskBoardTool(ctx)
+    await tool.execute(
+      { goal: '修首页 bug' },
+      { toolCallId: 't', messages: [] } as any,
+    )
+    const board = await tb.read(taskId)
+    expect(board?.goal).toBe('修首页 bug')
+  })
+
+  it('throws when ctx.multiAgent missing', async () => {
+    const tool = updateTaskBoardTool({ cwd: '/tmp', logger: stubLogger })
+    await expect(
+      tool.execute({ facts: ['x'] }, { toolCallId: 't', messages: [] } as any),
+    ).rejects.toThrow(/multi-agent/)
+  })
+})
+```
+
+- [ ] **Step 2：跑测试看失败**
+
+Run: `pnpm test src/agent/tools/multiAgentTools.test.ts`
+Expected: 文件不存在错误
+
+- [ ] **Step 3：实现 delegateTo.ts**
+
+```ts
+import { tool } from 'ai'
+import { z } from 'zod'
+import { newEnvelopeId, AgentIdSchema } from '@/multiAgent/types.ts'
+import type { ToolContext } from './bash.ts'
+
+export function delegateToTool(ctx: ToolContext) {
+  return tool({
+    description:
+      '把任务派发给另一个 Agent。tool 同步返回 queued；本 turn 结束后等对方 reply 再继续。' +
+      '禁止把任务派给自己。',
+    parameters: z.object({
+      agent: AgentIdSchema,
+      content: z.string().min(1),
+      references: z
+        .array(
+          z.object({
+            kind: z.enum(['file', 'url', 'session', 'envelope']),
+            value: z.string(),
+          }),
+        )
+        .optional(),
+    }),
+    async execute({ agent, content, references }) {
+      if (!ctx.multiAgent) {
+        throw new Error('delegate_to 仅在 multi-agent 模式可用')
+      }
+      const { agentId, taskId, bus } = ctx.multiAgent
+      if (agent === agentId) {
+        throw new Error(`不能 delegate to self (${agentId})`)
+      }
+      const envelope = {
+        id: newEnvelopeId(),
+        taskId,
+        from: agentId,
+        to: agent,
+        intent: 'delegate' as const,
+        content,
+        ...(references ? { references } : {}),
+        createdAt: new Date().toISOString(),
+      }
+      await bus.post(envelope)
+      return { envelopeId: envelope.id, status: 'queued' as const }
+    },
+  })
+}
+```
+
+- [ ] **Step 4：跑 delegate_to 那部分测试通过**
+
+Run: `pnpm test src/agent/tools/multiAgentTools.test.ts -t "delegate_to"`
+Expected: 3 PASS（其他 2 个 describe 仍失败）
+
+- [ ] **Step 5：commit（先 commit delegate_to，分批节奏）**
+
+```bash
+git add src/agent/tools/delegateTo.ts src/agent/tools/multiAgentTools.test.ts
+git commit -m "feat(tools): delegate_to 工具，handoff 作为 tool call 派发到 A2A bus"
+```
+
+### Task 3.4：escalate_to_user tool
+
+**Files:**
+- Create: `src/agent/tools/escalateToUser.ts`
+
+行为（spec §5.2）：
+- 仅 PM 可用（运行期校验 `ctx.multiAgent.agentId === 'pm'`，非 PM 抛错；非工具层面强制隔离，依赖 system prompt 自律 + 这道防御性校验）
+- 写 envelope `to: 'thread'`，content = `[ESCALATE] ${reason}`，from='pm'
+- 把 task state 设为 `awaiting_user`
+- P0 不接 Slack，仅落盘 + 改 task.json；P1 接 Slack 时再加真正的 thread post
+
+- [ ] **Step 1：实现 escalateToUser.ts**
+
+```ts
+import { tool } from 'ai'
+import { z } from 'zod'
+import { newEnvelopeId } from '@/multiAgent/types.ts'
+import type { ToolContext } from './bash.ts'
+
+export function escalateToUserTool(ctx: ToolContext) {
+  return tool({
+    description:
+      'PM 专用：当遇到必须真用户拍板的事项（凭证 / 权限 / 严重偏离原始目标 / 多方案利弊相当且皆有重大代价）时调用。' +
+      '会在 thread 里 @ 原始用户，并把 task 状态置为 awaiting_user。',
+    parameters: z.object({
+      reason: z.string().min(1),
+    }),
+    async execute({ reason }) {
+      if (!ctx.multiAgent) {
+        throw new Error('escalate_to_user 仅在 multi-agent 模式可用')
+      }
+      const { agentId, taskId, bus, taskBoard } = ctx.multiAgent
+      if (agentId !== 'pm') {
+        throw new Error(`escalate_to_user 仅 PM 可用（当前 agent=${agentId}）`)
+      }
+      const envelope = {
+        id: newEnvelopeId(),
+        taskId,
+        from: 'pm' as const,
+        to: 'thread' as const,
+        intent: 'broadcast' as const,
+        content: `[ESCALATE] ${reason}`,
+        createdAt: new Date().toISOString(),
+      }
+      await bus.post(envelope)
+      await taskBoard.update(taskId, { state: 'awaiting_user' })
+      return { status: 'escalated' as const }
+    },
+  })
+}
+```
+
+- [ ] **Step 2：跑 escalate_to_user 测试通过**
+
+Run: `pnpm test src/agent/tools/multiAgentTools.test.ts -t "escalate_to_user"`
+Expected: 2 PASS
+
+- [ ] **Step 3：commit**
+
+```bash
+git add src/agent/tools/escalateToUser.ts
+git commit -m "feat(tools): escalate_to_user 工具，PM 专用，触发 awaiting_user 状态"
+```
+
+### Task 3.5：update_task_board tool
+
+**Files:**
+- Create: `src/agent/tools/updateTaskBoard.ts`
+
+行为（spec §5.3）：
+- 三个 agent 都能用
+- 接受 `facts? / decisions? / openQuestions?`：调 `taskBoard.appendScratchpad`（去重）
+- 接受 `goal?`：仅当当前 agent === 'pm' 时允许覆盖 goal（PM 首 turn 设定）；非 PM 调时静默忽略 goal 字段不报错（避免误用阻塞）
+
+- [ ] **Step 1：实现 updateTaskBoard.ts**
+
+```ts
+import { tool } from 'ai'
+import { z } from 'zod'
+import type { ToolContext } from './bash.ts'
+
+export function updateTaskBoardTool(ctx: ToolContext) {
+  return tool({
+    description:
+      '把当前任务的关键事实 / 决策 / 待解问题写到 task 黑板，下游 Agent 读黑板避免重复查。' +
+      'PM 首 turn 可通过 goal 字段写入目标摘要；其他 Agent 传 goal 字段会被忽略。' +
+      '所有数组字段是追加去重，不是覆盖。',
+    parameters: z.object({
+      facts: z.array(z.string()).optional(),
+      decisions: z.array(z.string()).optional(),
+      openQuestions: z.array(z.string()).optional(),
+      goal: z.string().optional(),
+    }),
+    async execute(args) {
+      if (!ctx.multiAgent) {
+        throw new Error('update_task_board 仅在 multi-agent 模式可用')
+      }
+      const { agentId, taskId, taskBoard } = ctx.multiAgent
+      if (args.facts || args.decisions || args.openQuestions) {
+        await taskBoard.appendScratchpad(taskId, {
+          ...(args.facts ? { facts: args.facts } : {}),
+          ...(args.decisions ? { decisions: args.decisions } : {}),
+          ...(args.openQuestions ? { openQuestions: args.openQuestions } : {}),
+        })
+      }
+      if (args.goal !== undefined && agentId === 'pm') {
+        await taskBoard.update(taskId, { goal: args.goal })
+      }
+      return { ok: true as const }
+    },
+  })
+}
+```
+
+- [ ] **Step 2：跑 update_task_board 测试通过**
+
+Run: `pnpm test src/agent/tools/multiAgentTools.test.ts -t "update_task_board"`
+Expected: 3 PASS
+
+- [ ] **Step 3：跑全部多 agent tool 测试**
+
+Run: `pnpm test src/agent/tools/multiAgentTools.test.ts`
+Expected: 8 PASS
+
+- [ ] **Step 4：commit**
+
+```bash
+git add src/agent/tools/updateTaskBoard.ts
+git commit -m "feat(tools): update_task_board 工具，黑板 facts/decisions 追加 + PM goal 覆盖"
+```
+
+### Task 3.6：在 buildBuiltinTools 注册三个新 tool
+
+**Files:**
+- Modify: `src/agent/tools/index.ts`
+
+把三个新 tool 加到 toolset。**全部 agent 装配同一份 ToolSet**（spec §6 决策：tools 全局），是否真正可用由 `ctx.multiAgent` 是否存在决定。单 agent 模式调这些 tool 会抛错，但因为 system prompt 不引导调用，模型不会主动调。
+
+- [ ] **Step 1：先写 index 测试（确认 toolset 包含新 tool）**
+
+修改 `src/agent/tools/tools.test.ts`，加：
+
+```ts
+it('toolset includes multi-agent tools', () => {
+  const tools = buildBuiltinTools(makeCtx(), makeDeps())
+  expect(tools).toHaveProperty('delegate_to')
+  expect(tools).toHaveProperty('escalate_to_user')
+  expect(tools).toHaveProperty('update_task_board')
+})
+```
+
+`makeCtx()` / `makeDeps()` 用现有 tools.test.ts 里的 fixture（如有）。如不存在，inline 构造 minimal ctx + deps（参考 [`src/agent/tools/tools.test.ts`](../../../src/agent/tools/tools.test.ts) 当前模式）。
+
+- [ ] **Step 2：跑测试看失败**
+
+Run: `pnpm test src/agent/tools/tools.test.ts -t "multi-agent"`
+Expected: 缺三个 property 失败
+
+- [ ] **Step 3：注册**
+
+修改 [`src/agent/tools/index.ts`](../../../src/agent/tools/index.ts) 的 `buildBuiltinTools`：
+
+```ts
+import { delegateToTool } from './delegateTo.ts'
+import { escalateToUserTool } from './escalateToUser.ts'
+import { updateTaskBoardTool } from './updateTaskBoard.ts'
+
+// ... 在 return 对象末尾追加
+return {
+  bash: bashTool(ctx),
+  edit_file: editFileTool(ctx),
+  save_memory: saveMemoryTool(ctx, { memoryStore: deps.memoryStore }),
+  self_improve_collect: selfImproveCollectTool(ctx, { collector: deps.selfImproveCollector }),
+  self_improve_confirm: selfImproveConfirmTool(ctx, {
+    generator: deps.selfImproveGenerator,
+    ...(deps.selfImproveSemanticDedup ? { semanticDedup: deps.selfImproveSemanticDedup } : {}),
+    paths: deps.paths,
+    logger: deps.logger,
+  }),
+  ask_confirm: askConfirmTool(ctx, { bridge: deps.confirmBridge, logger: deps.logger }),
+  delegate_to: delegateToTool(ctx),
+  escalate_to_user: escalateToUserTool(ctx),
+  update_task_board: updateTaskBoardTool(ctx),
+}
+```
+
+- [ ] **Step 4：跑全套测试 + typecheck**
+
+Run: `pnpm test && pnpm typecheck`
+Expected: 全绿
+
+- [ ] **Step 5：commit**
+
+```bash
+git add src/agent/tools/index.ts src/agent/tools/tools.test.ts
+git commit -m "feat(tools): 注册 delegate_to / escalate_to_user / update_task_board 到 builtin toolset"
+```
+
+### ✅ Chunk 3 验证
+
+完成后请用户做以下 review：
+
+1. **测试与类型全绿**：`pnpm test && pnpm typecheck`
+2. **A2ABus 行为**：手写一段脚本（或 vitest in-process）创建 bus → subscribe → post → 看到 envelope 文件落盘 + handler 收到。
+3. **Tool 单点验证**：在一个 multi-agent 模式 fixture 下手动调 `delegate_to` → 检查 `tasks/<id>/envelopes/` 多了文件 + 订阅者收到。
+4. **单 Agent 模式仍可用**：跑现有所有非 multi-agent 的 e2e（不接 Slack），确认 `delegate_to` 没被 agent 误调（因为 single 模式 system prompt 不引导，模型不会主动调）。
+5. **注意**：Chunk 3 完成后这些 tool 还没被 ConversationOrchestrator 真正注入 multiAgent context。Chunk 4 才把 ToolContext 在 orchestrator 装配时填上 `multiAgent` 字段；在 Chunk 4 完成前，端到端的"PM delegate Coding"链路还没法跑通。
+
+只有上面四项都通过，才进 Chunk 4。
+
+---
+
+## Chunk 4-N（占位，后续写）
+
+剩余 chunks 待 Chunk 3 review 通过后再写：
+
+- **Chunk 4**：ConversationOrchestrator 多 Agent 化（sessionKey 加 agentId、A2A inbox subscribe / dispatch、`<waiting/>` turn pause/resume），单 Agent 回归套件保持全绿
 - **Chunk 5**：createApplication 多 orchestrator 装配 + 端到端 fixture 集成测试（PM+Coding 两 Agent 跑通一次完整 A2A 来回 + worktree）
 
 每个 chunk 完成后过 plan-document-reviewer，通过再继续。
