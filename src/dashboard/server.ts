@@ -2,7 +2,7 @@
 // 路由规则：/api/* 返回 JSON（由 DashboardApi 提供），其余走 SPA 壳（返回 index.html）。
 // 设计为"零新依赖 + 可离线"，便于未来加 daemon 面板时直接扩展 API。
 
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, openSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import http from 'node:http'
@@ -163,6 +163,19 @@ async function handle(
       const r = await handleStandaloneDaemonStop(meta.cwd)
       return json(r.body, r.status)
     }
+  }
+
+  // --- dev 进程控制 ---
+  if (pathname === '/api/dev' && req.method === 'GET') {
+    return json(getDevStatus())
+  }
+  if (req.method === 'POST' && pathname === '/api/dev/launch') {
+    const r = handleDevLaunch(meta.cwd, log)
+    return json(r.body, r.status)
+  }
+  if (req.method === 'POST' && pathname === '/api/dev/stop') {
+    const r = await handleDevStop()
+    return json(r.body, r.status)
   }
 
   // --- 写操作（PUT / DELETE）：先处理，命中直接 return ---
@@ -393,6 +406,137 @@ async function handleStandaloneDaemonStart(
   }
 
   return { status: 200, body: { ok: true, pid: meta.pid, mode: meta.mode } }
+}
+
+// dev 进程：模块级单例（dashboard 进程内只允许一个 pnpm dev 子进程）
+interface DevProcState {
+  proc: ChildProcess
+  pid: number
+  startedAt: string
+  cwd: string
+  logRing: string[] // 最近 N 行（stdout+stderr 混合）
+  exitCode: number | null
+  exitedAt: string | null
+}
+let devState: DevProcState | null = null
+const DEV_LOG_LIMIT = 200
+
+function pushDevLog(line: string): void {
+  if (!devState) return
+  devState.logRing.push(line)
+  if (devState.logRing.length > DEV_LOG_LIMIT) {
+    devState.logRing.splice(0, devState.logRing.length - DEV_LOG_LIMIT)
+  }
+}
+
+function getDevStatus(): {
+  state: 'running' | 'offline'
+  pid?: number
+  startedAt?: string
+  cwd?: string
+  recentLogs: string[]
+  lastExitCode?: number | null
+  lastExitedAt?: string | null
+} {
+  if (!devState) return { state: 'offline', recentLogs: [] }
+  if (devState.exitCode != null) {
+    // 已退出但保留最近一次的日志/退出码供查看
+    return {
+      state: 'offline',
+      recentLogs: devState.logRing.slice(),
+      lastExitCode: devState.exitCode,
+      lastExitedAt: devState.exitedAt,
+    }
+  }
+  return {
+    state: 'running',
+    pid: devState.pid,
+    startedAt: devState.startedAt,
+    cwd: devState.cwd,
+    recentLogs: devState.logRing.slice(),
+  }
+}
+
+function handleDevLaunch(cwd: string, log: Logger): { status: number; body: unknown } {
+  if (devState && devState.exitCode == null) {
+    return { status: 409, body: { ok: false, error: 'pnpm dev 已在运行', pid: devState.pid } }
+  }
+  try {
+    // shell:true 让 PATH 解析到 pnpm；windows 兼容由 shell 处理
+    const proc = spawn('pnpm', ['dev'], {
+      cwd,
+      env: process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: true,
+    })
+    if (!proc.pid) {
+      return { status: 500, body: { ok: false, error: 'spawn 失败：未获得 pid' } }
+    }
+    devState = {
+      proc,
+      pid: proc.pid,
+      startedAt: new Date().toISOString(),
+      cwd,
+      logRing: [],
+      exitCode: null,
+      exitedAt: null,
+    }
+    const onLine = (chunk: Buffer): void => {
+      const text = chunk.toString('utf8')
+      for (const line of text.split(/\r?\n/)) {
+        if (line.length > 0) pushDevLog(line)
+      }
+    }
+    proc.stdout?.on('data', onLine)
+    proc.stderr?.on('data', onLine)
+    proc.on('exit', (code, signal) => {
+      if (devState && devState.proc === proc) {
+        devState.exitCode = code ?? (signal ? -1 : 0)
+        devState.exitedAt = new Date().toISOString()
+        pushDevLog(`[dev] 进程退出 code=${code} signal=${signal ?? ''}`)
+      }
+    })
+    proc.on('error', (err) => {
+      log.error('dev spawn error', err)
+      pushDevLog(`[dev] error: ${err.message}`)
+      if (devState && devState.proc === proc) {
+        devState.exitCode = -1
+        devState.exitedAt = new Date().toISOString()
+      }
+    })
+    return { status: 200, body: { ok: true, pid: proc.pid, startedAt: devState.startedAt } }
+  } catch (err) {
+    return {
+      status: 500,
+      body: { ok: false, error: err instanceof Error ? err.message : String(err) },
+    }
+  }
+}
+
+async function handleDevStop(): Promise<{ status: number; body: unknown }> {
+  if (!devState || devState.exitCode != null) {
+    return { status: 200, body: { ok: true, message: 'pnpm dev 未运行' } }
+  }
+  const proc = devState.proc
+  try {
+    proc.kill('SIGTERM')
+  } catch {
+    // ignore
+  }
+  // 最多等 2s
+  const deadline = Date.now() + 2000
+  while (Date.now() < deadline) {
+    if (devState.exitCode != null) break
+    await new Promise((r) => setTimeout(r, 100))
+  }
+  if (devState.exitCode == null) {
+    try {
+      proc.kill('SIGKILL')
+    } catch {
+      // ignore
+    }
+  }
+  return { status: 200, body: { ok: true, message: '已停止' } }
 }
 
 // standalone dashboard 停止 daemon 子进程

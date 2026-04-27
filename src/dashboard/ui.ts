@@ -232,8 +232,11 @@ const views = {
       el('div', { class: 'card' }, [el('div', { class: 'k' }, 'Latest'), el('div', { class: 'v small' }, mem.latestFile ? (mem.latestFile + ' · ' + fmtTs(mem.latestMtime)) : '-')]),
     ])
 
+    const devBox = await renderDevPanel()
+
     return el('section', {}, [
       el('h2', {}, 'Overview'),
+      devBox,
       row,
       el('h3', {}, 'Health'),
       healthBox,
@@ -645,6 +648,95 @@ const views = {
       inflightBox,
     ])
   },
+}
+
+async function renderDevPanel() {
+  const d = await api('/api/dev')
+  const isRunning = d.state === 'running'
+  const msg = el('div', { style: 'margin-top:8px;' })
+
+  const startBtn = el('button', {
+    style: 'background:' + (isRunning ? 'var(--panel2)' : 'rgba(74,222,128,0.15)') + ';border-color:' + (isRunning ? 'var(--border)' : 'var(--ok)') + ';color:' + (isRunning ? 'var(--muted)' : 'var(--ok)') + ';',
+    onclick: async () => {
+      startBtn.disabled = true
+      msg.textContent = '启动中…'; msg.className = 'muted'
+      try {
+        const r = await fetch('/api/dev/launch', { method: 'POST' })
+        const js = await r.json()
+        if (!r.ok || !js.ok) throw new Error(js.error || ('HTTP ' + r.status))
+        msg.textContent = '已启动 pid=' + js.pid; msg.className = 'pill ok'
+        setTimeout(render, 400)
+      } catch (err) {
+        msg.textContent = '启动失败：' + (err.message || err); msg.className = 'err-box'
+        startBtn.disabled = false
+      }
+    }
+  }, '▶ 启动 pnpm dev')
+  if (isRunning) startBtn.disabled = true
+
+  const stopBtn = el('button', {
+    style: 'margin-left:8px;background:' + (isRunning ? 'rgba(248,113,113,0.15)' : 'var(--panel2)') + ';border-color:' + (isRunning ? 'var(--err)' : 'var(--border)') + ';color:' + (isRunning ? 'var(--err)' : 'var(--muted)') + ';',
+    onclick: async () => {
+      if (!confirm('确认停止 pnpm dev？')) return
+      stopBtn.disabled = true
+      msg.textContent = '停止中…'; msg.className = 'muted'
+      try {
+        const r = await fetch('/api/dev/stop', { method: 'POST' })
+        if (!r.ok) throw new Error('HTTP ' + r.status)
+        msg.textContent = '已停止'; msg.className = 'pill ok'
+        setTimeout(render, 400)
+      } catch (err) {
+        msg.textContent = '停止失败：' + (err.message || err); msg.className = 'err-box'
+        stopBtn.disabled = false
+      }
+    }
+  }, '■ 停止')
+  if (!isRunning) stopBtn.disabled = true
+
+  const startedTs = isRunning && d.startedAt ? new Date(d.startedAt).getTime() : 0
+  const uptimeStr = startedTs ? (() => {
+    const s = Math.floor((Date.now() - startedTs) / 1000)
+    if (s < 60) return s + 's'
+    if (s < 3600) return Math.floor(s/60) + 'm' + (s%60) + 's'
+    return Math.floor(s/3600) + 'h' + Math.floor((s%3600)/60) + 'm'
+  })() : '-'
+
+  const cards = el('div', { class: 'row', style: 'margin:0 0 8px 0;' }, [
+    el('div', { class: 'card' }, [
+      el('div', { class: 'k' }, 'Status'),
+      el('div', { class: 'v' }, pill(isRunning ? 'running' : 'offline', isRunning ? 'ok' : 'warn'))
+    ]),
+    isRunning ? el('div', { class: 'card' }, [el('div', { class: 'k' }, 'PID'), el('div', { class: 'v' }, String(d.pid))]) : null,
+    isRunning ? el('div', { class: 'card' }, [el('div', { class: 'k' }, 'Uptime'), el('div', { class: 'v' }, uptimeStr)]) : null,
+    !isRunning && d.lastExitCode != null ? el('div', { class: 'card' }, [
+      el('div', { class: 'k' }, 'Last Exit'),
+      el('div', { class: 'v small' }, 'code=' + d.lastExitCode + (d.lastExitedAt ? ' · ' + fmtTs(d.lastExitedAt) : ''))
+    ]) : null,
+  ])
+
+  const logs = (d.recentLogs || [])
+  const logsBox = logs.length === 0
+    ? el('div', { class: 'muted', style: 'font-size:11.5px;' }, '暂无输出')
+    : el('pre', { style: 'max-height:220px;font-size:11.5px;margin:6px 0 0 0;' }, logs.join('\\n'))
+
+  // 折叠面板：默认收起，避免占用太多首屏空间
+  const details = el('details', { style: 'margin-top:8px;' }, [
+    el('summary', { style: 'cursor:pointer;color:var(--muted);font-size:12px;' }, '最近输出 (' + logs.length + ' 行)'),
+    logsBox,
+  ])
+
+  return el('div', {
+    style: 'background:var(--panel);border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:6px;padding:14px 16px;margin-bottom:16px;'
+  }, [
+    el('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;' }, [
+      el('div', { style: 'font-size:14px;font-weight:600;color:var(--accent);' }, '⚡ Dev'),
+      el('div', { class: 'muted', style: 'font-size:11.5px;' }, 'pnpm dev · ' + (isRunning ? '运行中' : '未启动')),
+    ]),
+    cards,
+    el('div', { class: 'actions', style: 'margin:0;' }, [startBtn, stopBtn]),
+    msg,
+    details,
+  ])
 }
 
 async function renderSessionDetail(id) {
