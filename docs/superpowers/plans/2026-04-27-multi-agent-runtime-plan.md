@@ -2132,7 +2132,7 @@ export function delegateToTool(ctx: ToolContext) {
 - [ ] **Step 4：跑 delegate_to 那部分测试通过**
 
 Run: `pnpm test src/agent/tools/multiAgentTools.test.ts -t "delegate_to"`
-Expected: 3 PASS（其他 2 个 describe 仍失败）
+Expected: 4 PASS（其他 2 个 describe 仍失败）
 
 - [ ] **Step 5：commit（先 commit delegate_to，分批节奏）**
 
