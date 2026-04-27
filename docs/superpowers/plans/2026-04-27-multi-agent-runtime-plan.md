@@ -767,6 +767,9 @@ import path from 'node:path'
 import type { WorkspacePaths } from './paths.ts'
 import type { Logger } from '@/logger/logger.ts'
 
+// 启发式：thread 目录下若存在任何顶层文件，则视为旧结构（messages.jsonl + 可能的边角文件），
+// 全部迁移到 default/ 子目录。极小概率会误移用户人为放在 thread 目录的无关文件
+// （如 README.md），属可接受边界情况；新结构里 thread 目录只应含 agentId 子目录。
 export async function migrateLegacySessions(
   paths: WorkspacePaths,
   logger: Logger,
@@ -848,7 +851,7 @@ git commit -m "feat(workspace): paths 加 agentId 维度 + tasks/ + worktrees/�
 | `src/dashboard/api.ts` | 460 | `modelAvailable: ids.includes(config.agent.model)` | `modelAvailable: ids.includes(config.agents[0].model)` |
 | `src/dashboard/ui.ts` | 161-162 | `o.config.agent.name + '/' + o.config.agent.model`、`o.config.agent.provider` | `o.config.agents[0].name + '/' + o.config.agents[0].model`、`o.config.agents[0].provider` |
 
-**注意**：dashboard 后端 [`src/dashboard/api.ts`](../../../src/dashboard/api.ts) 给前端的 `overview.config` 应是整份 `WorkspaceConfig`（含 `agents`），前端 [`src/dashboard/ui.ts`](../../../src/dashboard/ui.ts) 也按 `agents[0]` 取值；如果 api 当前只透传 `config.agent`，需要改成透传 `config.agents`。
+**dashboard api 透传形态确认**：[`src/dashboard/api.ts:299`](../../../src/dashboard/api.ts) 的 `overview()` 直接返回 `config` 对象（即整份 `WorkspaceConfig`）。Chunk 1 改完 schema 后 `config.agents` 自然出现，前端 ui.ts 改用 `agents[0].name/model/provider` 即可。**api.ts 端无需结构改动**。
 
 **e2e 文件不改**：以下文件直接操作 raw YAML 对象（不是 typed config），保持不动：
 
@@ -903,3 +906,697 @@ git commit -m "refactor(application/cli/dashboard): 下游消费方改为 ctx.co
 只有上面四项都通过，才进 Chunk 2。
 
 ---
+
+## Chunk 2：RolePromptLoader + TaskBoard + WorktreeManager
+
+**目标**：把 P0 三个独立小模块（无相互依赖）一次性补齐。每个模块都是文件 IO 工具类，纯函数风格，易测易嵌入；为 Chunk 3 的 A2ABus 与 Chunk 4 的 orchestrator 提供原子能力。
+
+**前置依赖**：Chunk 1 全绿（特别是 paths.ts 已暴露 `taskDir`/`taskBoardFile`/`worktreeDir`）。
+
+**新增依赖**：`proper-lockfile`（跨平台 advisory file lock，用于 task.json 写入）。spec §5.3 列出该选型；该库零原生依赖，纯 JS。
+
+### Task 2.1：装上 proper-lockfile 依赖
+
+**Files:**
+- Modify: `package.json`
+
+- [ ] **Step 1：装包**
+
+Run: `pnpm add proper-lockfile`
+Expected: `package.json` `dependencies` 多一行 `"proper-lockfile": "^4.x"`，`pnpm-lock.yaml` 更新。
+
+- [ ] **Step 2：装 typing**
+
+Run: `pnpm add -D @types/proper-lockfile`
+
+- [ ] **Step 3：commit**
+
+```bash
+git add package.json pnpm-lock.yaml
+git commit -m "chore(deps): 引入 proper-lockfile 跨平台文件锁"
+```
+
+### Task 2.2：RolePromptLoader
+
+**Files:**
+- Create: `src/multiAgent/RolePromptLoader.ts`
+- Create: `src/multiAgent/RolePromptLoader.test.ts`
+
+- [ ] **Step 1：写失败测试**
+
+```ts
+import { describe, it, expect } from 'vitest'
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { loadSystemPrompt } from './RolePromptLoader.ts'
+import type { Logger } from '@/logger/logger.ts'
+
+const stubLogger: Logger = {
+  withTag: () => stubLogger,
+  trace: () => {}, debug: () => {}, info: () => {}, warn: () => {}, error: () => {},
+}
+
+async function makeWs(files: Record<string, string>): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-slack-prompt-'))
+  await fs.mkdir(path.join(dir, '.agent-slack'), { recursive: true })
+  for (const [name, content] of Object.entries(files)) {
+    await fs.writeFile(path.join(dir, '.agent-slack', name), content)
+  }
+  return dir
+}
+
+describe('loadSystemPrompt', () => {
+  it('returns system.md as-is for role=generic', async () => {
+    const dir = await makeWs({ 'system.md': 'BASE PROMPT' })
+    expect(await loadSystemPrompt(dir, 'generic', stubLogger)).toBe('BASE PROMPT')
+  })
+
+  it('joins base + role overlay with --- separator for role=pm', async () => {
+    const dir = await makeWs({
+      'system.md': 'BASE',
+      'system.pm.md': 'PM OVERLAY',
+    })
+    const result = await loadSystemPrompt(dir, 'pm', stubLogger)
+    expect(result).toBe('BASE\n\n---\n\nPM OVERLAY')
+  })
+
+  it('returns base alone when role overlay missing (with warn)', async () => {
+    const dir = await makeWs({ 'system.md': 'BASE' })
+    let warned = false
+    const watchedLogger: Logger = { ...stubLogger, warn: () => { warned = true } }
+    const result = await loadSystemPrompt(dir, 'coding', watchedLogger)
+    expect(result).toBe('BASE')
+    expect(warned).toBe(true)
+  })
+
+  it('returns role overlay alone when system.md missing', async () => {
+    const dir = await makeWs({ 'system.cs.md': 'CS OVERLAY' })
+    expect(await loadSystemPrompt(dir, 'cs', stubLogger)).toBe('CS OVERLAY')
+  })
+
+  it('returns empty string when both missing for role=generic', async () => {
+    const dir = await makeWs({})
+    expect(await loadSystemPrompt(dir, 'generic', stubLogger)).toBe('')
+  })
+})
+```
+
+- [ ] **Step 2：跑测试看失败**
+
+Run: `pnpm test src/multiAgent/RolePromptLoader.test.ts`
+Expected: 文件不存在错误
+
+- [ ] **Step 3：实现 RolePromptLoader.ts**
+
+```ts
+import { existsSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
+import path from 'node:path'
+import type { AgentRole } from './types.ts'
+import type { Logger } from '@/logger/logger.ts'
+
+export async function loadSystemPrompt(
+  workspaceRoot: string,
+  role: AgentRole,
+  logger: Logger,
+): Promise<string> {
+  const root = path.join(workspaceRoot, '.agent-slack')
+  const baseFile = path.join(root, 'system.md')
+  const base = existsSync(baseFile) ? await readFile(baseFile, 'utf8') : ''
+
+  if (role === 'generic') {
+    return base
+  }
+
+  const overlayFile = path.join(root, `system.${role}.md`)
+  if (!existsSync(overlayFile)) {
+    logger.withTag('role-prompt').warn(
+      `system.${role}.md 缺失，仅使用 system.md 作为 ${role} 的 system prompt`,
+    )
+    return base
+  }
+  const overlay = await readFile(overlayFile, 'utf8')
+  if (!base) return overlay
+  return `${base}\n\n---\n\n${overlay}`
+}
+```
+
+- [ ] **Step 4：跑测试通过**
+
+Run: `pnpm test src/multiAgent/RolePromptLoader.test.ts`
+Expected: 5 PASS
+
+- [ ] **Step 5：commit**
+
+```bash
+git add src/multiAgent/RolePromptLoader.ts src/multiAgent/RolePromptLoader.test.ts
+git commit -m "feat(multiAgent): RolePromptLoader 拼装 base + role overlay"
+```
+
+### Task 2.3：TaskBoard
+
+**Files:**
+- Create: `src/multiAgent/TaskBoard.ts`
+- Create: `src/multiAgent/TaskBoard.test.ts`
+
+模块责任（spec §5.3）：
+- 读 / 写 / 创建 `tasks/<id>/task.json`
+- 用 proper-lockfile 守护写
+- `update_task_board` 工具调用时追加 facts/decisions/openQuestions（去重）
+- 渲染成 markdown 注入 system prompt
+
+接口：
+
+```ts
+interface TaskBoardManager {
+  create(init: Omit<TaskBoard, 'createdAt' | 'updatedAt' | 'scratchpad'> & {
+    scratchpad?: Partial<TaskBoard['scratchpad']>
+  }): Promise<TaskBoard>
+  read(taskId: string): Promise<TaskBoard | null>
+  update(taskId: string, patch: TaskBoardPatch): Promise<TaskBoard>
+  appendScratchpad(taskId: string, append: ScratchpadAppend): Promise<TaskBoard>
+  renderForPrompt(board: TaskBoard): string
+}
+
+interface TaskBoardPatch {
+  state?: TaskBoard['state']
+  activeAgent?: TaskBoard['activeAgent']
+  goal?: string
+  worktreePath?: string
+}
+
+interface ScratchpadAppend {
+  facts?: string[]
+  decisions?: string[]
+  openQuestions?: string[]
+}
+```
+
+- [ ] **Step 1：写失败测试**
+
+```ts
+import { describe, it, expect } from 'vitest'
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { createTaskBoardManager } from './TaskBoard.ts'
+import { resolveWorkspacePaths } from '@/workspace/paths.ts'
+import { newTaskId } from './types.ts'
+
+async function makeMgr() {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-slack-tb-'))
+  const paths = resolveWorkspacePaths(dir)
+  const mgr = createTaskBoardManager(paths)
+  return { dir, paths, mgr }
+}
+
+describe('TaskBoard', () => {
+  it('creates task.json with initial state and reads it back', async () => {
+    const { mgr } = await makeMgr()
+    const taskId = newTaskId()
+    const board = await mgr.create({
+      taskId,
+      threadTs: '1.2',
+      channelId: 'C001',
+      originalUser: 'U999',
+      goal: '',
+      state: 'active',
+      activeAgent: 'pm',
+    })
+    expect(board.taskId).toBe(taskId)
+    expect(board.scratchpad).toEqual({ facts: [], decisions: [], openQuestions: [] })
+    const reread = await mgr.read(taskId)
+    expect(reread?.taskId).toBe(taskId)
+  })
+
+  it('returns null when task does not exist', async () => {
+    const { mgr } = await makeMgr()
+    expect(await mgr.read('tsk_nonexistent')).toBeNull()
+  })
+
+  it('update patches fields and bumps updatedAt', async () => {
+    const { mgr } = await makeMgr()
+    const taskId = newTaskId()
+    const created = await mgr.create({
+      taskId, threadTs: '1.2', channelId: 'C001', originalUser: 'U', goal: '',
+      state: 'active', activeAgent: 'pm',
+    })
+    await new Promise((r) => setTimeout(r, 5)) // 让 updatedAt 不同
+    const updated = await mgr.update(taskId, { state: 'awaiting_user', goal: '修 bug' })
+    expect(updated.state).toBe('awaiting_user')
+    expect(updated.goal).toBe('修 bug')
+    expect(updated.updatedAt).not.toBe(created.updatedAt)
+  })
+
+  it('appendScratchpad de-duplicates strings', async () => {
+    const { mgr } = await makeMgr()
+    const taskId = newTaskId()
+    await mgr.create({
+      taskId, threadTs: '1.2', channelId: 'C001', originalUser: 'U', goal: '',
+      state: 'active', activeAgent: 'pm',
+    })
+    await mgr.appendScratchpad(taskId, { facts: ['A', 'B'] })
+    const after = await mgr.appendScratchpad(taskId, { facts: ['B', 'C'], decisions: ['D'] })
+    expect(after.scratchpad.facts).toEqual(['A', 'B', 'C'])
+    expect(after.scratchpad.decisions).toEqual(['D'])
+  })
+
+  it('renderForPrompt produces a markdown section', async () => {
+    const { mgr } = await makeMgr()
+    const taskId = newTaskId()
+    const board = await mgr.create({
+      taskId, threadTs: '1.2', channelId: 'C001', originalUser: 'U',
+      goal: '修 bug', state: 'active', activeAgent: 'pm',
+    })
+    const rendered = mgr.renderForPrompt({
+      ...board,
+      scratchpad: {
+        facts: ['fact 1', 'fact 2'],
+        decisions: ['decision 1'],
+        openQuestions: [],
+      },
+    })
+    expect(rendered).toContain('## Task Board')
+    expect(rendered).toContain('Goal: 修 bug')
+    expect(rendered).toContain('Known Facts')
+    expect(rendered).toContain('- fact 1')
+    expect(rendered).toContain('Decisions Made')
+    expect(rendered).not.toContain('Open Questions') // 空段省略
+  })
+
+  it('renderForPrompt shows "(待 PM 设定)" when goal empty', async () => {
+    const { mgr } = await makeMgr()
+    const taskId = newTaskId()
+    const board = await mgr.create({
+      taskId, threadTs: '1.2', channelId: 'C001', originalUser: 'U',
+      goal: '', state: 'active', activeAgent: null,
+    })
+    expect(mgr.renderForPrompt(board)).toContain('Goal: (待 PM 设定)')
+  })
+})
+```
+
+- [ ] **Step 2：跑测试看失败**
+
+Run: `pnpm test src/multiAgent/TaskBoard.test.ts`
+
+- [ ] **Step 3：实现 TaskBoard.ts**
+
+```ts
+import fs from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import path from 'node:path'
+import lockfile from 'proper-lockfile'
+import { TaskBoardSchema, type TaskBoard } from './types.ts'
+import { taskDir, taskBoardFile, type WorkspacePaths } from '@/workspace/paths.ts'
+
+export interface TaskBoardPatch {
+  state?: TaskBoard['state']
+  activeAgent?: TaskBoard['activeAgent']
+  goal?: string
+  worktreePath?: string
+}
+
+export interface ScratchpadAppend {
+  facts?: string[]
+  decisions?: string[]
+  openQuestions?: string[]
+}
+
+export interface TaskBoardManager {
+  create(init: CreateInit): Promise<TaskBoard>
+  read(taskId: string): Promise<TaskBoard | null>
+  update(taskId: string, patch: TaskBoardPatch): Promise<TaskBoard>
+  appendScratchpad(taskId: string, append: ScratchpadAppend): Promise<TaskBoard>
+  renderForPrompt(board: TaskBoard): string
+}
+
+type CreateInit = Omit<TaskBoard, 'createdAt' | 'updatedAt' | 'scratchpad'> & {
+  scratchpad?: Partial<TaskBoard['scratchpad']>
+}
+
+export function createTaskBoardManager(paths: WorkspacePaths): TaskBoardManager {
+  return {
+    async create(init) {
+      const dir = taskDir(paths, init.taskId)
+      await fs.mkdir(dir, { recursive: true })
+      await fs.mkdir(path.join(dir, 'envelopes'), { recursive: true })
+      const now = new Date().toISOString()
+      const board: TaskBoard = TaskBoardSchema.parse({
+        ...init,
+        scratchpad: {
+          facts: init.scratchpad?.facts ?? [],
+          decisions: init.scratchpad?.decisions ?? [],
+          openQuestions: init.scratchpad?.openQuestions ?? [],
+        },
+        createdAt: now,
+        updatedAt: now,
+      })
+      await writeJson(taskBoardFile(paths, init.taskId), board)
+      return board
+    },
+
+    async read(taskId) {
+      const file = taskBoardFile(paths, taskId)
+      if (!existsSync(file)) return null
+      const raw = await fs.readFile(file, 'utf8')
+      return TaskBoardSchema.parse(JSON.parse(raw))
+    },
+
+    async update(taskId, patch) {
+      return mutate(paths, taskId, (board) => ({
+        ...board,
+        ...(patch.state !== undefined ? { state: patch.state } : {}),
+        ...(patch.activeAgent !== undefined ? { activeAgent: patch.activeAgent } : {}),
+        ...(patch.goal !== undefined ? { goal: patch.goal } : {}),
+        ...(patch.worktreePath !== undefined ? { worktreePath: patch.worktreePath } : {}),
+        updatedAt: new Date().toISOString(),
+      }))
+    },
+
+    async appendScratchpad(taskId, append) {
+      return mutate(paths, taskId, (board) => ({
+        ...board,
+        scratchpad: {
+          facts: dedupAppend(board.scratchpad.facts, append.facts),
+          decisions: dedupAppend(board.scratchpad.decisions, append.decisions),
+          openQuestions: dedupAppend(board.scratchpad.openQuestions, append.openQuestions),
+        },
+        updatedAt: new Date().toISOString(),
+      }))
+    },
+
+    renderForPrompt(board) {
+      const lines: string[] = []
+      lines.push(`## Task Board (task_id=${board.taskId}, state=${board.state})`)
+      lines.push(`Goal: ${board.goal || '(待 PM 设定)'}`)
+      const sp = board.scratchpad
+      if (sp.facts.length > 0) {
+        lines.push('', 'Known Facts:')
+        for (const f of sp.facts) lines.push(`- ${f}`)
+      }
+      if (sp.decisions.length > 0) {
+        lines.push('', 'Decisions Made:')
+        for (const d of sp.decisions) lines.push(`- ${d}`)
+      }
+      if (sp.openQuestions.length > 0) {
+        lines.push('', 'Open Questions:')
+        for (const q of sp.openQuestions) lines.push(`- ${q}`)
+      }
+      return lines.join('\n')
+    },
+  }
+}
+
+function dedupAppend(base: string[], add?: string[]): string[] {
+  if (!add || add.length === 0) return base
+  const seen = new Set(base)
+  const out = [...base]
+  for (const x of add) {
+    if (!seen.has(x)) {
+      seen.add(x)
+      out.push(x)
+    }
+  }
+  return out
+}
+
+async function mutate(
+  paths: WorkspacePaths,
+  taskId: string,
+  fn: (board: TaskBoard) => TaskBoard,
+): Promise<TaskBoard> {
+  const file = taskBoardFile(paths, taskId)
+  if (!existsSync(file)) {
+    throw new Error(`task ${taskId} 不存在`)
+  }
+  const release = await lockfile.lock(file, { retries: { retries: 5, minTimeout: 100 } })
+  try {
+    const raw = await fs.readFile(file, 'utf8')
+    const board = TaskBoardSchema.parse(JSON.parse(raw))
+    const next = TaskBoardSchema.parse(fn(board))
+    await writeJson(file, next)
+    return next
+  } finally {
+    await release()
+  }
+}
+
+async function writeJson(file: string, obj: unknown): Promise<void> {
+  await fs.writeFile(file, JSON.stringify(obj, null, 2))
+}
+```
+
+- [ ] **Step 4：跑测试通过**
+
+Run: `pnpm test src/multiAgent/TaskBoard.test.ts`
+Expected: 6 PASS
+
+- [ ] **Step 5：commit**
+
+```bash
+git add src/multiAgent/TaskBoard.ts src/multiAgent/TaskBoard.test.ts
+git commit -m "feat(multiAgent): TaskBoard 文件态读写 + 文件锁 + scratchpad 去重 + prompt 渲染"
+```
+
+### Task 2.4：WorktreeManager
+
+**Files:**
+- Create: `src/multiAgent/WorktreeManager.ts`
+- Create: `src/multiAgent/WorktreeManager.test.ts`
+
+模块责任（spec §6.5）：
+- 在 `<workspaceRoot>/.agent-slack/worktrees/<task_id>/` 下创建 git worktree
+- branch 命名 `agent-slack/task/<task_id>`，从当前 HEAD 切出
+- task done/aborted 时调 `markCleanable`，记录可清理时间戳
+- `cleanupExpired` 删除 7 天前标记过的 worktree
+
+接口：
+
+```ts
+interface WorktreeManager {
+  ensureForTask(taskId: string): Promise<{ path: string; branch: string }>
+  markCleanable(taskId: string): Promise<void>
+  cleanupExpired(): Promise<{ removed: string[] }>
+}
+```
+
+清理元数据放在 `.agent-slack/worktrees/.cleanable.json`（map: taskId → cleanableAt ISO）。
+
+- [ ] **Step 1：写失败测试**
+
+```ts
+import { describe, it, expect, beforeAll } from 'vitest'
+import fs from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { execFileSync } from 'node:child_process'
+import { createWorktreeManager } from './WorktreeManager.ts'
+import { resolveWorkspacePaths } from '@/workspace/paths.ts'
+
+async function makeRepoWithWorkspace(): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-slack-wt-'))
+  // 初始化为最简单的 git repo
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir })
+  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir })
+  execFileSync('git', ['config', 'user.name', 'test'], { cwd: dir })
+  await fs.writeFile(path.join(dir, 'README.md'), 'hi')
+  execFileSync('git', ['add', '.'], { cwd: dir })
+  execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: dir })
+  await fs.mkdir(path.join(dir, '.agent-slack'), { recursive: true })
+  return dir
+}
+
+describe('WorktreeManager', () => {
+  it('ensureForTask creates a real git worktree at expected path', async () => {
+    const repo = await makeRepoWithWorkspace()
+    const paths = resolveWorkspacePaths(repo)
+    const mgr = createWorktreeManager(paths, repo)
+    const taskId = 'tsk_aaa'
+    const r = await mgr.ensureForTask(taskId)
+    expect(r.path).toBe(path.join(paths.root, 'worktrees', taskId))
+    expect(r.branch).toBe(`agent-slack/task/${taskId}`)
+    expect(existsSync(path.join(r.path, 'README.md'))).toBe(true)
+  })
+
+  it('ensureForTask is idempotent (same call returns same worktree)', async () => {
+    const repo = await makeRepoWithWorkspace()
+    const paths = resolveWorkspacePaths(repo)
+    const mgr = createWorktreeManager(paths, repo)
+    const a = await mgr.ensureForTask('tsk_b')
+    const b = await mgr.ensureForTask('tsk_b')
+    expect(a).toEqual(b)
+  })
+
+  it('markCleanable + cleanupExpired removes worktrees older than 7 days', async () => {
+    const repo = await makeRepoWithWorkspace()
+    const paths = resolveWorkspacePaths(repo)
+    const mgr = createWorktreeManager(paths, repo)
+    const taskId = 'tsk_c'
+    await mgr.ensureForTask(taskId)
+    // 手动写一个 8 天前的 cleanable 记录
+    const meta = path.join(paths.root, 'worktrees', '.cleanable.json')
+    const eightDaysAgo = new Date(Date.now() - 8 * 86400_000).toISOString()
+    await fs.writeFile(meta, JSON.stringify({ [taskId]: eightDaysAgo }))
+    const result = await mgr.cleanupExpired()
+    expect(result.removed).toEqual([taskId])
+    expect(existsSync(path.join(paths.root, 'worktrees', taskId))).toBe(false)
+  })
+
+  it('cleanupExpired keeps worktrees younger than 7 days', async () => {
+    const repo = await makeRepoWithWorkspace()
+    const paths = resolveWorkspacePaths(repo)
+    const mgr = createWorktreeManager(paths, repo)
+    const taskId = 'tsk_d'
+    await mgr.ensureForTask(taskId)
+    await mgr.markCleanable(taskId)
+    const result = await mgr.cleanupExpired()
+    expect(result.removed).toEqual([])
+    expect(existsSync(path.join(paths.root, 'worktrees', taskId))).toBe(true)
+  })
+})
+```
+
+- [ ] **Step 2：跑测试看失败**
+
+Run: `pnpm test src/multiAgent/WorktreeManager.test.ts`
+
+- [ ] **Step 3：实现 WorktreeManager.ts**
+
+```ts
+import fs from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import path from 'node:path'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { worktreeDir, type WorkspacePaths } from '@/workspace/paths.ts'
+
+const exec = promisify(execFile)
+const RETENTION_DAYS = 7
+
+export interface WorktreeManager {
+  ensureForTask(taskId: string): Promise<{ path: string; branch: string }>
+  markCleanable(taskId: string): Promise<void>
+  cleanupExpired(): Promise<{ removed: string[] }>
+}
+
+export function createWorktreeManager(
+  paths: WorkspacePaths,
+  repoCwd: string,
+): WorktreeManager {
+  return {
+    async ensureForTask(taskId) {
+      const wtPath = worktreeDir(paths, taskId)
+      const branch = `agent-slack/task/${taskId}`
+      if (existsSync(wtPath)) {
+        return { path: wtPath, branch }
+      }
+      await fs.mkdir(path.dirname(wtPath), { recursive: true })
+      // -b：从当前 HEAD 切新分支
+      await exec('git', ['worktree', 'add', '-b', branch, wtPath, 'HEAD'], {
+        cwd: repoCwd,
+      })
+      return { path: wtPath, branch }
+    },
+
+    async markCleanable(taskId) {
+      const meta = await readMeta(paths)
+      meta[taskId] = new Date().toISOString()
+      await writeMeta(paths, meta)
+    },
+
+    async cleanupExpired() {
+      const meta = await readMeta(paths)
+      const cutoff = Date.now() - RETENTION_DAYS * 86400_000
+      const removed: string[] = []
+      for (const [taskId, ts] of Object.entries(meta)) {
+        if (new Date(ts).getTime() <= cutoff) {
+          const wtPath = worktreeDir(paths, taskId)
+          if (existsSync(wtPath)) {
+            try {
+              await exec('git', ['worktree', 'remove', '--force', wtPath], {
+                cwd: repoCwd,
+              })
+            } catch {
+              // 退化到 rm -rf；git worktree prune 会清理 metadata
+              await fs.rm(wtPath, { recursive: true, force: true })
+              await exec('git', ['worktree', 'prune'], { cwd: repoCwd }).catch(() => {})
+            }
+          }
+          delete meta[taskId]
+          removed.push(taskId)
+        }
+      }
+      await writeMeta(paths, meta)
+      return { removed }
+    },
+  }
+}
+
+async function readMeta(paths: WorkspacePaths): Promise<Record<string, string>> {
+  const file = path.join(paths.root, 'worktrees', '.cleanable.json')
+  if (!existsSync(file)) return {}
+  try {
+    const raw = await fs.readFile(file, 'utf8')
+    const obj = JSON.parse(raw) as unknown
+    if (obj && typeof obj === 'object') return obj as Record<string, string>
+    return {}
+  } catch {
+    return {}
+  }
+}
+
+async function writeMeta(
+  paths: WorkspacePaths,
+  meta: Record<string, string>,
+): Promise<void> {
+  const dir = path.join(paths.root, 'worktrees')
+  await fs.mkdir(dir, { recursive: true })
+  await fs.writeFile(path.join(dir, '.cleanable.json'), JSON.stringify(meta, null, 2))
+}
+```
+
+- [ ] **Step 4：跑测试通过**
+
+Run: `pnpm test src/multiAgent/WorktreeManager.test.ts`
+Expected: 4 PASS（这 4 个测试会真的跑 git，需要本机有 git；CI 已默认有）
+
+- [ ] **Step 5：commit**
+
+```bash
+git add src/multiAgent/WorktreeManager.ts src/multiAgent/WorktreeManager.test.ts
+git commit -m "feat(multiAgent): WorktreeManager per-task git worktree 创建/标记/过期清理"
+```
+
+### ✅ Chunk 2 验证
+
+完成后请用户做以下 review：
+
+1. **测试与类型全绿**：`pnpm test && pnpm typecheck`
+2. **新模块独立可用**（手动跑一下）：
+   ```bash
+   # 在 repl 里验证 RolePromptLoader：
+   cat > /tmp/test-rpl.ts <<'EOF'
+   import { loadSystemPrompt } from './src/multiAgent/RolePromptLoader.ts'
+   const r = await loadSystemPrompt('/tmp/your-test-ws', 'pm', console as any)
+   console.log(r)
+   EOF
+   ```
+3. **TaskBoard 文件落盘形态符合 spec §5.3**：手工 create 一个 task，cat `.agent-slack/tasks/<id>/task.json`，结构对得上。
+4. **WorktreeManager 真在 git 里建 worktree**：`git worktree list` 能看到新建的 task worktree。
+
+只有上面四项都通过，才进 Chunk 3。
+
+---
+
+## Chunk 3-N（占位，后续写）
+
+剩余 chunks 待 Chunk 2 review 通过后再写：
+
+- **Chunk 3**：A2ABus（内存总线 + envelope 文件落盘）+ 三个 tool（delegate_to / escalate_to_user / update_task_board）
+- **Chunk 4**：ConversationOrchestrator 多 Agent 化（sessionKey 加 agentId、A2A inbox、`<waiting/>` turn pause/resume），单 Agent 回归套件保持全绿
+- **Chunk 5**：createApplication 多 orchestrator 装配 + 端到端 fixture 集成测试（PM+Coding 两 Agent 跑通一次完整 A2A 来回 + worktree）
+
+每个 chunk 完成后过 plan-document-reviewer，通过再继续。
