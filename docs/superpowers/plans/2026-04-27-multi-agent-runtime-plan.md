@@ -1765,6 +1765,7 @@ Run: `pnpm test src/multiAgent/A2ABus.test.ts`
 
 ```ts
 import fs from 'node:fs/promises'
+import path from 'node:path'
 import { type AgentId, type A2AEnvelope } from './types.ts'
 import { envelopeFile, type WorkspacePaths } from '@/workspace/paths.ts'
 
@@ -1834,8 +1835,6 @@ export function createA2ABus(paths: WorkspacePaths): A2ABus {
   }
 }
 ```
-
-需在文件顶部 `import path from 'node:path'`。
 
 - [ ] **Step 4：跑测试通过**
 
@@ -1983,6 +1982,15 @@ describe('delegate_to tool', () => {
       tool.execute({ agent: 'coding', content: 'x' }, { toolCallId: 't', messages: [] } as any),
     ).rejects.toThrow(/multi-agent/)
   })
+
+  it('rejects unknown agent name via schema', async () => {
+    const { ctx } = await makeCtx('pm')
+    const tool = delegateToTool(ctx)
+    await expect(
+      // @ts-expect-error 故意传入非枚举值，验证 zod 拒绝
+      tool.execute({ agent: 'unknown', content: 'x' }, { toolCallId: 't', messages: [] } as any),
+    ).rejects.toThrow()
+  })
 })
 
 describe('escalate_to_user tool', () => {
@@ -2045,6 +2053,18 @@ describe('update_task_board tool', () => {
       tool.execute({ facts: ['x'] }, { toolCallId: 't', messages: [] } as any),
     ).rejects.toThrow(/multi-agent/)
   })
+
+  it('non-PM caller passing goal is silently ignored (facts still written)', async () => {
+    const { ctx, tb, taskId } = await makeCtx('coding')
+    const tool = updateTaskBoardTool(ctx)
+    await tool.execute(
+      { goal: '不该被写', facts: ['fact 1'] },
+      { toolCallId: 't', messages: [] } as any,
+    )
+    const board = await tb.read(taskId)
+    expect(board?.goal).toBe('') // goal 保持初始空值
+    expect(board?.scratchpad.facts).toEqual(['fact 1']) // facts 仍写入
+  })
 })
 ```
 
@@ -2058,8 +2078,14 @@ Expected: 文件不存在错误
 ```ts
 import { tool } from 'ai'
 import { z } from 'zod'
-import { newEnvelopeId, AgentIdSchema } from '@/multiAgent/types.ts'
+import { newEnvelopeId } from '@/multiAgent/types.ts'
 import type { ToolContext } from './bash.ts'
+
+// agent 字段使用 enum 而非 AgentIdSchema regex —— 后者会接受任意符合命名规则的字符串
+// （包括幻觉出来的 agent 名），导致 envelope 写到一个永远没人订阅的 inbox。
+// 当未来 agents 列表动态化（用户自定义角色）时，可改为基于 config.agents[].id
+// 动态构造枚举（在 createApplication 装配 tool 时注入）。
+const TargetAgentSchema = z.enum(['pm', 'coding', 'cs'])
 
 export function delegateToTool(ctx: ToolContext) {
   return tool({
@@ -2067,7 +2093,7 @@ export function delegateToTool(ctx: ToolContext) {
       '把任务派发给另一个 Agent。tool 同步返回 queued；本 turn 结束后等对方 reply 再继续。' +
       '禁止把任务派给自己。',
     parameters: z.object({
-      agent: AgentIdSchema,
+      agent: TargetAgentSchema,
       content: z.string().min(1),
       references: z
         .array(
@@ -2150,6 +2176,10 @@ export function escalateToUserTool(ctx: ToolContext) {
       if (agentId !== 'pm') {
         throw new Error(`escalate_to_user 仅 PM 可用（当前 agent=${agentId}）`)
       }
+      // intent 取 'broadcast'：spec §5.1 的 intent 枚举里没有专属 'escalate'。
+      // 不能用 'final'（spec §5.4 里 final + to:'thread' 表示 task done）。
+      // 用 broadcast + content 前缀 [ESCALATE] 区分；Chunk 4 的 orchestrator
+      // 不依赖 intent 判定 escalate，而看 task.state === 'awaiting_user'。
       const envelope = {
         id: newEnvelopeId(),
         taskId,
@@ -2232,12 +2262,12 @@ export function updateTaskBoardTool(ctx: ToolContext) {
 - [ ] **Step 2：跑 update_task_board 测试通过**
 
 Run: `pnpm test src/agent/tools/multiAgentTools.test.ts -t "update_task_board"`
-Expected: 3 PASS
+Expected: 4 PASS
 
 - [ ] **Step 3：跑全部多 agent tool 测试**
 
 Run: `pnpm test src/agent/tools/multiAgentTools.test.ts`
-Expected: 8 PASS
+Expected: 10 PASS（delegate 4 + escalate 2 + update 4）
 
 - [ ] **Step 4：commit**
 
@@ -2255,18 +2285,39 @@ git commit -m "feat(tools): update_task_board 工具，黑板 facts/decisions �
 
 - [ ] **Step 1：先写 index 测试（确认 toolset 包含新 tool）**
 
-修改 `src/agent/tools/tools.test.ts`，加：
+[`src/agent/tools/tools.test.ts:13-25`](../../../src/agent/tools/tools.test.ts) 已有 `stubCtx()` helper。在文件末尾新增 `describe` 块，使用该 helper + 一个最小 `stubDeps()`：
 
 ```ts
-it('toolset includes multi-agent tools', () => {
-  const tools = buildBuiltinTools(makeCtx(), makeDeps())
-  expect(tools).toHaveProperty('delegate_to')
-  expect(tools).toHaveProperty('escalate_to_user')
-  expect(tools).toHaveProperty('update_task_board')
+import { buildBuiltinTools, type BuiltinToolDeps } from './index.ts'
+import { resolveWorkspacePaths } from '@/workspace/paths.ts'
+
+const stubDeps = (): BuiltinToolDeps => ({
+  memoryStore: { save: async () => '' } as any,
+  selfImproveCollector: {} as any,
+  selfImproveGenerator: {} as any,
+  confirmBridge: {} as any,
+  paths: resolveWorkspacePaths(cwd),
+  logger: stubCtx().logger,
+})
+
+describe('buildBuiltinTools', () => {
+  it('toolset includes multi-agent tools', () => {
+    const tools = buildBuiltinTools(stubCtx(), stubDeps())
+    expect(tools).toHaveProperty('delegate_to')
+    expect(tools).toHaveProperty('escalate_to_user')
+    expect(tools).toHaveProperty('update_task_board')
+  })
+
+  it('toolset still has legacy tools', () => {
+    const tools = buildBuiltinTools(stubCtx(), stubDeps())
+    expect(tools).toHaveProperty('bash')
+    expect(tools).toHaveProperty('edit_file')
+    expect(tools).toHaveProperty('save_memory')
+  })
 })
 ```
 
-`makeCtx()` / `makeDeps()` 用现有 tools.test.ts 里的 fixture（如有）。如不存在，inline 构造 minimal ctx + deps（参考 [`src/agent/tools/tools.test.ts`](../../../src/agent/tools/tools.test.ts) 当前模式）。
+注意 `stubDeps` 用 `as any` 强转最小 mock；只验证 toolset 装配结构，不调真 execute。
 
 - [ ] **Step 2：跑测试看失败**
 
