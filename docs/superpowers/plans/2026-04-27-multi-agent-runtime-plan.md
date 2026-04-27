@@ -2616,6 +2616,18 @@ export class SessionRunQueue {
 
 ⚠️ 关键：pause 需在 enqueue **之前** 调用才能阻塞接下来的 runner。如果 pause 在 enqueue 之后调，**已经在 state.tail.then(runner) 排上的 runner 不会被阻塞**（promise 链已建立）。这与 notes §4 一致：pause 影响的是"还没开始的"，不打断"已经在跑的"。
 
+#### P0 行为契约（paused 期间的用户消息与 reply envelope）
+
+**FIFO 共享队列**（spec 真空，本 plan 显式决议，详见 notes §9）：
+
+paused 期间用户在同 thread 又发 mention（mention 路径）和 A2A reply envelope 到达（A2A 路径），两类 InboundMessage **共用同一 SessionRunQueue**，按 enqueue 时间序消费：
+
+- 用户 mention 先到 → enqueue → 因 paused 阻塞
+- reply envelope 后到 → subscribeA2A 调 `runQueue.resume(sessionKey)` → enqueue 合成 InboundMessage
+- resume 后 runQueue 按顺序先消费用户 mention（PM 模型可能把它当成"用户改主意了"），再消费 reply envelope
+
+**P0 显式接受这个行为**：用户消息会打断 PM 等 reply 的逻辑，由 PM 模型自行处理"用户突然插话"。P1 可加 priority queue 让 reply envelope 优先，但需要扩 SessionRunQueue 接口；P0 不做。
+
 - [ ] **Step 4：跑测试通过**
 
 Run: `pnpm test src/orchestrator/SessionRunQueue.test.ts`
@@ -3137,7 +3149,9 @@ function extractLastAssistantText(finalMessages: LifecycleFinalMessage[]): strin
 }
 ```
 
-⚠️ `LifecycleFinalMessage` 类型路径：从 [`src/core/events.ts`](../../../src/core/events.ts) 导出（当前是模块内 type，要改为 export）。
+⚠️ `LifecycleFinalMessage` 类型路径：从 [`src/core/events.ts`](../../../src/core/events.ts) 导出。**当前是模块内 type（line 42），需改为 `export type LifecycleFinalMessage = ...`**。Step 8 commit 的 `git add` 列表必须包含 `src/core/events.ts`。
+
+⚠️ **P0 假设**：用户**不会直接 mention 非 PM agent**（路由层只把 Slack mention 给 PM；非 PM 仅通过 A2A 合成 InboundMessage 接收任务）。当前 auto-envelope 规则在"非 PM + replyTo='thread'/undefined"路径不写 envelope —— 这意味着如果用户真直接 @ coding，task 会卡住没人推进。P1 接 Slack 时由路由层强制此约束（或加 fallback）；P0 集成测试不覆盖该 corner case。
 
 #### Step 7：写 multi-agent 集成测试
 
@@ -3219,7 +3233,7 @@ describe('multi-agent mode', () => {
 
 ```bash
 pnpm test src/orchestrator/ && \
-git add src/orchestrator/ConversationOrchestrator.ts src/orchestrator/ConversationOrchestrator.test.ts src/application/createApplication.ts && \
+git add src/orchestrator/ConversationOrchestrator.ts src/orchestrator/ConversationOrchestrator.test.ts src/application/createApplication.ts src/core/events.ts && \
 git commit -m "feat(orchestrator): multi-agent 主链路（taskId 解析 + IMContext 注入 + task 黑板渲染 + mark_waiting 检测 + 非 PM auto-reply + abort task 关联）"
 ```
 
@@ -3908,6 +3922,89 @@ export function makeUserInbound(
     text,
   }
 }
+
+// 单 Agent 模式 fixture（用于 Task 5.3 回归 guard）：
+// 与 setupMultiAgentApp 同基础设施，但 orchestrator 不传 multiAgent deps，
+// 不订阅 A2A bus；行为应该等同今天的单 agent 路径。
+export interface SingleAgentTestApp {
+  paths: WorkspacePaths
+  default: ConversationOrchestrator
+  bus: A2ABus           // 提供但 orchestrator 不订阅；用于断言"无 envelope 写出"
+  taskBoard: TaskBoardManager
+  abortRegistry: AbortRegistry<string>
+  runQueue: SessionRunQueue
+  noopSink(): EventSink
+  spySink(): EventSink & { events: AgentExecutionEvent[]; finalize: ReturnType<typeof vi.fn> }
+}
+
+export async function setupSingleAgentApp(args: {
+  default: MockTurnIntent[]
+}): Promise<SingleAgentTestApp> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-slack-it-single-'))
+  await fs.mkdir(path.join(dir, '.agent-slack'), { recursive: true })
+
+  const paths = resolveWorkspacePaths(dir)
+  const bus = createA2ABus(paths)
+  const taskBoard = createTaskBoardManager(paths)
+  const abortRegistry = new AbortRegistry<string>()
+  const runQueue = new SessionRunQueue()
+  const sessionStore = createSessionStore(paths)
+  const memoryStore = createMemoryStore(paths)
+  const stubLogger: Logger = {
+    withTag: () => stubLogger,
+    trace: () => {}, debug: () => {}, info: () => {}, warn: () => {}, error: () => {},
+  }
+
+  const orch = createConversationOrchestrator({
+    // 不传 agentId（默认 'default'）/ 不传 multiAgent
+    toolsBuilder: (cu, imContext) =>
+      buildBuiltinTools(
+        {
+          cwd: dir,
+          logger: stubLogger,
+          currentUser: cu,
+          ...(imContext.confirm ? { confirm: imContext.confirm } : {}),
+        },
+        {
+          memoryStore,
+          selfImproveCollector: {} as any,
+          selfImproveGenerator: {} as any,
+          confirmBridge: {} as any,
+          paths,
+          logger: stubLogger,
+        },
+      ),
+    executorFactory: (tools) => mockExecutorFromTurns(args.default, tools),
+    sessionStore,
+    memoryStore,
+    runQueue,
+    abortRegistry,
+    systemPrompt: '',
+    logger: stubLogger,
+  })
+
+  return {
+    paths,
+    default: orch,
+    bus,
+    taskBoard,
+    abortRegistry,
+    runQueue,
+    noopSink: () => ({
+      async onEvent() {}, async finalize() {}, terminalPhase: undefined,
+    }),
+    spySink: () => {
+      const events: AgentExecutionEvent[] = []
+      const finalize = vi.fn(async () => {})
+      return {
+        async onEvent(e) { events.push(e) },
+        finalize,
+        events,
+        terminalPhase: undefined,
+      }
+    },
+  }
+}
 ```
 
 #### Step 4：写自测
@@ -4069,7 +4166,7 @@ describe('Multi-Agent end-to-end (P0 fixture)', () => {
 })
 ```
 
-`setupSingleAgentApp` 在 testHelpers 实现：与 setupMultiAgentApp 类似但 deps 不含 multiAgent，agentId='default'。
+`setupSingleAgentApp` 已在 Task 5.2 testHelpers.ts 实现（见上），用于回归 guard。
 
 `readAllEnvelopes(paths, taskId)`：读 `tasks/<id>/envelopes/*.json` 并 parse。
 
