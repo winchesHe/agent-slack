@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
-import { writeFileSync, mkdirSync, rmSync } from 'node:fs'
+import { writeFileSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
 import path from 'node:path'
 import { loadSkills } from './SkillLoader.ts'
 import type { Logger } from '@/logger/logger.ts'
@@ -188,6 +188,26 @@ describe('loadSkills', () => {
     const skills = await loadSkills(skillsDir, ['*'], stubLogger)
     expect(skills).toHaveLength(1)
     expect(skills[0]!.whenToUse).toBe('Front matter value')
+  })
+
+  it('软链接目录也能被加载', async () => {
+    // 真实 skill 目录放在 skillsDir 外，再以软链接形式暴露
+    const realRoot = path.join(skillsDir, '..', `real-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`)
+    mkdirSync(realRoot, { recursive: true })
+    writeFileSync(
+      path.join(realRoot, 'SKILL.md'),
+      '---\nname: linked\ndescription: Linked skill\n---\nLinked content',
+    )
+    symlinkSync(realRoot, path.join(skillsDir, 'linked'))
+
+    try {
+      const skills = await loadSkills(skillsDir, ['*'], stubLogger)
+      expect(skills).toHaveLength(1)
+      expect(skills[0]!.name).toBe('linked')
+      expect(skills[0]!.content).toBe('Linked content')
+    } finally {
+      rmSync(realRoot, { recursive: true, force: true })
+    }
   })
 
   it('无 SKILL.md 的目录被跳过', async () => {
