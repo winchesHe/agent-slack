@@ -20,7 +20,10 @@ agent:
 
   context:
     # 只限制发给模型的历史上下文视图，不裁剪 messages.jsonl。
-    maxApproxChars: 240000
+    # 单位: 字符数 (JSON.stringify(messages).length)，约 3 字符 ≈ 1 token。
+    # 参考: 200k token 窗口建议 500_000~600_000；400k 窗口建议 900_000~1_000_000；1M 窗口可设 2_000_000+。
+    # 当前 900_000 字符 ≈ 300k tokens，匹配 400k token 上下文窗口（GPT-5 长窗口 / 部分 LiteLLM 路由）。
+    maxApproxChars: 900000
     # 最多加载最近消息数，避免大量短消息导致上下文膨胀。
     keepRecentMessages: 80
     # 最近 N 个工具结果保留完整；更旧工具结果在模型视图中压缩为占位。
@@ -29,6 +32,7 @@ agent:
       # 达到上下文预算阈值时，先整理上下文，再继续当前 run。
       enabled: true
       # 当前候选上下文达到预算 80% 时触发。
+      # 例如 maxApproxChars=900_000 时，720_000 字符 ≈ 240k tokens 触发压缩。
       triggerRatio: 0.8
       # 同 session 连续自动压缩失败次数上限。
       maxFailures: 2

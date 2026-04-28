@@ -11,7 +11,10 @@ export const ConfigSchema = z.object({
       context: z
         .object({
           // 只限制发给模型的历史视图，不裁剪 messages.jsonl。
-          maxApproxChars: z.number().int().positive().default(240_000),
+          // 单位: 字符数 (JSON.stringify(messages).length)，约 3 字符 ≈ 1 token。
+          // 默认 900_000 字符 ≈ 300k tokens，匹配 400k token 上下文窗口（GPT-5 长窗口 / 部分 LiteLLM 路由）。
+          // 200k 窗口模型建议改为 500_000~600_000；1M 窗口可设 2_000_000+。
+          maxApproxChars: z.number().int().positive().default(900_000),
           keepRecentMessages: z.number().int().positive().default(80),
           keepRecentToolResults: z.number().int().positive().default(20),
           autoCompact: z

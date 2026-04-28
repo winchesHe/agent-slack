@@ -12,7 +12,9 @@ export interface ModelMessageBudget {
 }
 
 export const DEFAULT_MODEL_MESSAGE_BUDGET: ModelMessageBudget = {
-  maxApproxChars: 240_000,
+  // 字符数预算 (JSON.stringify 后)，约 3 字符 ≈ 1 token。
+  // 900_000 字符 ≈ 300k tokens，对应 400k token 窗口模型；triggerRatio 0.8 时在 ~240k tokens 触发压缩。
+  maxApproxChars: 900_000,
   keepRecentMessages: 80,
   keepRecentToolResults: 20,
   autoCompact: {

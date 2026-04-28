@@ -8,12 +8,16 @@ export function defaultConfigYaml(model: string, provider: 'litellm' | 'anthropi
   maxSteps: 50
   context:
     # 传给模型的历史上下文近似字符预算；只影响模型视图，不裁剪 messages.jsonl
-    maxApproxChars: 240000
+    # 单位: 字符数 (JSON.stringify(messages).length)，约 3 字符 ≈ 1 token
+    # 900_000 字符 ≈ 300k tokens，对应 400k 窗口模型（GPT-5 长窗口 / 部分 LiteLLM 路由）
+    # 200k 窗口模型建议 500000~600000；1M 窗口可设 2000000+
+    maxApproxChars: 900000
     # 传给模型的最近消息数上限；用于限制大量短消息导致的上下文膨胀
     keepRecentMessages: 80
     # 保留最近 N 个完整工具结果；更旧的工具结果仅在模型视图中替换为占位提示
     keepRecentToolResults: 20
     # 自动上下文压缩：达到预算阈值时先整理上下文，再继续本轮主流程
+    # 例: maxApproxChars=900000 + triggerRatio=0.8，则 720000 字符 ≈ 240k tokens 触发压缩
     autoCompact:
       enabled: true
       triggerRatio: 0.8

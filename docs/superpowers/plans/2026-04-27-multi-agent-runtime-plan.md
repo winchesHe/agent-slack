@@ -219,7 +219,7 @@ const AgentSlackSchema = z.object({
 
 const AgentContextSchema = z
   .object({
-    maxApproxChars: z.number().int().positive().default(240_000),
+    maxApproxChars: z.number().int().positive().default(900_000),
     keepRecentMessages: z.number().int().positive().default(80),
     keepRecentToolResults: z.number().int().positive().default(20),
     autoCompact: z
