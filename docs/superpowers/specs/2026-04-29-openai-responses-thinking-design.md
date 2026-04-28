@@ -364,6 +364,7 @@ gpt-5.4: 1.4k tokens (62% cache) (132 thinking)
 | done reaction（白勾） | lifecycle 完成 |
 | usage message 正则匹配 `\(\d+ thinking\)` | reasoning_tokens 真透回 Slack 显示 |
 | 拦截到的请求 URL 以 `/responses` 结尾、不是 `/chat/completions` | 确认走对端点 |
+| 整轮拦截无任何 `/chat/completions` POST | 反向兜底，防止 fallback 到旧端点而我们不知 |
 | 拦截到的 body 含 `"reasoning":{"effort":"medium","summary":"auto"}` 与 `"store":false` | 配置真透传到 wire |
 
 **fetch 注入方式**：在 e2e 入口 `monkey-patch globalThis.fetch`（与现有 `run-thinking.ts`<sup>1</sup> 同模式），因为 `createOpenAI` 默认走 `globalThis.fetch`（peer dep `@ai-sdk/provider-utils` 的 `getOriginalFetch` helper 取 globalThis.fetch）。监听对 `LITELLM_BASE_URL/responses` 的 POST，记录 body 字符串。
@@ -384,7 +385,9 @@ gpt-5.4: 1.4k tokens (62% cache) (132 thinking)
 
 依赖、config schema、provider 装配、executor 透传 providerOptions。
 
-出口：现有 `run-basic-reply` 在临时 workspace `provider=openai-responses` 下能跑通（reasoning summary 是否显示暂不验证）。
+出口：
+- 现有 `run-basic-reply` 在临时 workspace `provider=openai-responses` 下能跑通（reasoning summary 是否显示暂不验证）
+- **显式确认**：LiteLLM 网关 `/responses` 端点是否接受 `stream_options` 字段。若拒绝则 openai-responses 路径下不写 `providerName`（跳过 stream_options 注入）。动作：phase 1 e2e 跑时看 LiteLLM 是否报 unknown field 错误，无报错保留现状
 
 ### Phase 2 — Live Thinking progress 显示
 
@@ -407,10 +410,10 @@ gpt-5.4: 1.4k tokens (62% cache) (132 thinking)
 | 风险 | 缓解 |
 |---|---|
 | 成本上浮（reasoning_tokens 计费） | medium 默认是 OpenAI 推荐档位；用户可降到 low |
-| sub-agent 浪费 reasoning tokens | 接受（每次 < $0.001，配置简单优先） |
+| sub-agent 路径变化（chat/completions → responses） | 接受。sub-agent 不显式传 `providerOptions.openai.reasoningEffort`，所以不会触发 reasoning，token 消耗几乎不变；ai-sdk 自动处理两套 API 之间请求/响应映射 |
 | 网关 LiteLLM `/responses` 转发出问题 | 已实测通过；e2e 持续验证 |
 | 数据驻留 | 硬编码 `store: false`，每次请求不在 OpenAI 服务端长期保留 |
-| @ai-sdk/openai v1.3.22 API 不稳 | 锁版本 `^1.3.22`；CI typecheck 兜底 |
+| @ai-sdk/openai v1.3.24 API 不稳 | 锁版本 `^1.3.24`；CI typecheck 兜底 |
 | 与 anthropic / litellm 路径相互影响 | 三个分支完全独立，无共享 runtime；单测覆盖装配逻辑 |
 
 ### 9.2 回滚
