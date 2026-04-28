@@ -77,7 +77,8 @@ agent: z.object({
   // provider 枚举扩展：新增 'openai-responses'
   provider: z.enum(['litellm', 'anthropic', 'openai-responses']).default('litellm'),
 
-  // 新增子字段：仅 provider='openai-responses' 时实际生效，其他 provider 装配代码忽略
+  // 新增子字段：仅 provider='openai-responses' 时实际生效；其他 provider 装配代码不读，
+  // 但 zod schema 接受字段写在 yaml 里不报错也不 warning（让用户提前写好将来切 provider）
   responses: z
     .object({
       // OpenAI 推理预算档位
@@ -112,11 +113,19 @@ agent:
 
 ### 4.1 依赖
 
-`package.json` 新增 `@ai-sdk/openai@^1.3.22`。已验证：
+`package.json` 新增 `@ai-sdk/openai@^1.3.24`。已验证：
 - 提供 `provider.responses(modelId)` factory
 - `OpenAIResponsesModelId` 含 `(string & {})`，接受任意模型名（如 `gpt-5.4`）
-- `OpenAIProviderSettings` 支持 `baseURL` / `apiKey` / `headers` / `compatibility`
+- `OpenAIProviderSettings` 支持 `baseURL` / `apiKey` / `headers` / `compatibility` / `fetch`
 - 与 `ai@^4.0.0` 兼容（peerDeps `zod ^3`）
+
+**版本下限关键**：v1.3.24 的 `getResponsesModelConfig`（`dist/index.js:2624`）把 `gpt-5*` 列入 `isReasoningModel`：
+
+```js
+if (modelId.startsWith("o") || modelId.startsWith("gpt-5")) { ... isReasoningModel: true ... }
+```
+
+v1.3.22 及更早只检测 `startsWith("o")`，`gpt-5.4` 不会触发 reasoning 字段注入到请求体——会导致这个 spec 的所有 thinking 表现完全无效。**实施时必须 ≥ 1.3.24**。
 
 ### 4.2 `src/application/createApplication.ts`
 
@@ -151,30 +160,72 @@ if (provider === 'openai-responses' && env.provider === 'openai-responses') {
 }
 ```
 
-### 4.3 配置透到模型
+### 4.3 配置透到模型（**关键 key 名修订**）
 
-`executorFactory` 调 `createAiSdkExecutor` 时把 `responsesOpts` 透下去，executor 在 `streamText` 调用时通过 `providerOptions['openai-responses']` 注入：
+`@ai-sdk/openai` 内部用 `parseProviderOptions({ provider: "openai", providerOptions, ... })` 取 reasoning 相关字段（`dist/index.js:2087`）——这个 `provider` 键是**写死的字面量 `"openai"`**，跟 `createOpenAI({ name: 'openai-responses' })` 里的 `name` 无关（`name` 只用于错误标签和 `provider` 字符串展示）。
+
+也就是说：`providerOptions['openai-responses']` 会被**静默忽略**。**必须用 `providerOptions.openai`**。
+
+为不冲淡 litellm 路径的 `providerOptions[providerName].stream_options` 机制，本期在 `AiSdkExecutorDeps` 加一个新的可选字段 `extraProviderOptions?: ProviderMetadata`，由 createApplication 在装配时直接构造好整个 providerOptions 对象传进来：
 
 ```ts
-// AiSdkExecutor.ts 内
-const providerOpts = deps.providerName
-  ? { [deps.providerName]: { stream_options: { include_usage: true } } }
-  : undefined
-if (deps.responsesOpts) {
-  providerOpts['openai-responses'] = {
-    ...providerOpts['openai-responses'],
-    reasoningEffort: deps.responsesOpts.reasoningEffort,
-    reasoningSummary: deps.responsesOpts.reasoningSummary,
-    store: false,    // §7.2 决策：不在 OpenAI 服务端长期保留对话内容
-  }
-}
+// createApplication.ts 内
+const extraProviderOptions =
+  provider === 'openai-responses'
+    ? {
+        openai: {
+          reasoningEffort: ctx.config.agent.responses.reasoningEffort,
+          reasoningSummary: ctx.config.agent.responses.reasoningSummary,
+          store: false,    // §9.2 决策：不在 OpenAI 服务端长期保留对话内容
+        },
+      }
+    : undefined
+
+createAiSdkExecutor({
+  model: runtime.model,
+  ...
+  ...(runtime.providerNameForOptions ? { providerName: runtime.providerNameForOptions } : {}),
+  ...(extraProviderOptions ? { extraProviderOptions } : {}),
+})
 ```
+
+```ts
+// AiSdkExecutor.ts 内 streamText 调用前合并：
+const providerOpts: ProviderMetadata = {
+  ...(deps.providerName
+    ? { [deps.providerName]: { stream_options: { include_usage: true } } }
+    : {}),
+  ...(deps.extraProviderOptions ?? {}),
+}
+const hasOpts = Object.keys(providerOpts).length > 0
+result = streamText({
+  ...
+  ...(hasOpts ? { providerOptions: providerOpts } : {}),
+})
+```
+
+注意：openai-responses 路径下 `providerNameForOptions` 应保留为 `'openai-responses'`（litellm 路径仍 `'litellm'`，anthropic 仍 `undefined`）——这个字段对 reasoning 透传无效，但保持现有 `stream_options` 透传机制对 LiteLLM 网关是否仍需 include_usage 这一行为保留兼容（实测 /responses 端点 finish chunk 已含 usage，理论上不需要 stream_options 强制；但保留无害）。如果 LiteLLM 在 /responses 端点拒绝 `stream_options` 字段，phase 1 实测会暴露，调整为对 openai-responses 不写 `providerName` 即可。
 
 ### 4.4 Sub-agent 共享 runtime
 
-`compactAgent` / `selfImproveCollector` / `selfImproveGenerator` / `semanticDedup` 直接复用 `runtime.model`（不经 AiSdkExecutor），自动走 `/responses` + 同 `reasoningEffort`。这些 agent 不渲染 reasoning，相关 stream part 直接丢弃。
+具体调用点（**实施时 grep 确认**）：
 
-代价：每次 sub-agent 调用多消耗约几十 tokens reasoning（low effort 下 < $0.001/次），可接受。
+| 文件 | 取 model 的方式 |
+|---|---|
+| `src/agents/compact/index.ts` | `createCompactAgent({ model: runtime.model, logger })` |
+| `src/agents/selfImprove/collectorAgent.ts` | `createSelfImproveCollector(...)` 内部接受 model |
+| `src/agents/selfImprove/generatorAgent.ts` | `createSelfImproveGenerator()` |
+| `src/agents/selfImprove/semanticDedupAgent.ts` | `createSemanticDedup({ model: runtime.model, logger })` |
+
+均在 `createApplication.ts:88-91` 一带一次性注入。本设计不改这些文件——它们直接复用 `runtime.model`，自动走 `/responses` + 同 `reasoningEffort`。这些 agent 内部不订阅 `type:'reasoning'` stream part，相关数据自然丢弃。
+
+但它们没有显式传 `providerOptions.openai`——这意味着 sub-agent 调用**不会**带 reasoningEffort 字段，所以**不会触发 reasoning**。结果：sub-agent 走 /responses 端点但无 reasoning 行为，token 消耗与原来 chat/completions 几乎一致。
+
+这其实**比"共享 effort"更省**，符合"sub-agent 不需要思考"的直觉。
+
+代价：sub-agent 调用走 /responses 而非 chat/completions，路径不同但功能等价；ai-sdk @openai 已自动处理两套 API 之间的请求/响应映射差异。
+
+校验方式：phase 1 出口跑现有 `run-compact-command` e2e 默认改 `provider=openai-responses` 应仍能通过。
 
 ---
 
@@ -182,7 +233,7 @@ if (deps.responsesOpts) {
 
 ### 5.1 数据通路（已存在）
 
-`@ai-sdk/openai` responses provider 把 `response.reasoning_summary_text.delta` SSE 事件映射成 `type: 'reasoning'` 的 stream part，**正好命中 `AiSdkExecutor.ts` 现有 `case 'reasoning':` 分支**。聚合器累计 `currentReasoning`，节流 emit `activity-state { reasoningTail: <最后 80 字符> }`，SlackEventSink 触发 progress upsert，SlackRenderer 渲染 context block。
+`@ai-sdk/openai` responses provider 把 `response.reasoning_summary_text.delta` SSE 事件映射成 `type: 'reasoning'` 的 stream part（源码佐证：`@ai-sdk/openai@1.3.24/dist/index.js:2431-2436`）。**正好命中 `AiSdkExecutor.ts` 现有 case 分支**（`src/agent/AiSdkExecutor.ts:357` `case 'reasoning':`）。聚合器累计 `currentReasoning`，节流 emit `activity-state { reasoningTail: <最后 80 字符> }`，SlackEventSink 触发 progress upsert，SlackRenderer 渲染 context block。
 
 ### 5.2 唯一改动点：`src/im/slack/SlackRenderer.ts:120`
 
@@ -201,7 +252,30 @@ blocks.push(buildContextBlock(`:fluent-thinking-3d: ${state.reasoningTail}`))
 
 ### 6.1 数据通路（新增）
 
-OpenAI `/responses` 响应里 `output_tokens_details.reasoning_tokens` 被 ai-sdk 自动塞进 finish chunk 的 `providerMetadata.openai.reasoningTokens`（见 `@ai-sdk/openai` v1.3.22 源码）。`step-finish.providerMetadata` 透到 `AiSdkExecutor.updateUsage`。
+OpenAI `/responses` 响应里 `output_tokens_details.reasoning_tokens` 被 ai-sdk 自动塞进 finish chunk 的 `providerMetadata.openai.reasoningTokens`。
+
+源码佐证（`@ai-sdk/openai@1.3.24/dist/index.js:2455-2458`，`isResponseFinishedChunk` 处）：
+
+```js
+reasoningTokens = value.response.usage.output_tokens_details?.reasoning_tokens ?? reasoningTokens;
+```
+
+`dist/index.js:2474-2480`，flush 时拼装 finish chunk：
+
+```js
+controller.enqueue({
+  type: "finish",
+  finishReason,
+  usage: { promptTokens, completionTokens },
+  ...(cachedPromptTokens != null || reasoningTokens != null) && {
+    providerMetadata: {
+      openai: { responseId, cachedPromptTokens, reasoningTokens }
+    }
+  }
+});
+```
+
+`step-finish.providerMetadata.openai.reasoningTokens` 是 camelCase，可直接读。
 
 ### 6.2 `src/core/events.ts`
 
@@ -255,6 +329,14 @@ for (const model of usage.modelUsage) {
 :agent_time: 5.4s · $0.013 · gpt-5.4: 1.4k tokens (132 thinking) · :agent_memory: 1 memory · :agent_tool: 3 tools
 ```
 
+**双括号视觉考量**：若同一 model 段同时触发 `(<X>% cache)` 和 `(N thinking)`，会出现：
+
+```
+gpt-5.4: 1.4k tokens (62% cache) (132 thinking)
+```
+
+接受此形态——括号语义边界清晰（一是命中率、一是思考子集），且同时出现要求模型既高 cache hit 又有 reasoning，实际不常见。如未来视觉问题再合并成 `(62% cache · 132 thinking)`。
+
 ### 6.5 语义说明
 
 `reasoning_tokens` 是 `output_tokens` 的**子集**（OpenAI 规范）。`1.4k tokens` 已包含 132 reasoning。括号注法明示"这 1.4k 里有 132 是思考"，不会被理解成额外消耗。
@@ -281,8 +363,12 @@ for (const model of usage.modelUsage) {
 | Slack thread reply 含 `THINKING_OK <runId>` | 端到端模型回复正常 |
 | done reaction（白勾） | lifecycle 完成 |
 | usage message 正则匹配 `\(\d+ thinking\)` | reasoning_tokens 真透回 Slack 显示 |
-| `globalThis.fetch` 拦截：URL 以 `/responses` 结尾、不是 `/chat/completions` | 确认走对端点 |
-| 拦截到的 body 含 `"reasoning":{"effort":"medium","summary":"auto"}` 与 `"store":false` | 配置真透传 |
+| 拦截到的请求 URL 以 `/responses` 结尾、不是 `/chat/completions` | 确认走对端点 |
+| 拦截到的 body 含 `"reasoning":{"effort":"medium","summary":"auto"}` 与 `"store":false` | 配置真透传到 wire |
+
+**fetch 注入方式**：在 e2e 入口 `monkey-patch globalThis.fetch`（与现有 `run-thinking.ts`<sup>1</sup> 同模式），因为 `createOpenAI` 默认走 `globalThis.fetch`（peer dep `@ai-sdk/provider-utils` 的 `getOriginalFetch` helper 取 globalThis.fetch）。监听对 `LITELLM_BASE_URL/responses` 的 POST，记录 body 字符串。
+
+<sup>1</sup> 这文件在之前的回滚中被删了，此 e2e 是全新建。模式参考之前 git log 里的同名文件。
 
 ### 7.3 不动的测试
 
@@ -339,7 +425,7 @@ for (const model of usage.modelUsage) {
 
 ### 10.1 修改
 
-- `package.json`（+1 dep）
+- `package.json`（+1 dep `@ai-sdk/openai@^1.3.24`，**版本下限关键**，见 §4.1）
 - `src/workspace/config.ts`（+1 enum 值，+1 子字段）
 - `src/workspace/config.test.ts`（+3 用例）
 - `src/application/createApplication.ts`（+1 ProviderEnv 变体，+1 buildProviderRuntime 分支，+responsesOpts 透传）
@@ -370,3 +456,5 @@ for (const model of usage.modelUsage) {
 - §9 store 默认：选 a（硬编码 `store: false`）
 - 主路径 emoji：`:fluent-thinking-3d:`（live progress block，色彩鲜亮 3D 黄脸表情）
 - usage 行 emoji：本期不用（`:agent_thinking:` 已上传留作后续）
+- providerOptions 透传 key：`'openai'`（不是 `'openai-responses'`，因 ai-sdk 内部 `parseProviderOptions({provider:"openai"})` 写死）
+- 配置→executor 通路：新增 `extraProviderOptions?: ProviderMetadata` deps 字段，由 createApplication 装配时构造完整 providerOptions 对象传入，不让 executor 知道具体 provider 形态（解耦）
