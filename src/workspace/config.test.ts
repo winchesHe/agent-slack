@@ -91,9 +91,7 @@ describe('parseConfig', () => {
   })
 
   it('reasoningEffort 非法值报错', () => {
-    expect(() =>
-      parseConfig({ agent: { responses: { reasoningEffort: 'extreme' } } }),
-    ).toThrow()
+    expect(() => parseConfig({ agent: { responses: { reasoningEffort: 'extreme' } } })).toThrow()
   })
 
   it('agent.provider 非法值报错', () => {
