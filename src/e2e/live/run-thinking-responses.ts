@@ -35,9 +35,10 @@ interface ThinkingResponsesResult {
     //   src/application/createApplication.test.ts 'config.agent.provider=openai-responses → ...'
     thinkingTailObserved: boolean
     // progress block 中间消息会被最终态覆盖，e2e 跑完无法直接观察 Slack UI；
-    // 改为 grep daemon log（SlackRenderer 在 reasoningTail 出现时会写一条
-    // `progress reasoning emoji rendered: :fluent-thinking-3d:` info 级日志），
-    // 验证 reasoning summary 流真触发了 progress block 的 emoji 渲染路径。
+    // 改为 grep daemon log：SlackEventSink 在 turn 内首次出现 reasoningTail 时写一条
+    // `progress reasoning emoji rendered: :fluent-thinking-3d:` info 级日志（每轮一行，
+    // 配合 chat.update 节流避免与 Slack 限速同频刷屏），验证 reasoning summary 流真触发了
+    // progress block 的 emoji 渲染路径。
     progressEmojiRendered: boolean
   }
   passed: boolean
@@ -132,7 +133,9 @@ async function runOneAttempt(
 }
 
 // 事后 grep daemon log 看 reasoning emoji 渲染日志是否在 e2e 时间窗内出现过。
-// daemon log 行格式：`[2026-04-29T03:25:54.930Z] [info] [slack:render] progress reasoning emoji rendered: :fluent-thinking-3d: { tailPrefix: "..." }`
+// 日志由 SlackEventSink 在 turn 内首次出现 reasoningTail 时打出（每轮一行，自 Chunk A2 起
+// 不再每个 chunk 一行）。daemon log 行格式：
+// `[2026-04-29T03:25:54.930Z] [info] [slack:sink] progress reasoning emoji rendered: :fluent-thinking-3d: { tailPrefix: "..." }`
 async function logHasProgressEmojiSince(startedAt: number): Promise<boolean> {
   const today = new Date().toISOString().slice(0, 10)
   const logFile = path.join(process.cwd(), '.agent-slack', 'logs', `agent-${today}.log`)
