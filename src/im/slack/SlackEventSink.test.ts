@@ -5,11 +5,18 @@ import type { Logger } from '@/logger/logger.ts'
 import { createSlackEventSink } from './SlackEventSink.ts'
 import type { SlackRenderer } from './SlackRenderer.ts'
 
-function stubLogger(sink?: { warns: Array<{ message: string; meta: unknown }> }): Logger {
+interface LogSink {
+  warns: Array<{ message: string; meta: unknown }>
+  infos: Array<{ message: string; meta: unknown }>
+}
+
+function stubLogger(sink?: LogSink): Logger {
   const logger: Logger = {
     trace: () => {},
     debug: () => {},
-    info: () => {},
+    info: (message, meta) => {
+      sink?.infos.push({ message, meta })
+    },
     warn: (message, meta) => {
       sink?.warns.push({ message, meta })
     },
@@ -79,7 +86,7 @@ function mockRenderer(): SlackRenderer & { calls: RecordedCall[] } {
 const stubWeb = {} as unknown as WebClient
 
 function makeSink(renderer = mockRenderer()) {
-  const logs = { warns: [] as Array<{ message: string; meta: unknown }> }
+  const logs: LogSink = { warns: [], infos: [] }
 
   return {
     sink: createSlackEventSink({
@@ -613,6 +620,43 @@ describe('SlackEventSink: reasoning 节流（1.2s 时间窗，仅 reasoning-only
 
 // 与源文件常量保持一致；测试里硬编码避免引入私有导出。
 const REASONING_THROTTLE_MS_TEST = 1200
+
+describe('SlackEventSink: reasoning log（turn 内一次 info，含 :fluent-thinking-3d:）', () => {
+  it('多次 reasoningTail 只打一次 info；含 emoji 字符串与 tailPrefix', async () => {
+    const { sink, logs } = makeSink()
+    await sink.onEvent({ type: 'lifecycle', phase: 'started' })
+
+    for (const tail of ['t1', 't2', 't3', 't4']) {
+      await sink.onEvent({
+        type: 'activity-state',
+        state: { status: '推理中…', activities: ['a'], reasoningTail: tail },
+      })
+    }
+
+    const reasoningInfos = logs.infos.filter((entry) =>
+      entry.message.includes(':fluent-thinking-3d:'),
+    )
+    expect(reasoningInfos).toHaveLength(1)
+    expect(reasoningInfos[0]?.message).toBe(
+      'progress reasoning emoji rendered: :fluent-thinking-3d:',
+    )
+    expect(reasoningInfos[0]?.meta).toEqual({ tailPrefix: 't1' })
+  })
+
+  it('没有 reasoningTail 时不打日志', async () => {
+    const { sink, logs } = makeSink()
+    await sink.onEvent({ type: 'lifecycle', phase: 'started' })
+    await sink.onEvent({
+      type: 'activity-state',
+      state: { status: '正在 x…', activities: [], newToolCalls: ['x'] },
+    })
+
+    const reasoningInfos = logs.infos.filter((entry) =>
+      entry.message.includes(':fluent-thinking-3d:'),
+    )
+    expect(reasoningInfos).toHaveLength(0)
+  })
+})
 
 describe('SlackEventSink: isMeaningful pin 行为', () => {
   const cases: Array<{

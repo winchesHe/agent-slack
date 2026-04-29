@@ -8,7 +8,7 @@ import type {
 import type { Logger } from '@/logger/logger.ts'
 import type { EventSink } from '@/im/types.ts'
 import { STATUS, getShuffledLoadingMessages } from './thinking-messages.ts'
-import type { SessionUsageTailStats, SlackRenderer } from './SlackRenderer.ts'
+import { REASONING_EMOJI, type SessionUsageTailStats, type SlackRenderer } from './SlackRenderer.ts'
 import { isRenderDebugEnabled } from '@/workspace/config.ts'
 
 export interface SlackEventSinkDeps {
@@ -47,6 +47,10 @@ interface SinkLocalState {
   lastProgressUpdateAt: number | undefined
   reasoningPendingState: Exclude<ActivityState, { clear: true }> | undefined
   reasoningTimer: ReturnType<typeof setTimeout> | undefined
+  // turn 内是否已经打过一次 reasoning 渲染 log。e2e 通过 grep daemon log 中
+  // `:fluent-thinking-3d:` 字符串验证 reasoning 渲染路径走过；为避免与 chat.update 同频刷屏，
+  // 一个 sink（= 一轮任务）内只打一行 info。
+  reasoningLogged: boolean
 }
 
 // reasoning summary 流的 chat.update 节流窗口。Slack chat.update 限速约 1 req/s/channel，
@@ -193,6 +197,19 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
     lastProgressUpdateAt: undefined,
     reasoningPendingState: undefined,
     reasoningTimer: undefined,
+    reasoningLogged: false,
+  }
+
+  // turn 内首次出现 reasoningTail 时打一行 info 日志，供 live e2e 事后 grep 验证渲染路径。
+  // 后续 reasoningTail 变化不再补打（chat.update 节流后日志若仍按 chunk 频率打会与节流意图相悖）。
+  function logReasoningOnce(state: Exclude<ActivityState, { clear: true }>): void {
+    if (local.reasoningLogged || !state.reasoningTail) {
+      return
+    }
+    local.reasoningLogged = true
+    log.info(`progress reasoning emoji rendered: ${REASONING_EMOJI}`, {
+      tailPrefix: state.reasoningTail.slice(0, 30),
+    })
   }
 
   // 取消并清空 reasoning 节流定时器与待提交 state。
@@ -254,6 +271,9 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
       local.lastStateKey = undefined
       return
     }
+
+    // turn 内首次出现 reasoningTail 就打日志（与节流/dedup 解耦），保证 e2e grep 命中。
+    logReasoningOnce(state)
 
     const hasNewToolCalls = Boolean(state.newToolCalls && state.newToolCalls.length > 0)
     const nextStateKey = makeStateKey(state)
