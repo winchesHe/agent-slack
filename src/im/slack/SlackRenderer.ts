@@ -138,9 +138,22 @@ function fallbackText(state: ProgressUiState): string {
   return state.status || state.activities.at(-1) || '…'
 }
 
+// 耗时格式化：<60s 显示 `12.3s`（精确到 0.1s）；≥60s 改为 `12m 34s`（整数 + 秒整数），
+// 整 60 秒倍数省略秒段（`5m`），避免 1000s+ 长任务读起来像"几千秒"难以心算。
+function formatDuration(ms: number): string {
+  const totalSeconds = ms / 1000
+  if (totalSeconds < 60) {
+    return `${totalSeconds.toFixed(1)}s`
+  }
+  const rounded = Math.round(totalSeconds)
+  const mins = Math.floor(rounded / 60)
+  const secs = rounded % 60
+  return secs === 0 ? `${mins}m` : `${mins}m ${secs}s`
+}
+
 // usage 行简洁展示：耗时 · 成本 · 模型 token 统计 · 本轮 memory/tool/skill 使用。
 function formatUsageLine(usage: SessionUsageInfo, tailStats?: SessionUsageTailStats): string {
-  const parts = [`:agent_time: ${(usage.durationMs / 1000).toFixed(1)}s`]
+  const parts = [`:agent_time: ${formatDuration(usage.durationMs)}`]
 
   if (usage.totalCostUSD > 0) {
     parts.push(`$${usage.totalCostUSD.toFixed(4)}`)

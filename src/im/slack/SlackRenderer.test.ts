@@ -573,6 +573,45 @@ describe('SlackRenderer postSessionUsage', () => {
     expect(post?.args.text).not.toContain('thinking')
   })
 
+  it('durationMs ≥ 60_000 时显示为 mins 复合形式（27m 54s），整 60s 倍数省略秒段', async () => {
+    const cases: Array<{ durationMs: number; expected: string }> = [
+      // 1673.7s 真实样例：27.895m → round 到 1674s → 27m 54s
+      { durationMs: 1_673_700, expected: '27m 54s' },
+      // 整 1 分钟：1m
+      { durationMs: 60_000, expected: '1m' },
+      // 1m 0.4s 四舍五入 → 1m
+      { durationMs: 60_400, expected: '1m' },
+      // 1m 0.5s 四舍五入 → 1m 1s
+      { durationMs: 60_500, expected: '1m 1s' },
+      // 边界附近 < 60s 仍走秒数：59.9s → '59.9s'
+      { durationMs: 59_900, expected: '59.9s' },
+    ]
+
+    for (const { durationMs, expected } of cases) {
+      const { web, calls } = mockWeb()
+      const renderer = createSlackRenderer({ logger: stubLogger() })
+
+      await renderer.postSessionUsage(web, 'C1', 't1', {
+        durationMs,
+        totalCostUSD: 0,
+        modelUsage: [
+          {
+            model: 'm',
+            inputTokens: 1,
+            outputTokens: 1,
+            cachedInputTokens: 0,
+            cacheHitRate: 0,
+          },
+        ],
+      })
+
+      const post = calls.find((c) => c.method === 'chat.postMessage') as
+        | { args: { text?: string } }
+        | undefined
+      expect(post?.args.text).toContain(`:agent_time: ${expected}`)
+    }
+  })
+
   it('cacheHitRate=0 时省略 cache 段', async () => {
     const { web, calls } = mockWeb()
     const renderer = createSlackRenderer({ logger: stubLogger() })
