@@ -52,6 +52,9 @@ const mocks = vi.hoisted(() => {
     createAnthropic: vi.fn(() => ({
       languageModel: vi.fn((modelName: string) => ({ modelName, provider: 'anthropic' })),
     })),
+    createOpenAI: vi.fn(() => ({
+      responses: vi.fn((modelName: string) => ({ modelName, provider: 'openai-responses' })),
+    })),
     loadWorkspaceContext: vi.fn(async () => ({
       cwd: '/mock-workspace',
       paths,
@@ -59,7 +62,11 @@ const mocks = vi.hoisted(() => {
         agent: {
           model: 'test-model',
           maxSteps: 8,
-          provider: 'litellm' as 'litellm' | 'anthropic',
+          provider: 'litellm' as 'litellm' | 'anthropic' | 'openai-responses',
+          responses: { reasoningEffort: 'medium', reasoningSummary: 'auto' } as {
+            reasoningEffort: 'low' | 'medium' | 'high'
+            reasoningSummary: 'auto' | 'concise' | 'detailed'
+          },
         },
       },
       systemPrompt: 'system prompt',
@@ -69,7 +76,7 @@ const mocks = vi.hoisted(() => {
     createMemoryStore: vi.fn(() => ({ kind: 'memory-store' })),
     createLogger: vi.fn(() => logger),
     createRedactor: vi.fn(() => (value: unknown) => value),
-    createAiSdkExecutor: vi.fn(() => ({
+    createAiSdkExecutor: vi.fn((_deps: unknown) => ({
       execute: vi.fn(),
       drain: vi.fn(async () => {}),
     })),
@@ -106,6 +113,10 @@ vi.mock('@ai-sdk/openai-compatible', () => ({
 
 vi.mock('@ai-sdk/anthropic', () => ({
   createAnthropic: mocks.createAnthropic,
+}))
+
+vi.mock('@ai-sdk/openai', () => ({
+  createOpenAI: mocks.createOpenAI,
 }))
 
 vi.mock('@/workspace/WorkspaceContext.ts', () => ({
@@ -228,6 +239,7 @@ describe('createApplication', () => {
           model: 'test-model',
           maxSteps: 8,
           provider: 'litellm' as const,
+          responses: { reasoningEffort: 'medium', reasoningSummary: 'auto' } as const,
         },
       },
       systemPrompt: 'system prompt',
@@ -264,7 +276,12 @@ describe('createApplication', () => {
       cwd: '/mock-workspace',
       paths: mocks.paths,
       config: {
-        agent: { model: 'claude-sonnet-4-5', maxSteps: 8, provider: 'anthropic' as const },
+        agent: {
+          model: 'claude-sonnet-4-5',
+          maxSteps: 8,
+          provider: 'anthropic' as const,
+          responses: { reasoningEffort: 'medium', reasoningSummary: 'auto' } as const,
+        },
       },
       systemPrompt: 'system prompt',
       skills: [],
@@ -281,7 +298,12 @@ describe('createApplication', () => {
       cwd: '/mock-workspace',
       paths: mocks.paths,
       config: {
-        agent: { model: 'claude-sonnet-4-5', maxSteps: 8, provider: 'anthropic' as const },
+        agent: {
+          model: 'claude-sonnet-4-5',
+          maxSteps: 8,
+          provider: 'anthropic' as const,
+          responses: { reasoningEffort: 'medium', reasoningSummary: 'auto' } as const,
+        },
       },
       systemPrompt: 'system prompt',
       skills: [],
@@ -297,13 +319,91 @@ describe('createApplication', () => {
     mocks.loadWorkspaceContext.mockResolvedValueOnce({
       cwd: '/mock-workspace',
       paths: mocks.paths,
-      config: { agent: { model: 'test-model', maxSteps: 8, provider: 'anthropic' as const } },
+      config: {
+        agent: {
+          model: 'test-model',
+          maxSteps: 8,
+          provider: 'anthropic' as const,
+          responses: { reasoningEffort: 'medium', reasoningSummary: 'auto' } as const,
+        },
+      },
       systemPrompt: 'system prompt',
       skills: [],
     })
     await expect(createApplication({ workspaceDir: '/workspace' })).rejects.toThrow(
       /ANTHROPIC_API_KEY/,
     )
+  })
+
+  // executorFactory 在 createApplication 里是懒调用的（由 orchestrator 在收到 tools 后触发），
+  // 测试中需要从 orchestrator mock 拿到 args 然后手动触发一次。
+  function triggerExecutorFactory(): void {
+    const orchestratorArgs = mocks.createConversationOrchestrator.mock.calls[0]?.[0] as
+      | {
+          toolsBuilder: (
+            user: { userId: string; userName: string },
+            im: Record<string, unknown>,
+          ) => unknown
+          executorFactory: (tools: unknown) => unknown
+        }
+      | undefined
+    if (!orchestratorArgs) throw new Error('orchestrator mock 未被调用')
+    const tools = orchestratorArgs.toolsBuilder({ userId: 'U1', userName: 'tester' }, {})
+    orchestratorArgs.executorFactory(tools)
+  }
+
+  it('config.agent.provider=openai-responses → 调用 createOpenAI(.responses) + LiteLLM 凭证 + extraProviderOptions', async () => {
+    mocks.loadWorkspaceContext.mockResolvedValueOnce({
+      cwd: '/mock-workspace',
+      paths: mocks.paths,
+      config: {
+        agent: {
+          model: 'gpt-5.4',
+          maxSteps: 8,
+          provider: 'openai-responses' as const,
+          responses: { reasoningEffort: 'low', reasoningSummary: 'detailed' },
+        },
+      },
+      systemPrompt: 'system prompt',
+      skills: [],
+    })
+
+    await createApplication({ workspaceDir: '/workspace' })
+
+    expect(mocks.createOpenAI).toHaveBeenCalledWith({
+      baseURL: 'https://litellm.example.com',
+      apiKey: 'litellm-key',
+      name: 'openai-responses',
+      compatibility: 'compatible',
+    })
+    expect(mocks.createOpenAICompatible).not.toHaveBeenCalled()
+    expect(mocks.createAnthropic).not.toHaveBeenCalled()
+
+    triggerExecutorFactory()
+
+    const executorArgs = mocks.createAiSdkExecutor.mock.calls[0]?.[0] as
+      | { extraProviderOptions?: Record<string, unknown>; providerName?: string }
+      | undefined
+    expect(executorArgs?.extraProviderOptions).toEqual({
+      openai: {
+        reasoningEffort: 'low',
+        reasoningSummary: 'detailed',
+        store: false,
+        strictSchemas: false,
+      },
+    })
+    // openai-responses 路径下 providerName 必须是 undefined：避免向 /responses 端点注入
+    // stream_options（那是 /chat/completions 字段）。OpenAI Responses 流式响应自带 usage。
+    expect(executorArgs?.providerName).toBeUndefined()
+  })
+
+  it('config.agent.provider=litellm 时不传 extraProviderOptions', async () => {
+    await createApplication({ workspaceDir: '/workspace' })
+    triggerExecutorFactory()
+    const executorArgs = mocks.createAiSdkExecutor.mock.calls[0]?.[0] as
+      | { extraProviderOptions?: unknown }
+      | undefined
+    expect(executorArgs?.extraProviderOptions).toBeUndefined()
   })
 
   it('env AGENT_PROVIDER 不再影响选择（config 单一权威）', async () => {

@@ -1,5 +1,6 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { createAnthropic } from '@ai-sdk/anthropic'
+import { createOpenAI } from '@ai-sdk/openai'
 import path from 'node:path'
 import type { LanguageModel } from 'ai'
 import type { ConfirmSender } from '@/im/types.ts'
@@ -32,7 +33,7 @@ import type { Application } from './types.ts'
 
 type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error'
 
-export type AgentProvider = 'litellm' | 'anthropic'
+export type AgentProvider = 'litellm' | 'anthropic' | 'openai-responses'
 
 export interface CreateApplicationArgs {
   workspaceDir: string
@@ -117,6 +118,26 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
       },
     )
 
+  // 仅 provider='openai-responses' 时构造 reasoning 透传对象。
+  // key 必须是字面量 'openai'：@ai-sdk/openai 内部 parseProviderOptions({ provider: "openai" })
+  // 写死该字面量，与 createOpenAI({ name: 'openai-responses' }) 的 name 字段无关。
+  const extraProviderOptions =
+    provider === 'openai-responses'
+      ? {
+          openai: {
+            reasoningEffort: ctx.config.agent.responses.reasoningEffort,
+            reasoningSummary: ctx.config.agent.responses.reasoningSummary,
+            store: false, // spec §9 决策：不在 OpenAI 服务端长期保留对话内容
+            // 关闭 OpenAI Responses API 的 strict function schema 校验。
+            // strict 模式要求 required 数组包含 properties 全部 key（即所有字段都必填，可选字段须用 nullable union 表达）。
+            // 但本仓库的内置 tools（如 bash 的 timeout_ms）大量使用 zod .optional()，转出的 JSON schema
+            // 不符合 strict 形态。LiteLLM 网关在 /responses 端点会以 400 invalid_function_parameters 拒绝请求。
+            // 设 false 让 ai-sdk 直接发送 zod 转出的宽松 schema，与 /chat/completions 路径一致。
+            strictSchemas: false,
+          },
+        }
+      : undefined
+
   const executorFactory = (tools: ReturnType<typeof toolsBuilder>) =>
     createAiSdkExecutor({
       model: runtime.model,
@@ -125,6 +146,7 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
       maxSteps: ctx.config.agent.maxSteps,
       logger,
       ...(runtime.providerNameForOptions ? { providerName: runtime.providerNameForOptions } : {}),
+      ...(extraProviderOptions ? { extraProviderOptions } : {}),
     })
 
   const orchestrator = createConversationOrchestrator({
@@ -194,6 +216,12 @@ type ProviderEnv =
       anthropicBaseUrl?: string
       secrets: string[]
     }
+  | {
+      provider: 'openai-responses'
+      litellmBaseUrl: string
+      litellmApiKey: string
+      secrets: string[]
+    }
 
 function loadProviderEnv(provider: AgentProvider): ProviderEnv {
   if (provider === 'litellm') {
@@ -204,6 +232,16 @@ function loadProviderEnv(provider: AgentProvider): ProviderEnv {
       litellmBaseUrl,
       litellmApiKey,
       providerName: 'litellm',
+      secrets: [litellmApiKey],
+    }
+  }
+  if (provider === 'openai-responses') {
+    const litellmBaseUrl = requireEnv('LITELLM_BASE_URL')
+    const litellmApiKey = requireEnv('LITELLM_API_KEY')
+    return {
+      provider: 'openai-responses',
+      litellmBaseUrl,
+      litellmApiKey,
       secrets: [litellmApiKey],
     }
   }
@@ -248,6 +286,28 @@ function buildProviderRuntime(
     return {
       model: p.languageModel(modelName),
       modelName,
+      providerNameForOptions: undefined,
+    }
+  }
+  if (provider === 'openai-responses' && env.provider === 'openai-responses') {
+    // name: 'openai-responses' 仅用于错误标签；reasoning 字段透传必须靠 providerOptions.openai
+    // （字面量 'openai'，由 @ai-sdk/openai 内部 parseProviderOptions 写死），不是 'openai-responses'。
+    // compatibility: 'compatible' 让 ai-sdk 跳过严格 OpenAI schema 校验，避免 LiteLLM 网关接收
+    // 不被原生 OpenAI 支持的字段时报错。
+    const p = createOpenAI({
+      baseURL: env.litellmBaseUrl,
+      apiKey: env.litellmApiKey,
+      name: 'openai-responses',
+      compatibility: 'compatible',
+    })
+    return {
+      model: p.responses(modelName),
+      modelName,
+      // 关键：不写 providerNameForOptions（保持 undefined）。
+      // 否则 AiSdkExecutor 会向 providerOptions['openai-responses'] 注入 stream_options，
+      // 但 /responses 端点不接受 stream_options 字段（这是 /chat/completions 才有的），
+      // 实测会让 LiteLLM 在长 reasoning 流式下 hang/拒绝响应。
+      // OpenAI Responses API 在 streaming 模式下 finish chunk 已自动包含 usage，无需 stream_options。
       providerNameForOptions: undefined,
     }
   }

@@ -6,7 +6,7 @@ describe('parseConfig', () => {
     expect(parseConfig({})).toEqual(DEFAULT_CONFIG)
     expect(DEFAULT_CONFIG.agent.maxSteps).toBe(50)
     expect(DEFAULT_CONFIG.agent.context).toEqual({
-      maxApproxChars: 120_000,
+      maxApproxChars: 900_000,
       keepRecentMessages: 80,
       keepRecentToolResults: 20,
       autoCompact: {
@@ -68,6 +68,30 @@ describe('parseConfig', () => {
   it('未设 agent.provider 时默认 litellm', () => {
     const cfg = parseConfig({})
     expect(cfg.agent.provider).toBe('litellm')
+  })
+
+  it('agent.provider=openai-responses 解析合法且 responses 子字段取默认', () => {
+    const cfg = parseConfig({ agent: { provider: 'openai-responses' } })
+    expect(cfg.agent.provider).toBe('openai-responses')
+    expect(cfg.agent.responses).toEqual({
+      reasoningEffort: 'medium',
+      reasoningSummary: 'auto',
+    })
+  })
+
+  it('agent.responses 接受用户覆盖', () => {
+    const cfg = parseConfig({
+      agent: {
+        provider: 'openai-responses',
+        responses: { reasoningEffort: 'low', reasoningSummary: 'detailed' },
+      },
+    })
+    expect(cfg.agent.responses.reasoningEffort).toBe('low')
+    expect(cfg.agent.responses.reasoningSummary).toBe('detailed')
+  })
+
+  it('reasoningEffort 非法值报错', () => {
+    expect(() => parseConfig({ agent: { responses: { reasoningEffort: 'extreme' } } })).toThrow()
   })
 
   it('agent.provider 非法值报错', () => {

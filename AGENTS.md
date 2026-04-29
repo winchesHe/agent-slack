@@ -51,6 +51,12 @@
 | 触发条件 | 查阅位置 |
 |---|---|
 | 架构 | `docs/superpowers/specs/2026-04-17-agent-slack-architecture-design.md` |
+| 工程经验（改 provider / 写 e2e / 加单测 / 排查异常前必读） | `experience.md` |
+
+### `experience.md` 写入规则
+- **只在已踩坑且会复发**时新增条目；一次性事件不进。
+- **每条** = 触发条件 + 强制动作（命令 / 路径 / 验证方式），不带反例叙述。
+- **位置区分**：仓库根 `experience.md`（git tracked，团队共享工程教训）；`.agent-slack/experience.md`（gitignored，由 selfImprove agent 自动累积运行时规则）—— 两者用途不同，不要混写。
 
 ## Task Completion Checklist
 

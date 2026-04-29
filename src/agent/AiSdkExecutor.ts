@@ -1,4 +1,10 @@
-import { streamText, type FinishReason, type LanguageModel, type ToolSet } from 'ai'
+import {
+  streamText,
+  type FinishReason,
+  type LanguageModel,
+  type ProviderMetadata,
+  type ToolSet,
+} from 'ai'
 import type { AgentExecutor, AgentExecutionRequest } from './AgentExecutor.ts'
 import type { ActivityState, AgentExecutionEvent, SessionUsageInfo } from '@/core/events.ts'
 import { STATUS, TOOL_PHRASE, getShuffledLoadingMessages } from '@/im/slack/thinking-messages.ts'
@@ -13,6 +19,11 @@ export interface AiSdkExecutorDeps {
   modelName?: string
   // provider 名称（如 'litellm'），用于构建 providerOptions 请求流式 usage。
   providerName?: string
+  // 由 createApplication 装配：当 provider='openai-responses' 时携带
+  // { openai: { reasoningEffort, reasoningSummary, store } }。
+  // providerOptions 的 key 必须是 'openai' 字面量（@ai-sdk/openai 内部 parseProviderOptions
+  // 写死），与 createOpenAI({ name: 'openai-responses' }) 的 name 字段无关。
+  extraProviderOptions?: ProviderMetadata
 }
 
 type LifecycleFinalMessages = Extract<
@@ -24,6 +35,7 @@ interface ModelUsageSnapshot {
   inputTokens: number
   outputTokens: number
   cachedInputTokens: number
+  reasoningTokens: number
   costUSD: number
 }
 
@@ -181,6 +193,16 @@ function toSafeInt(v: unknown): number {
   return Number.isFinite(n) ? n : 0
 }
 
+// 从 finish chunk 的 providerMetadata 中提取 OpenAI Responses API 的 reasoning_tokens。
+// 字段路径：providerMetadata.openai.reasoningTokens（@ai-sdk/openai 已 camelCase 映射）。
+function extractReasoningTokens(providerMetadata: unknown): number {
+  if (!providerMetadata || typeof providerMetadata !== 'object') return 0
+  const openai = (providerMetadata as Record<string, unknown>).openai
+  if (!openai || typeof openai !== 'object') return 0
+  const v = (openai as Record<string, unknown>).reasoningTokens
+  return toSafeInt(v)
+}
+
 function updateUsage(
   agg: AggregatorState,
   modelName: string,
@@ -191,6 +213,7 @@ function updateUsage(
     inputTokens: 0,
     outputTokens: 0,
     cachedInputTokens: 0,
+    reasoningTokens: 0,
     costUSD: 0,
   }
 
@@ -198,6 +221,7 @@ function updateUsage(
     inputTokens: current.inputTokens + toSafeInt(usage.promptTokens ?? usage.inputTokens),
     outputTokens: current.outputTokens + toSafeInt(usage.completionTokens ?? usage.outputTokens),
     cachedInputTokens: current.cachedInputTokens + toSafeInt(usage.cachedInputTokens),
+    reasoningTokens: current.reasoningTokens + extractReasoningTokens(providerMetadata),
     costUSD: current.costUSD + (extractCostFromMetadata(providerMetadata) ?? 0),
   })
 }
@@ -209,6 +233,8 @@ function buildUsageInfo(agg: AggregatorState): SessionUsageInfo {
     outputTokens: usage.outputTokens,
     cachedInputTokens: usage.cachedInputTokens,
     cacheHitRate: usage.inputTokens > 0 ? usage.cachedInputTokens / usage.inputTokens : 0,
+    // 仅 >0 才写入字段；零值时缺省，避免 Slack usage 行误增 (0 thinking) 段。
+    ...(usage.reasoningTokens > 0 ? { reasoningTokens: usage.reasoningTokens } : {}),
   }))
 
   return {
@@ -310,11 +336,16 @@ export function createAiSdkExecutor(deps: AiSdkExecutorDeps): AgentExecutor {
       let result: ReturnType<typeof streamText> | undefined
 
       try {
-        // providerOptions 用于向 OpenAI-compatible 层注入 stream_options，
-        // 否则流式响应不含 usage，token 计数全部为 NaN。
-        const providerOpts = deps.providerName
-          ? { [deps.providerName]: { stream_options: { include_usage: true } } }
-          : undefined
+        // providerOptions 用于：
+        //  - litellm 路径：注入 stream_options.include_usage（流式响应必须显式开启 usage）
+        //  - openai-responses 路径：注入 reasoningEffort / reasoningSummary / store 三字段
+        const providerOpts: ProviderMetadata = {
+          ...(deps.providerName
+            ? { [deps.providerName]: { stream_options: { include_usage: true } } }
+            : {}),
+          ...(deps.extraProviderOptions ?? {}),
+        }
+        const hasOpts = Object.keys(providerOpts).length > 0
 
         result = streamText({
           model: deps.model,
@@ -324,7 +355,7 @@ export function createAiSdkExecutor(deps: AiSdkExecutorDeps): AgentExecutor {
           maxSteps: deps.maxSteps,
           toolCallStreaming: true,
           abortSignal: req.abortSignal,
-          ...(providerOpts ? { providerOptions: providerOpts } : {}),
+          ...(hasOpts ? { providerOptions: providerOpts } : {}),
         })
 
         for await (const part of result.fullStream as AsyncIterable<ExecutorStreamPart>) {
@@ -472,6 +503,19 @@ export function createAiSdkExecutor(deps: AiSdkExecutorDeps): AgentExecutor {
 
             case 'error': {
               terminatedByErrorPart = true
+              // 完整打印 error 详情供排查（redactErrorMessage 仅做敏感词脱敏，丢失结构）
+              log.error('[error-part] received error stream chunk', {
+                errorType: typeof part.error,
+                errorString: String(part.error),
+                errorJson: (() => {
+                  try {
+                    return JSON.stringify(part.error, Object.getOwnPropertyNames(part.error))
+                  } catch {
+                    return '[unserializable]'
+                  }
+                })(),
+                errorStack: part.error instanceof Error ? part.error.stack : undefined,
+              })
               // error part 代表 provider 已给出明确终态，这里直接转成 failed 并停止后续消费。
               yield {
                 type: 'lifecycle',
@@ -519,7 +563,21 @@ export function createAiSdkExecutor(deps: AiSdkExecutorDeps): AgentExecutor {
         }
 
         // 其余异常视为真正失败，保留日志并压成统一 lifecycle(failed) 事件。
-        log.error('executor stream error', err)
+        log.error('[catch-error] executor stream error', {
+          errorType: typeof err,
+          errorString: String(err),
+          errorMessage: err instanceof Error ? err.message : undefined,
+          errorName: err instanceof Error ? err.name : undefined,
+          errorStack: err instanceof Error ? err.stack : undefined,
+          errorCause: err instanceof Error ? String((err as { cause?: unknown }).cause) : undefined,
+          errorJson: (() => {
+            try {
+              return JSON.stringify(err, Object.getOwnPropertyNames(err ?? {}))
+            } catch {
+              return '[unserializable]'
+            }
+          })(),
+        })
         yield {
           type: 'lifecycle',
           phase: 'failed',

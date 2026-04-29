@@ -18,9 +18,7 @@ export async function loadSkills(
   }
 
   const entries = await readdir(skillsDir, { withFileTypes: true })
-  const skillDirs = entries
-    .filter((e) => e.isDirectory() || e.isSymbolicLink())
-    .map((e) => e.name)
+  const skillDirs = entries.filter((e) => e.isDirectory() || e.isSymbolicLink()).map((e) => e.name)
 
   const skills: Skill[] = []
 

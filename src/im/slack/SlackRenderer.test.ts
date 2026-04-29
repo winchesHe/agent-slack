@@ -233,6 +233,32 @@ describe('SlackRenderer progress message', () => {
     })
   })
 
+  it('reasoningTail 进度块前缀使用 :fluent-thinking-3d: emoji', async () => {
+    const { web, calls } = mockWeb()
+    const renderer = createSlackRenderer({ logger: stubLogger() })
+
+    await renderer.upsertProgressMessage(web, 'C1', 't1', {
+      status: '思考中…',
+      activities: ['思考中…'],
+      toolHistory: new Map(),
+      reasoningTail: '正在分析这个问题',
+    })
+
+    const post = calls.find((c) => c.method === 'chat.postMessage') as
+      | { args: { blocks?: Array<{ elements?: Array<{ text?: string }> }> } }
+      | undefined
+
+    const allText =
+      post?.args.blocks
+        ?.flatMap((b) => b.elements ?? [])
+        .map((e) => e.text ?? '')
+        .join('|') ?? ''
+
+    expect(allText).toContain(':fluent-thinking-3d:')
+    expect(allText).toContain('正在分析这个问题')
+    expect(allText).not.toContain('🤔')
+  })
+
   it('upsertProgressMessage 失败时返回 undefined', async () => {
     const web = {
       chat: {
@@ -494,6 +520,57 @@ describe('SlackRenderer postSessionUsage', () => {
       | undefined
 
     expect(post?.args.text).not.toContain('$')
+  })
+
+  it('reasoningTokens > 0 时 usage 行含 (N thinking) 段', async () => {
+    const { web, calls } = mockWeb()
+    const renderer = createSlackRenderer({ logger: stubLogger() })
+
+    await renderer.postSessionUsage(web, 'C1', 't1', {
+      durationMs: 5_400,
+      totalCostUSD: 0.013,
+      modelUsage: [
+        {
+          model: 'gpt-5.4',
+          inputTokens: 1200,
+          outputTokens: 200,
+          cachedInputTokens: 0,
+          cacheHitRate: 0,
+          reasoningTokens: 132,
+        },
+      ],
+    })
+
+    const post = calls.find((c) => c.method === 'chat.postMessage') as
+      | { args: { text?: string } }
+      | undefined
+    expect(post?.args.text).toContain('1.4k tokens')
+    // reasoning 段统一 k 形式：132 / 1000 = 0.132 → toFixed(1) = 0.1
+    expect(post?.args.text).toContain('(0.1k thinking)')
+  })
+
+  it('reasoningTokens 缺省/为 0 时 usage 行不含 thinking 段', async () => {
+    const { web, calls } = mockWeb()
+    const renderer = createSlackRenderer({ logger: stubLogger() })
+
+    await renderer.postSessionUsage(web, 'C1', 't1', {
+      durationMs: 1_000,
+      totalCostUSD: 0,
+      modelUsage: [
+        {
+          model: 'gpt-5.4',
+          inputTokens: 100,
+          outputTokens: 50,
+          cachedInputTokens: 0,
+          cacheHitRate: 0,
+        },
+      ],
+    })
+
+    const post = calls.find((c) => c.method === 'chat.postMessage') as
+      | { args: { text?: string } }
+      | undefined
+    expect(post?.args.text).not.toContain('thinking')
   })
 
   it('cacheHitRate=0 时省略 cache 段', async () => {

@@ -7,7 +7,14 @@ export const ConfigSchema = z.object({
       model: z.string().default('gpt-5.4'),
       maxSteps: z.number().int().positive().default(50),
       // provider 为唯一权威来源（env 不参与），默认 litellm
-      provider: z.enum(['litellm', 'anthropic']).default('litellm'),
+      provider: z.enum(['litellm', 'anthropic', 'openai-responses']).default('litellm'),
+      // provider='openai-responses' 时实际生效；其他 provider 装配代码不读，但允许写在 yaml 里。
+      responses: z
+        .object({
+          reasoningEffort: z.enum(['low', 'medium', 'high']).default('medium'),
+          reasoningSummary: z.enum(['auto', 'concise', 'detailed']).default('auto'),
+        })
+        .default({}),
       context: z
         .object({
           // 只限制发给模型的历史视图，不裁剪 messages.jsonl。

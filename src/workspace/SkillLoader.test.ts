@@ -192,7 +192,11 @@ describe('loadSkills', () => {
 
   it('软链接目录也能被加载', async () => {
     // 真实 skill 目录放在 skillsDir 外，再以软链接形式暴露
-    const realRoot = path.join(skillsDir, '..', `real-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`)
+    const realRoot = path.join(
+      skillsDir,
+      '..',
+      `real-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    )
     mkdirSync(realRoot, { recursive: true })
     writeFileSync(
       path.join(realRoot, 'SKILL.md'),

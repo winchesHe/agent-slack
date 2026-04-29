@@ -36,6 +36,9 @@ export interface SessionUsageInfo {
     outputTokens: number
     cachedInputTokens: number
     cacheHitRate: number
+    // 仅 OpenAI Responses API 在 finish chunk 的 providerMetadata.openai.reasoningTokens > 0 时写入。
+    // reasoning_tokens 是 output_tokens 的子集，括号注法明示"x tokens 中有 y 是思考"。
+    reasoningTokens?: number
   }>
 }
 

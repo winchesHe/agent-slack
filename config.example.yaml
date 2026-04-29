@@ -7,16 +7,32 @@ agent:
   name: default
 
   # provider 是行为配置的唯一权威来源；不要用 env 切换 provider。
-  # 可选值: litellm | anthropic
+  # 可选值: litellm | anthropic | openai-responses
+  # - litellm: 走 LiteLLM 网关 /chat/completions 端点（最通用）
+  # - anthropic: 直连 Anthropic /messages（thinking blocks 走另一条独立路径）
+  # - openai-responses: 走 LiteLLM 网关 /responses 端点（启用 reasoning summary
+  #   流式渲染 + usage 行 (N thinking) 段；仅 OpenAI 系 reasoning 模型有效，如 gpt-5*）
   provider: litellm
 
   # 模型 ID 需要和 provider 对应：
   # - litellm: 由你的 LiteLLM 网关决定，例如 gpt-5.4
   # - anthropic: 例如 claude-sonnet-4-5
+  # - openai-responses: gpt-5* 系列（必须 OpenAI reasoning 模型）
   model: gpt-5.4
 
   # 单轮 agent run 最多调用模型/工具的步数。
   maxSteps: 50
+
+  # 仅 provider='openai-responses' 时生效；其他 provider 装配代码不读这个字段。
+  # 写在这里不会报错，方便你提前 stage 配置然后切 provider。
+  responses:
+    # OpenAI 推理预算档位：low | medium | high
+    # - low: 简单题常 reasoning_tokens=0；medium 是 OpenAI 推荐档位
+    reasoningEffort: medium
+    # 是否在响应里附带 reasoning summary 文字
+    # - auto: 模型自决（默认推荐，给 :fluent-thinking-3d: progress 显示用）
+    # - concise / detailed: 强制输出，长度档位
+    reasoningSummary: auto
 
   context:
     # 只限制发给模型的历史上下文视图，不裁剪 messages.jsonl。

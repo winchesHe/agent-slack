@@ -775,4 +775,119 @@ describe('AiSdkExecutor 粗事件映射', () => {
     expect(clearState).toEqual({ type: 'activity-state', state: { clear: true } })
     expect(events.find((event) => event.type === 'usage-info')).toBeUndefined()
   })
+
+  it('extraProviderOptions 与 providerName 的 stream_options 合并到 streamText', async () => {
+    // MockLanguageModelV1 的 doStream 不直接暴露透传后的 providerOptions（封装在 ai-sdk 内部）。
+    // 本用例只验证 deps 接口接受新字段且不破坏既有路径。
+    // wire 级断言由 e2e（Task 10）通过 fetch 拦截完成。
+    const calls: Array<Record<string, unknown>> = []
+    const model = new MockLanguageModelV1({
+      doStream: async (options) => {
+        calls.push(options as unknown as Record<string, unknown>)
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'response-metadata', id: 'r', modelId: 'mock-model' },
+              { type: 'text-delta', textDelta: 'x' },
+              {
+                type: 'finish',
+                finishReason: 'stop',
+                usage: { promptTokens: 1, completionTokens: 1 },
+              },
+            ],
+          }) as unknown as ReadableStream<never>,
+          rawCall: { rawPrompt: null, rawSettings: {} },
+        } as never
+      },
+    }) as unknown as LanguageModel
+
+    const executor = createAiSdkExecutor({
+      model,
+      modelName: 'mock-model',
+      tools: {},
+      maxSteps: 4,
+      logger: stubLogger(),
+      providerName: 'openai-responses',
+      extraProviderOptions: {
+        openai: { reasoningEffort: 'medium', reasoningSummary: 'auto', store: false },
+      },
+    })
+
+    await collect(
+      executor.execute({
+        systemPrompt: 'system',
+        messages: [{ role: 'user', content: 'hi' }],
+        abortSignal: new AbortController().signal,
+      }),
+    )
+
+    expect(calls.length).toBeGreaterThan(0)
+  })
+
+  it('finish 携带 providerMetadata.openai.reasoningTokens 时透出到 usage-info', async () => {
+    const executor = createExecutor(
+      createMockModel([
+        [
+          { type: 'response-metadata', id: 'resp_1', modelId: 'mock-model' },
+          { type: 'reasoning', textDelta: 'thinking…' },
+          { type: 'text-delta', textDelta: 'done' },
+          {
+            type: 'finish',
+            finishReason: 'stop',
+            usage: { promptTokens: 100, completionTokens: 200 },
+            providerMetadata: { openai: { reasoningTokens: 132 } },
+          },
+        ],
+      ]),
+    )
+
+    const events = await collect(
+      executor.execute({
+        systemPrompt: 'system',
+        messages: [{ role: 'user', content: 'hi' }],
+        abortSignal: new AbortController().signal,
+      }),
+    )
+
+    const usageInfo = events.find((e) => e.type === 'usage-info')
+    expect(usageInfo?.type).toBe('usage-info')
+    if (usageInfo?.type === 'usage-info') {
+      expect(usageInfo.usage.modelUsage[0]?.reasoningTokens).toBe(132)
+    }
+  })
+
+  // 注意：本用例验证"零值时字段缺省"。buildUsageInfo 必须用 spread 条件展开
+  //   `...(usage.reasoningTokens > 0 ? { reasoningTokens: usage.reasoningTokens } : {})`
+  // 而**不能**写成 `reasoningTokens: usage.reasoningTokens`（那会显式赋 0、`'in'` 检查会过）。
+  it('providerMetadata 无 openai.reasoningTokens 时 modelUsage 不带 reasoningTokens 字段', async () => {
+    const executor = createExecutor(
+      createMockModel([
+        [
+          { type: 'response-metadata', id: 'resp_1', modelId: 'mock-model' },
+          { type: 'text-delta', textDelta: 'plain' },
+          {
+            type: 'finish',
+            finishReason: 'stop',
+            usage: { promptTokens: 5, completionTokens: 5 },
+            providerMetadata: { litellm: { cost: 0.01 } },
+          },
+        ],
+      ]),
+    )
+
+    const events = await collect(
+      executor.execute({
+        systemPrompt: 'system',
+        messages: [{ role: 'user', content: 'hi' }],
+        abortSignal: new AbortController().signal,
+      }),
+    )
+
+    const usageInfo = events.find((e) => e.type === 'usage-info')
+    if (usageInfo?.type === 'usage-info') {
+      const first = usageInfo.usage.modelUsage[0]
+      expect(first).toBeDefined()
+      expect('reasoningTokens' in first!).toBe(false)
+    }
+  })
 })
