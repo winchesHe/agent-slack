@@ -99,6 +99,11 @@ function formatToolHistory(toolHistory: Map<string, number>): string {
   return parts.join(' · ')
 }
 
+// progress block 的 reasoning 段使用的自定义 emoji。提常量是为了：
+//  1. 单一字面量来源，buildProgressBlocks + log 共用
+//  2. live e2e 可以通过 daemon log grep 这个常量验证 reasoning 渲染路径走过了
+const REASONING_EMOJI = ':fluent-thinking-3d:'
+
 // 统一生成 context block，避免各个分支重复手写 Slack block 结构。
 function buildContextBlock(text: string): Block {
   return {
@@ -117,7 +122,7 @@ function buildProgressBlocks(state: ProgressUiState): Block[] {
   }
 
   if (state.reasoningTail) {
-    blocks.push(buildContextBlock(`:fluent-thinking-3d: ${state.reasoningTail}`))
+    blocks.push(buildContextBlock(`${REASONING_EMOJI} ${state.reasoningTail}`))
   }
 
   const lastActivity = [...state.activities]
@@ -295,6 +300,16 @@ export function createSlackRenderer(deps: SlackRendererDeps): SlackRenderer {
       })
       const blocks = buildProgressBlocks(state)
       const text = fallbackText(state)
+
+      // 当本次 progress 含 reasoningTail（即 buildProgressBlocks 会产出带 REASONING_EMOJI
+      // 的 context block 时），打一条永远写入 daemon log 的 info 级日志。供 live e2e
+      // 事后 grep 验证 reasoning emoji 真渲染到 wire（progress 中间消息会被最终态替换、
+      // 跑完后无法直接断言显示，只能从 log 反推）。
+      if (state.reasoningTail) {
+        log.info(`progress reasoning emoji rendered: ${REASONING_EMOJI}`, {
+          tailPrefix: state.reasoningTail.slice(0, 30),
+        })
+      }
 
       if (prevTs) {
         const result = await safeRender('chat.update(progress)', () =>

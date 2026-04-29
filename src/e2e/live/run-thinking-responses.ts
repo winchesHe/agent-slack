@@ -34,6 +34,11 @@ interface ThinkingResponsesResult {
     // wire 级字段（baseURL / store:false / reasoning effort/summary）由 createApplication 单测覆盖：
     //   src/application/createApplication.test.ts 'config.agent.provider=openai-responses → ...'
     thinkingTailObserved: boolean
+    // progress block 中间消息会被最终态覆盖，e2e 跑完无法直接观察 Slack UI；
+    // 改为 grep daemon log（SlackRenderer 在 reasoningTail 出现时会写一条
+    // `progress reasoning emoji rendered: :fluent-thinking-3d:` info 级日志），
+    // 验证 reasoning summary 流真触发了 progress block 的 emoji 渲染路径。
+    progressEmojiRendered: boolean
   }
   passed: boolean
   runId: string
@@ -57,7 +62,10 @@ async function rewriteCwdConfig(): Promise<{ original: string }> {
     '  responses:',
     // medium 是 spec 默认。low 在简单 prompt 下经常 reasoning_tokens=0；medium 更稳定地触发 reasoning 报告。
     '    reasoningEffort: medium',
-    '    reasoningSummary: auto',
+    // 'detailed' 强制模型输出 reasoning summary 文本流（'auto' 让模型自决，简单题常常不输出 summary
+    // 即便有 reasoning_tokens > 0）。e2e 需要 summary 流来验证 progress block 的 :fluent-thinking-3d:
+    // emoji 渲染路径被触发。
+    '    reasoningSummary: detailed',
     'skills:',
     '  enabled:',
     '    - "*"',
@@ -123,6 +131,27 @@ async function runOneAttempt(
   })
 }
 
+// 事后 grep daemon log 看 reasoning emoji 渲染日志是否在 e2e 时间窗内出现过。
+// daemon log 行格式：`[2026-04-29T03:25:54.930Z] [info] [slack:render] progress reasoning emoji rendered: :fluent-thinking-3d: { tailPrefix: "..." }`
+async function logHasProgressEmojiSince(startedAt: number): Promise<boolean> {
+  const today = new Date().toISOString().slice(0, 10)
+  const logFile = path.join(process.cwd(), '.agent-slack', 'logs', `agent-${today}.log`)
+  let raw: string
+  try {
+    raw = await fs.readFile(logFile, 'utf8')
+  } catch {
+    return false
+  }
+  for (const line of raw.split('\n')) {
+    const tsMatch = line.match(/^\[([^\]]+)\]/)
+    if (!tsMatch) continue
+    const t = Date.parse(tsMatch[1]!)
+    if (Number.isFinite(t) && t < startedAt) continue
+    if (line.includes(':fluent-thinking-3d:')) return true
+  }
+  return false
+}
+
 async function main(): Promise<void> {
   const runId = randomUUID()
   const result: ThinkingResponsesResult = {
@@ -131,10 +160,12 @@ async function main(): Promise<void> {
       doneReactionObserved: false,
       usageObserved: false,
       thinkingTailObserved: false,
+      progressEmojiRendered: false,
     },
     passed: false,
     runId,
   }
+  const startedAt = Date.now()
 
   const { original: originalConfig } = await rewriteCwdConfig()
 
@@ -178,6 +209,11 @@ async function main(): Promise<void> {
     if (lastError && !result.matched.assistantReplied) {
       throw lastError
     }
+
+    // daemon log 是异步 fs.appendFile，给点时间让它 flush 完。
+    await delay(500)
+    result.matched.progressEmojiRendered = await logHasProgressEmojiSince(startedAt)
+
     assertResult(result)
     result.passed = true
     consola.info('Live thinking-responses E2E passed.')
@@ -211,6 +247,9 @@ function assertResult(result: ThinkingResponsesResult): void {
   if (!result.matched.usageObserved) failures.push('usage message not observed')
   if (!result.matched.thinkingTailObserved) {
     failures.push('(N thinking) segment not in usage line')
+  }
+  if (!result.matched.progressEmojiRendered) {
+    failures.push(':fluent-thinking-3d: emoji render log not found in daemon log')
   }
   if (failures.length > 0) {
     throw new Error(`Live thinking-responses E2E failed: ${failures.join('; ')}`)
