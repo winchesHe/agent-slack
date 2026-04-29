@@ -775,4 +775,52 @@ describe('AiSdkExecutor 粗事件映射', () => {
     expect(clearState).toEqual({ type: 'activity-state', state: { clear: true } })
     expect(events.find((event) => event.type === 'usage-info')).toBeUndefined()
   })
+
+  it('extraProviderOptions 与 providerName 的 stream_options 合并到 streamText', async () => {
+    // MockLanguageModelV1 的 doStream 不直接暴露透传后的 providerOptions（封装在 ai-sdk 内部）。
+    // 本用例只验证 deps 接口接受新字段且不破坏既有路径。
+    // wire 级断言由 e2e（Task 10）通过 fetch 拦截完成。
+    const calls: Array<Record<string, unknown>> = []
+    const model = new MockLanguageModelV1({
+      doStream: async (options) => {
+        calls.push(options as unknown as Record<string, unknown>)
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'response-metadata', id: 'r', modelId: 'mock-model' },
+              { type: 'text-delta', textDelta: 'x' },
+              {
+                type: 'finish',
+                finishReason: 'stop',
+                usage: { promptTokens: 1, completionTokens: 1 },
+              },
+            ],
+          }) as unknown as ReadableStream<never>,
+          rawCall: { rawPrompt: null, rawSettings: {} },
+        } as never
+      },
+    }) as unknown as LanguageModel
+
+    const executor = createAiSdkExecutor({
+      model,
+      modelName: 'mock-model',
+      tools: {},
+      maxSteps: 4,
+      logger: stubLogger(),
+      providerName: 'openai-responses',
+      extraProviderOptions: {
+        openai: { reasoningEffort: 'medium', reasoningSummary: 'auto', store: false },
+      },
+    })
+
+    await collect(
+      executor.execute({
+        systemPrompt: 'system',
+        messages: [{ role: 'user', content: 'hi' }],
+        abortSignal: new AbortController().signal,
+      }),
+    )
+
+    expect(calls.length).toBeGreaterThan(0)
+  })
 })

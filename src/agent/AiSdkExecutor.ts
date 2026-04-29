@@ -1,4 +1,10 @@
-import { streamText, type FinishReason, type LanguageModel, type ToolSet } from 'ai'
+import {
+  streamText,
+  type FinishReason,
+  type LanguageModel,
+  type ProviderMetadata,
+  type ToolSet,
+} from 'ai'
 import type { AgentExecutor, AgentExecutionRequest } from './AgentExecutor.ts'
 import type { ActivityState, AgentExecutionEvent, SessionUsageInfo } from '@/core/events.ts'
 import { STATUS, TOOL_PHRASE, getShuffledLoadingMessages } from '@/im/slack/thinking-messages.ts'
@@ -13,6 +19,11 @@ export interface AiSdkExecutorDeps {
   modelName?: string
   // provider 名称（如 'litellm'），用于构建 providerOptions 请求流式 usage。
   providerName?: string
+  // 由 createApplication 装配：当 provider='openai-responses' 时携带
+  // { openai: { reasoningEffort, reasoningSummary, store } }。
+  // providerOptions 的 key 必须是 'openai' 字面量（@ai-sdk/openai 内部 parseProviderOptions
+  // 写死），与 createOpenAI({ name: 'openai-responses' }) 的 name 字段无关。
+  extraProviderOptions?: ProviderMetadata
 }
 
 type LifecycleFinalMessages = Extract<
@@ -310,11 +321,16 @@ export function createAiSdkExecutor(deps: AiSdkExecutorDeps): AgentExecutor {
       let result: ReturnType<typeof streamText> | undefined
 
       try {
-        // providerOptions 用于向 OpenAI-compatible 层注入 stream_options，
-        // 否则流式响应不含 usage，token 计数全部为 NaN。
-        const providerOpts = deps.providerName
-          ? { [deps.providerName]: { stream_options: { include_usage: true } } }
-          : undefined
+        // providerOptions 用于：
+        //  - litellm 路径：注入 stream_options.include_usage（流式响应必须显式开启 usage）
+        //  - openai-responses 路径：注入 reasoningEffort / reasoningSummary / store 三字段
+        const providerOpts: ProviderMetadata = {
+          ...(deps.providerName
+            ? { [deps.providerName]: { stream_options: { include_usage: true } } }
+            : {}),
+          ...(deps.extraProviderOptions ?? {}),
+        }
+        const hasOpts = Object.keys(providerOpts).length > 0
 
         result = streamText({
           model: deps.model,
@@ -324,7 +340,7 @@ export function createAiSdkExecutor(deps: AiSdkExecutorDeps): AgentExecutor {
           maxSteps: deps.maxSteps,
           toolCallStreaming: true,
           abortSignal: req.abortSignal,
-          ...(providerOpts ? { providerOptions: providerOpts } : {}),
+          ...(hasOpts ? { providerOptions: providerOpts } : {}),
         })
 
         for await (const part of result.fullStream as AsyncIterable<ExecutorStreamPart>) {
