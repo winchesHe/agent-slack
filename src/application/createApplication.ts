@@ -1,5 +1,6 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { createAnthropic } from '@ai-sdk/anthropic'
+import { createOpenAI } from '@ai-sdk/openai'
 import path from 'node:path'
 import type { LanguageModel } from 'ai'
 import type { ConfirmSender } from '@/im/types.ts'
@@ -32,7 +33,7 @@ import type { Application } from './types.ts'
 
 type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error'
 
-export type AgentProvider = 'litellm' | 'anthropic'
+export type AgentProvider = 'litellm' | 'anthropic' | 'openai-responses'
 
 export interface CreateApplicationArgs {
   workspaceDir: string
@@ -117,6 +118,20 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
       },
     )
 
+  // 仅 provider='openai-responses' 时构造 reasoning 透传对象。
+  // key 必须是字面量 'openai'：@ai-sdk/openai 内部 parseProviderOptions({ provider: "openai" })
+  // 写死该字面量，与 createOpenAI({ name: 'openai-responses' }) 的 name 字段无关。
+  const extraProviderOptions =
+    provider === 'openai-responses'
+      ? {
+          openai: {
+            reasoningEffort: ctx.config.agent.responses.reasoningEffort,
+            reasoningSummary: ctx.config.agent.responses.reasoningSummary,
+            store: false, // spec §9 决策：不在 OpenAI 服务端长期保留对话内容
+          },
+        }
+      : undefined
+
   const executorFactory = (tools: ReturnType<typeof toolsBuilder>) =>
     createAiSdkExecutor({
       model: runtime.model,
@@ -125,6 +140,7 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
       maxSteps: ctx.config.agent.maxSteps,
       logger,
       ...(runtime.providerNameForOptions ? { providerName: runtime.providerNameForOptions } : {}),
+      ...(extraProviderOptions ? { extraProviderOptions } : {}),
     })
 
   const orchestrator = createConversationOrchestrator({
@@ -194,6 +210,12 @@ type ProviderEnv =
       anthropicBaseUrl?: string
       secrets: string[]
     }
+  | {
+      provider: 'openai-responses'
+      litellmBaseUrl: string
+      litellmApiKey: string
+      secrets: string[]
+    }
 
 function loadProviderEnv(provider: AgentProvider): ProviderEnv {
   if (provider === 'litellm') {
@@ -204,6 +226,16 @@ function loadProviderEnv(provider: AgentProvider): ProviderEnv {
       litellmBaseUrl,
       litellmApiKey,
       providerName: 'litellm',
+      secrets: [litellmApiKey],
+    }
+  }
+  if (provider === 'openai-responses') {
+    const litellmBaseUrl = requireEnv('LITELLM_BASE_URL')
+    const litellmApiKey = requireEnv('LITELLM_API_KEY')
+    return {
+      provider: 'openai-responses',
+      litellmBaseUrl,
+      litellmApiKey,
       secrets: [litellmApiKey],
     }
   }
@@ -249,6 +281,23 @@ function buildProviderRuntime(
       model: p.languageModel(modelName),
       modelName,
       providerNameForOptions: undefined,
+    }
+  }
+  if (provider === 'openai-responses' && env.provider === 'openai-responses') {
+    // name: 'openai-responses' 仅用于错误标签；reasoning 字段透传必须靠 providerOptions.openai
+    // （字面量 'openai'，由 @ai-sdk/openai 内部 parseProviderOptions 写死），不是 'openai-responses'。
+    // compatibility: 'compatible' 让 ai-sdk 跳过严格 OpenAI schema 校验，避免 LiteLLM 网关接收
+    // 不被原生 OpenAI 支持的字段时报错。
+    const p = createOpenAI({
+      baseURL: env.litellmBaseUrl,
+      apiKey: env.litellmApiKey,
+      name: 'openai-responses',
+      compatibility: 'compatible',
+    })
+    return {
+      model: p.responses(modelName),
+      modelName,
+      providerNameForOptions: 'openai-responses',
     }
   }
   throw new ConfigError(
