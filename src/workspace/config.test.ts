@@ -6,7 +6,7 @@ describe('parseConfig', () => {
     expect(parseConfig({})).toEqual(DEFAULT_CONFIG)
     expect(DEFAULT_CONFIG.agent.maxSteps).toBe(50)
     expect(DEFAULT_CONFIG.agent.context).toEqual({
-      maxApproxChars: 120_000,
+      maxApproxChars: 900_000,
       keepRecentMessages: 80,
       keepRecentToolResults: 20,
       autoCompact: {
