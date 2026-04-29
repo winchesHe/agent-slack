@@ -1,3 +1,15 @@
+## [0.1.7](https://github.com/winchesHe/agent-slack/compare/v0.1.6...v0.1.7) (2026-04-29)
+
+
+### Features
+
+* **cli:** agent-slack upgrade 追加式补齐缺失顶层字段，--dry-run + 自动备份 ([16575d3](https://github.com/winchesHe/agent-slack/commit/16575d3d9a9fa9ac031a8ff09bd13524e9d18520))
+* **dashboard:** Config tab 常用字段表单 + Raw YAML 兜底，局部覆盖保留中文注释 ([3782624](https://github.com/winchesHe/agent-slack/commit/3782624b427a793937326b72fadc27b17f4a8454))
+* **slack/sink:** reasoning chat.update 1.2s 时间窗节流，止 Slack 限速 ([fc4ba6c](https://github.com/winchesHe/agent-slack/commit/fc4ba6cb2df764ea6e713599d293b333870d6ca9))
+* **slack/usage:** :agent_time: 超过 1 分钟改 Xm Ys 复合显示 ([946314e](https://github.com/winchesHe/agent-slack/commit/946314e77c5df3eba29071a9d66b12792ad6a0e8))
+
+
+
 ## [0.1.6](https://github.com/winchesHe/agent-slack/compare/v0.1.5...v0.1.6) (2026-04-29)
 
 
