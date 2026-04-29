@@ -1,10 +1,25 @@
 # 当前执行进度
 
-## 进行中：Spec B —— 配置中心化
+## Spec B —— 配置中心化（已完成）
 
-### Spec A 已完成（先看 archive/process-2026-04-29-spec-a.md）
+四个 chunk 已落地：
+- `cf467fd` Chunk B1：模板 generator 收口（`src/workspace/templates/`）+ 守护测试 + `pnpm gen:examples`
+- `16575d3` Chunk B2：`agent-slack upgrade --dry-run`，追加式补缺顶层字段 + 自动备份
+- `3782624` Chunk B3：Dashboard Config tab 常用字段表单（15 字段）+ Raw YAML 兜底，局部覆盖保留中文注释
+- 最后一 commit：Chunk B4 AGENTS 联动规则增补到 8 项（Schema / generator / upgrade / dashboard fields / 装配 / pnpm gen:examples + 守护 / .env / spec）
 
-四个 commit：
+后续可考虑：
+- upgrade 嵌套缺失自动 AST 插入（第二版）
+- Dashboard channel-tasks 表单化（rules[] 嵌套，复杂度高，按需评估）
+- fields 元数据迁到 Schema 注解（`z.describe`）
+
+---
+
+## 历史决策（保留供复盘）
+
+### Spec A —— Reasoning 流降噪（已完成）
+
+详见 `archive/process-2026-04-29-spec-a.md`。四个 commit：
 - `fc4ba6c` Sink 节流（reasoning chat.update 1.2s 时间窗）
 - `c97538c` reasoning emoji log 由 Renderer 每 chunk 一行降为 Sink turn 内一次
 - `939a3fd` 废弃 SLACK_RENDER_DEBUG，[render-debug] 走 log.debug
