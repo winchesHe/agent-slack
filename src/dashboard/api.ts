@@ -18,6 +18,8 @@ import type { Logger } from '@/logger/logger.ts'
 import type { SessionMeta } from '@/store/SessionStore.ts'
 import { validateSlack } from '@/cli/validators.ts'
 import { readDaemonStatus } from '@/daemon/daemonFile.ts'
+import { generateConfigYaml } from '@/workspace/templates/index.ts'
+import { COMMON_CONFIG_FIELDS, type ConfigField, type ConfigFieldUpdate } from './configFields.ts'
 
 export interface DashboardEnvStatus {
   hasSlackBotToken: boolean
@@ -313,10 +315,15 @@ export function createDashboardApi(cwd: string, logger: Logger) {
       }
     },
 
-    async config(): Promise<{ parsed: WorkspaceConfig; raw: string | null; exists: boolean }> {
+    async config(): Promise<{
+      parsed: WorkspaceConfig
+      raw: string | null
+      exists: boolean
+      fields: ConfigField[]
+    }> {
       const exists = existsSync(paths.configFile)
       const raw = exists ? await readFile(paths.configFile, 'utf8') : null
-      return { parsed: await readConfig(), raw, exists }
+      return { parsed: await readConfig(), raw, exists, fields: COMMON_CONFIG_FIELDS }
     },
 
     async channelTasks(): Promise<DashboardChannelTasksConfig> {
@@ -582,6 +589,28 @@ export function createDashboardApi(cwd: string, logger: Logger) {
       if (!existsSync(paths.configFile)) return { deleted: false }
       await unlink(paths.configFile)
       return { deleted: true }
+    },
+
+    // 表单提交场景：按 path 局部覆盖现有 config.yaml 中的若干字段。
+    // 用 yaml lib 的 parseDocument + setIn 保留用户已写注释；新建路径自动追加；schema 校验失败回退不写文件。
+    // 文件不存在时基于 generator workspace 模板初始化（含完整中文注释）。
+    async updateConfigFields(
+      updates: ConfigFieldUpdate[],
+    ): Promise<{ parsed: WorkspaceConfig; raw: string }> {
+      const baseRaw = existsSync(paths.configFile)
+        ? await readFile(paths.configFile, 'utf8')
+        : generateConfigYaml({ mode: 'workspace' })
+      const doc = YAML.parseDocument(baseRaw)
+      for (const { path, value } of updates) {
+        if (path.length === 0) continue
+        doc.setIn(path, value)
+      }
+      const nextRaw = doc.toString()
+      // 落盘前 schema 校验
+      const parsed = parseConfig(YAML.parse(nextRaw))
+      await mkdir(paths.root, { recursive: true })
+      await writeFile(paths.configFile, nextRaw, 'utf8')
+      return { parsed, raw: nextRaw }
     },
 
     async updateChannelTasks(

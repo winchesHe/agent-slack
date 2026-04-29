@@ -209,6 +209,22 @@ async function handle(
   if (req.method === 'DELETE' && pathname === '/api/config') {
     return json(await api.deleteConfig())
   }
+  // 表单局部覆盖：body = JSON 数组 [{ path: string[], value: unknown }, ...]
+  if (req.method === 'PATCH' && pathname === '/api/config/fields') {
+    try {
+      const body = await readBody()
+      const parsed = JSON.parse(body) as unknown
+      if (!Array.isArray(parsed)) {
+        return json({ error: 'body 必须是 ConfigFieldUpdate 数组' }, 400)
+      }
+      const result = await api.updateConfigFields(
+        parsed as Array<{ path: string[]; value: unknown }>,
+      )
+      return json(result)
+    } catch (err) {
+      return json({ error: err instanceof Error ? err.message : String(err) }, 400)
+    }
+  }
   if (req.method === 'PUT' && pathname === '/api/channel-tasks') {
     try {
       const body = await readBody()

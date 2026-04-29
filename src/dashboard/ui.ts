@@ -371,34 +371,140 @@ const views = {
   async config() {
     const c = await api('/api/config')
     renderTabs()
-    const ta = el('textarea', {
-      id: 'config-editor',
-      style: 'width:100%;min-height:360px;background:var(--panel);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:10px;font-family:var(--mono);font-size:12px;'
-    })
-    ta.value = c.raw || '# config.yaml 不存在，保存此内容将创建文件\\n'
+
+    // 局部小工具：按 path 数组从 parsed 配置里取当前值
+    function getIn(obj, path) {
+      let cur = obj
+      for (const k of path) {
+        if (cur == null || typeof cur !== 'object') return undefined
+        cur = cur[k]
+      }
+      return cur
+    }
+
+    // 默认表单视图；点击切换可降到 raw YAML（兜底）
+    const view = { mode: 'form' }
+
+    // 容器：左 form / 右 raw textarea；切换时重新挂载内容
+    const container = el('div')
     const msg = el('div', { id: 'config-msg', style: 'margin-top:8px;' })
-    const save = el('button', { onclick: async () => {
-      msg.textContent = '保存中…'; msg.className = 'muted'
-      try {
-        const r = await fetch('/api/config', { method: 'PUT', headers: { 'content-type': 'text/plain' }, body: ta.value })
-        if (!r.ok) { const e = await r.json(); throw new Error(e.error || ('HTTP ' + r.status)) }
-        msg.textContent = '已保存'; msg.className = 'pill ok'
-      } catch (err) { msg.textContent = '保存失败：' + (err.message || err); msg.className = 'err-box' }
-    }}, '保存')
-    const del = el('button', { style: 'margin-left:8px;', onclick: async () => {
-      if (!confirm('确认删除 config.yaml？（主程序将回退到默认配置）')) return
-      try {
-        const r = await fetch('/api/config', { method: 'DELETE' })
-        if (!r.ok) throw new Error('HTTP ' + r.status)
-        msg.textContent = '已删除'; msg.className = 'pill ok'
-        setTimeout(render, 300)
-      } catch (err) { msg.textContent = '删除失败：' + (err.message || err); msg.className = 'err-box' }
-    }}, '删除 config.yaml')
+
+    function buildFormView() {
+      // 字段 inputs，按需收集 path -> input 引用
+      const inputs = []
+      const fieldsWrap = el('div', { class: 'config-form', style: 'display:grid;grid-template-columns:240px 1fr;gap:8px 14px;align-items:center;margin-top:6px;' })
+
+      for (const f of c.fields) {
+        const cur = getIn(c.parsed, f.path)
+        const labelText = f.label
+        const label = el('label', { class: 'muted', style: 'font-family:var(--mono);' }, labelText)
+        let input
+        if (f.type === 'select') {
+          input = el('select', { style: 'background:var(--panel2);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:4px 6px;font-size:12px;min-width:220px;' },
+            (f.options || []).map(opt => {
+              const o = el('option', { value: opt }, opt)
+              if (opt === cur) o.setAttribute('selected', 'selected')
+              return o
+            }),
+          )
+        } else if (f.type === 'boolean') {
+          input = el('input', { type: 'checkbox' })
+          if (cur) input.setAttribute('checked', 'checked')
+        } else if (f.type === 'array-of-strings') {
+          input = el('textarea', { rows: '2', style: 'background:var(--panel2);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:6px 8px;font-family:var(--mono);font-size:12px;width:100%;' })
+          input.value = Array.isArray(cur) ? cur.join('\\n') : ''
+        } else {
+          // text / number 都用 input
+          input = el('input', { type: f.type === 'number' ? 'number' : 'text', style: 'background:var(--panel2);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:4px 6px;font-size:12px;width:260px;' })
+          input.value = cur == null ? '' : String(cur)
+        }
+
+        // help 行（小字提示）
+        const cell = el('div', {}, [input, f.help ? el('div', { class: 'muted', style: 'font-size:11px;margin-top:2px;' }, f.help) : null])
+
+        fieldsWrap.appendChild(label)
+        fieldsWrap.appendChild(cell)
+        inputs.push({ field: f, input })
+      }
+
+      const save = el('button', { onclick: async () => {
+        // 收集每个字段的当前 form value，按 path 全量提交（局部覆盖式 PATCH）
+        const updates = []
+        for (const { field, input } of inputs) {
+          let val
+          if (field.type === 'boolean') val = input.checked
+          else if (field.type === 'number') val = input.value === '' ? undefined : Number(input.value)
+          else if (field.type === 'array-of-strings') {
+            val = input.value.split(/[\\r\\n,]+/).map(s => s.trim()).filter(Boolean)
+          } else {
+            val = input.value
+          }
+          if (val === undefined) continue
+          updates.push({ path: field.path, value: val })
+        }
+        msg.textContent = '保存中…'; msg.className = 'muted'
+        try {
+          const r = await fetch('/api/config/fields', {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(updates),
+          })
+          if (!r.ok) { const e = await r.json(); throw new Error(e.error || ('HTTP ' + r.status)) }
+          msg.textContent = '已保存（保留中文注释，重启 agent/daemon 后生效）'; msg.className = 'pill ok'
+          setTimeout(render, 400)
+        } catch (err) { msg.textContent = '保存失败：' + (err.message || err); msg.className = 'err-box' }
+      }}, '保存常用字段')
+
+      const toRaw = el('button', { style: 'margin-left:8px;', onclick: () => { view.mode = 'raw'; mount() } }, '切到 Raw YAML 编辑')
+
+      const del = el('button', { style: 'margin-left:8px;', onclick: async () => {
+        if (!confirm('确认删除 config.yaml？（主程序将回退到默认配置）')) return
+        try {
+          const r = await fetch('/api/config', { method: 'DELETE' })
+          if (!r.ok) throw new Error('HTTP ' + r.status)
+          msg.textContent = '已删除'; msg.className = 'pill ok'
+          setTimeout(render, 300)
+        } catch (err) { msg.textContent = '删除失败：' + (err.message || err); msg.className = 'err-box' }
+      }}, '删除 config.yaml')
+
+      return el('div', {}, [
+        el('div', { class: 'muted', style: 'margin-bottom:6px;' }, '常用字段表单：保存为局部覆盖（保留 raw YAML 里的中文注释）。其余字段需要切到 Raw YAML 编辑。'),
+        fieldsWrap,
+        el('div', { class: 'actions', style: 'margin-top:12px;' }, [save, toRaw, del]),
+      ])
+    }
+
+    function buildRawView() {
+      const ta = el('textarea', {
+        id: 'config-editor',
+        style: 'width:100%;min-height:360px;background:var(--panel);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:10px;font-family:var(--mono);font-size:12px;'
+      })
+      ta.value = c.raw || '# config.yaml 不存在，保存此内容将创建文件\\n'
+      const save = el('button', { onclick: async () => {
+        msg.textContent = '保存中…'; msg.className = 'muted'
+        try {
+          const r = await fetch('/api/config', { method: 'PUT', headers: { 'content-type': 'text/plain' }, body: ta.value })
+          if (!r.ok) { const e = await r.json(); throw new Error(e.error || ('HTTP ' + r.status)) }
+          msg.textContent = '已保存（整文件覆盖）'; msg.className = 'pill ok'
+        } catch (err) { msg.textContent = '保存失败：' + (err.message || err); msg.className = 'err-box' }
+      }}, '保存整文件')
+      const toForm = el('button', { style: 'margin-left:8px;', onclick: () => { view.mode = 'form'; mount() } }, '切回表单')
+      return el('div', {}, [
+        el('div', { class: 'muted', style: 'margin-bottom:6px;' }, 'Raw YAML 模式：直接编辑整个 config.yaml，覆盖式保存。'),
+        ta,
+        el('div', { class: 'actions', style: 'margin-top:8px;' }, [save, toForm]),
+      ])
+    }
+
+    function mount() {
+      container.replaceChildren(view.mode === 'form' ? buildFormView() : buildRawView())
+    }
+    mount()
+
     return el('section', {}, [
       el('h2', {}, 'Config'),
-      el('div', { class: 'muted', style: 'margin-bottom:6px;' }, c.exists ? '已存在：' + '.agent-slack/config.yaml' : 'config.yaml 不存在，当前使用默认配置'),
-      ta,
-      el('div', { class: 'actions', style: 'margin-top:8px;' }, [save, del]),
+      el('div', { class: 'muted', style: 'margin-bottom:6px;' }, c.exists ? '已存在：.agent-slack/config.yaml' : 'config.yaml 不存在，当前使用默认配置（保存任意字段会按 generator 模板初始化）'),
+      container,
       msg,
       el('h3', {}, 'Parsed (只读)'),
       el('pre', {}, JSON.stringify(c.parsed, null, 2)),
