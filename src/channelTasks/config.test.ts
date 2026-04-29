@@ -11,11 +11,12 @@ describe('parseChannelTasksConfig', () => {
     })
   })
 
-  it('中文注释模板可解析', () => {
+  it('中文注释模板可解析（含 daily-watch + bot-alert-watch 两条规则）', () => {
     const parsed = parseChannelTasksConfig(YAML.parse(CHANNEL_TASKS_CONFIG_TEMPLATE))
     expect(parsed.enabled).toBe(false)
+    expect(parsed.rules.map((r) => r.id)).toEqual(['daily-watch', 'bot-alert-watch'])
     expect(parsed.rules[0]).toMatchObject({
-      id: 'example-channel-task',
+      id: 'daily-watch',
       enabled: false,
       channelIds: ['C0123456789'],
       source: {
@@ -29,6 +30,16 @@ describe('parseChannelTasksConfig', () => {
         allowSubtypes: ['none'],
         ignoreAgentMentions: true,
       },
+    })
+    expect(parsed.rules[1]).toMatchObject({
+      id: 'bot-alert-watch',
+      source: {
+        includeBotMessages: true,
+        botIds: ['B0123456789'],
+        appIds: ['A0123456789'],
+      },
+      message: { allowSubtypes: ['bot_message'] },
+      match: { containsAny: ['ALERT', '告警'] },
     })
   })
 

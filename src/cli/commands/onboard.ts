@@ -10,7 +10,12 @@ import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { resolveWorkspacePaths } from '@/workspace/paths.ts'
 import { createClackPrompter, PrompterCancelled, type Prompter } from '../prompts.ts'
-import { defaultConfigYaml, defaultEnv, defaultSystemMd, GITIGNORE_BLOCK } from '../templates.ts'
+import {
+  generateConfigYaml,
+  generateEnvLocal,
+  generateSystemMd,
+  GITIGNORE_BLOCK,
+} from '@/workspace/templates/index.ts'
 import {
   validateAnthropic,
   validateLiteLLM,
@@ -178,10 +183,13 @@ export async function runOnboard(opts: OnboardOpts, deps: OnboardDeps): Promise<
   await deps.mkdir(paths.logsDir)
 
   if (overwrite || !deps.exists(paths.configFile)) {
-    await deps.writeFile(paths.configFile, defaultConfigYaml(model, provider))
+    await deps.writeFile(
+      paths.configFile,
+      generateConfigYaml({ mode: 'workspace', model, provider }),
+    )
   }
   if (overwrite || !deps.exists(paths.systemFile)) {
-    await deps.writeFile(paths.systemFile, defaultSystemMd())
+    await deps.writeFile(paths.systemFile, generateSystemMd({ mode: 'workspace' }))
   }
   const envFile = path.join(paths.root, '.env.local')
   if (overwrite || !deps.exists(envFile)) {
@@ -203,7 +211,7 @@ export async function runOnboard(opts: OnboardOpts, deps: OnboardDeps): Promise<
             anthropicApiKey,
             ...(anthropicBaseUrl ? { anthropicBaseUrl } : {}),
           } as const)
-    await deps.writeFile(envFile, defaultEnv(envArgs))
+    await deps.writeFile(envFile, generateEnvLocal(envArgs))
   }
 
   await maybeAppendGitignore(opts.cwd, deps)

@@ -1,0 +1,97 @@
+// config.yaml 模板生成器（单一权威）。
+//
+// 两种调用形态：
+// - generateConfigYaml({ mode: 'example' })：与根目录 config.example.yaml 字节一致；守护测试断言。
+// - generateConfigYaml({ mode: 'workspace', model, provider })：onboard 写入 .agent-slack/config.yaml。
+//
+// 添加新字段时改这里 + ConfigSchema + dashboard 表单元数据（见 AGENTS.md "Env / Config 变更联动规则"）。
+
+export type ConfigYamlProvider = 'litellm' | 'anthropic' | 'openai-responses'
+
+export interface GenerateConfigYamlArgs {
+  mode: 'example' | 'workspace'
+  model?: string
+  provider?: ConfigYamlProvider
+}
+
+const EXAMPLE_HEADER = `# agent-slack 行为配置示例。
+# 复制到你的 workspace: .agent-slack/config.yaml
+# 修改后需要重启 agent-slack start 或 daemon 才会生效。
+
+`
+
+export function generateConfigYaml(args: GenerateConfigYamlArgs): string {
+  const provider: ConfigYamlProvider = args.provider ?? 'litellm'
+  const model = args.model ?? 'gpt-5.4'
+  const header = args.mode === 'example' ? EXAMPLE_HEADER : ''
+
+  // 主体内容：example / workspace 共用同一份字段结构与中文注释，
+  // 只在 model / provider 上插值，其余字段全部输出 schema 默认值，确保 upgrade 追加场景可以精确比对。
+  return `${header}agent:
+  # 用于日志、dashboard 展示和 workspace 标识。
+  name: default
+
+  # provider 是行为配置的唯一权威来源；不要用 env 切换 provider。
+  # 可选值: litellm | anthropic | openai-responses
+  # - litellm: 走 LiteLLM 网关 /chat/completions 端点（最通用）
+  # - anthropic: 直连 Anthropic /messages（thinking blocks 走另一条独立路径）
+  # - openai-responses: 走 LiteLLM 网关 /responses 端点（启用 reasoning summary
+  #   流式渲染 + usage 行 (N thinking) 段；仅 OpenAI 系 reasoning 模型有效，如 gpt-5*）
+  provider: ${provider}
+
+  # 模型 ID 需要和 provider 对应：
+  # - litellm: 由你的 LiteLLM 网关决定，例如 gpt-5.4
+  # - anthropic: 例如 claude-sonnet-4-5
+  # - openai-responses: gpt-5* 系列（必须 OpenAI reasoning 模型）
+  model: ${model}
+
+  # 单轮 agent run 最多调用模型/工具的步数。
+  maxSteps: 50
+
+  # 仅 provider='openai-responses' 时生效；其他 provider 装配代码不读这个字段。
+  # 写在这里不会报错，方便你提前 stage 配置然后切 provider。
+  responses:
+    # OpenAI 推理预算档位：low | medium | high
+    # - low: 简单题常 reasoning_tokens=0；medium 是 OpenAI 推荐档位
+    reasoningEffort: medium
+    # 是否在响应里附带 reasoning summary 文字
+    # - auto: 模型自决（默认推荐，给 :fluent-thinking-3d: progress 显示用）
+    # - concise / detailed: 强制输出，长度档位
+    reasoningSummary: auto
+
+  context:
+    # 只限制发给模型的历史上下文视图，不裁剪 messages.jsonl。
+    # 单位: 字符数 (JSON.stringify(messages).length)，约 3 字符 ≈ 1 token。
+    # 参考: 200k token 窗口建议 500_000~600_000；400k 窗口建议 900_000~1_000_000；1M 窗口可设 2_000_000+。
+    # 当前 900_000 字符 ≈ 300k tokens，匹配 400k token 上下文窗口（GPT-5 长窗口 / 部分 LiteLLM 路由）。
+    maxApproxChars: 900000
+    # 最多加载最近消息数，避免大量短消息导致上下文膨胀。
+    keepRecentMessages: 80
+    # 最近 N 个工具结果保留完整；更旧工具结果在模型视图中压缩为占位。
+    keepRecentToolResults: 20
+    autoCompact:
+      # 达到上下文预算阈值时，先整理上下文，再继续当前 run。
+      enabled: true
+      # 当前候选上下文达到预算 80% 时触发。
+      # 例如 maxApproxChars=900_000 时，720_000 字符 ≈ 240k tokens 触发压缩。
+      triggerRatio: 0.8
+      # 同 session 连续自动压缩失败次数上限。
+      maxFailures: 2
+
+skills:
+  # ['*'] 表示启用 .agent-slack/skills 下全部 skills。
+  # 也可以改成 ['skill-a', 'skill-b'] 只启用指定 skill。
+  enabled: ['*']
+
+im:
+  provider: slack
+  slack:
+    # true 时会通过 Slack API 解析 channel name；失败时回退 unknown。
+    resolveChannelName: true
+
+daemon:
+  # daemon/dashboard 共用 HTTP 监听地址；默认只绑定本机。
+  host: 127.0.0.1
+  port: 51732
+`
+}

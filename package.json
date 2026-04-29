@@ -31,7 +31,8 @@
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
     "typecheck": "tsc --noEmit",
-    "smoke": "tsx scripts/smoke.ts"
+    "smoke": "tsx scripts/smoke.ts",
+    "gen:examples": "tsx scripts/gen-examples.ts"
   },
   "publishConfig": {
     "access": "public",
