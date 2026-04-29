@@ -522,6 +522,56 @@ describe('SlackRenderer postSessionUsage', () => {
     expect(post?.args.text).not.toContain('$')
   })
 
+  it('reasoningTokens > 0 时 usage 行含 (N thinking) 段', async () => {
+    const { web, calls } = mockWeb()
+    const renderer = createSlackRenderer({ logger: stubLogger() })
+
+    await renderer.postSessionUsage(web, 'C1', 't1', {
+      durationMs: 5_400,
+      totalCostUSD: 0.013,
+      modelUsage: [
+        {
+          model: 'gpt-5.4',
+          inputTokens: 1200,
+          outputTokens: 200,
+          cachedInputTokens: 0,
+          cacheHitRate: 0,
+          reasoningTokens: 132,
+        },
+      ],
+    })
+
+    const post = calls.find((c) => c.method === 'chat.postMessage') as
+      | { args: { text?: string } }
+      | undefined
+    expect(post?.args.text).toContain('1.4k tokens')
+    expect(post?.args.text).toContain('(132 thinking)')
+  })
+
+  it('reasoningTokens 缺省/为 0 时 usage 行不含 thinking 段', async () => {
+    const { web, calls } = mockWeb()
+    const renderer = createSlackRenderer({ logger: stubLogger() })
+
+    await renderer.postSessionUsage(web, 'C1', 't1', {
+      durationMs: 1_000,
+      totalCostUSD: 0,
+      modelUsage: [
+        {
+          model: 'gpt-5.4',
+          inputTokens: 100,
+          outputTokens: 50,
+          cachedInputTokens: 0,
+          cacheHitRate: 0,
+        },
+      ],
+    })
+
+    const post = calls.find((c) => c.method === 'chat.postMessage') as
+      | { args: { text?: string } }
+      | undefined
+    expect(post?.args.text).not.toContain('thinking')
+  })
+
   it('cacheHitRate=0 时省略 cache 段', async () => {
     const { web, calls } = mockWeb()
     const renderer = createSlackRenderer({ logger: stubLogger() })

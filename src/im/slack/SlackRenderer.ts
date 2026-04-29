@@ -150,6 +150,10 @@ function formatUsageLine(usage: SessionUsageInfo, tailStats?: SessionUsageTailSt
       segment += ` (${Math.round(model.cacheHitRate * 100)}% cache)`
     }
 
+    if (model.reasoningTokens && model.reasoningTokens > 0) {
+      segment += ` (${formatTokenCount(model.reasoningTokens)} thinking)`
+    }
+
     parts.push(segment)
   }
 
