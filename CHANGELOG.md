@@ -1,3 +1,24 @@
+## [0.1.6](https://github.com/winchesHe/agent-slack/compare/v0.1.5...v0.1.6) (2026-04-29)
+
+
+### Bug Fixes
+
+* **config:** align maxApproxChars test with schema default 900_000 ([0cb89b6](https://github.com/winchesHe/agent-slack/commit/0cb89b69b8c8d0bb2cc457f94b3634a4ffaed670))
+* **provider:** turn off OpenAI Responses strict function schemas ([bcbf709](https://github.com/winchesHe/agent-slack/commit/bcbf709f121725bab29aec7015c853c7cd50b2bc))
+
+
+### Features
+
+* **config:** extend agent.provider with 'openai-responses' + responses sub-config ([57d818e](https://github.com/winchesHe/agent-slack/commit/57d818e19363e5f1f9c3a2697be2ec5aa422ba5a))
+* **events:** add reasoningTokens to SessionUsageInfo.modelUsage ([e303995](https://github.com/winchesHe/agent-slack/commit/e30399548977d9896a824ac6ed278852b55562b4))
+* **executor:** aggregate openai.reasoningTokens into SessionUsageInfo ([bbb5bd3](https://github.com/winchesHe/agent-slack/commit/bbb5bd35bdb3a800dcdbf16a565ed49ccca6c89e))
+* **executor:** pass extraProviderOptions through streamText ([0867cb1](https://github.com/winchesHe/agent-slack/commit/0867cb1bd3e089b7670f4972b290f7506f779096))
+* **provider:** wire 'openai-responses' provider via @ai-sdk/openai responses factory ([41a93b4](https://github.com/winchesHe/agent-slack/commit/41a93b48cc4339d10f4059ac50521abd4e9d3955))
+* **slack:** append (N thinking) segment to usage line when reasoning tokens present ([469f17d](https://github.com/winchesHe/agent-slack/commit/469f17de799ed2707e2a9f5d42a47eecb33556b4))
+* **slack:** use :fluent-thinking-3d: emoji in reasoning progress block ([5f62ebc](https://github.com/winchesHe/agent-slack/commit/5f62ebcb0a42f8d68de5e8e15801c785392a1fdf))
+
+
+
 # Changelog
 
 ## 0.1.5 (2026-04-26)
