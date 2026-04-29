@@ -6,6 +6,7 @@ import { startCommand } from './commands/start.ts'
 import { doctorCommand } from './commands/doctor.ts'
 import { statusCommand } from './commands/status.ts'
 import { onboardCommand } from './commands/onboard.ts'
+import { upgradeCommand } from './commands/upgrade.ts'
 import { dashboardCommand } from './commands/dashboard.ts'
 import {
   daemonStartCommand,
@@ -38,6 +39,15 @@ program
   .option('--cwd <dir>', 'workspace 目录', process.cwd())
   .action(async (opts: { cwd: string }) => {
     await onboardCommand({ cwd: opts.cwd })
+  })
+
+program
+  .command('upgrade')
+  .description('对照最新 generator 模板补齐 workspace 配置缺失的顶层字段（含中文注释 + 自动备份）')
+  .option('--cwd <dir>', 'workspace 目录', process.cwd())
+  .option('--dry-run', '只打印将要追加的内容，不写文件', false)
+  .action(async (opts: { cwd: string; dryRun: boolean }) => {
+    await upgradeCommand({ cwd: opts.cwd, dryRun: opts.dryRun })
   })
 
 program
