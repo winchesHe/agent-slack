@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { WebClient } from '@slack/web-api'
 import type { ActivityState, SessionUsageInfo } from '@/core/events.ts'
 import type { Logger } from '@/logger/logger.ts'
@@ -450,6 +450,169 @@ describe('SlackEventSink', () => {
     expect(sink.terminalPhase).toBe('completed')
   })
 })
+
+describe('SlackEventSink: reasoning 节流（1.2s 时间窗，仅 reasoning-only 增量进入）', () => {
+  it('1.2s 内连续 reasoningTail 增量只触发一次 upsert（首次激活立即推），到点后 timer 推第二次', async () => {
+    vi.useFakeTimers()
+    try {
+      const { sink, renderer } = makeSink()
+      await sink.onEvent({ type: 'lifecycle', phase: 'started' })
+
+      // 首次 reasoning 激活 progress（不在节流里，立即推）
+      await sink.onEvent({
+        type: 'activity-state',
+        state: { status: '推理中…', activities: ['a'], reasoningTail: 'tail-1' },
+      })
+      // 紧接着两次 reasoning-only 增量（不同 reasoningTail 才能绕过 lastStateKey 去重）
+      await sink.onEvent({
+        type: 'activity-state',
+        state: { status: '推理中…', activities: ['a'], reasoningTail: 'tail-2' },
+      })
+      await sink.onEvent({
+        type: 'activity-state',
+        state: { status: '推理中…', activities: ['a'], reasoningTail: 'tail-3' },
+      })
+
+      // 节流期间：仅首次激活那次 upsert
+      expect(getMethodCalls(renderer, 'upsertProgressMessage')).toHaveLength(1)
+
+      // 推进到时间窗末尾，timer 触发：合并推一次最新 state（tail-3）
+      await vi.advanceTimersByTimeAsync(REASONING_THROTTLE_MS_TEST)
+
+      const upserts = getMethodCalls(renderer, 'upsertProgressMessage')
+      expect(upserts).toHaveLength(2)
+      const secondState = upserts[1]?.args[3] as { reasoningTail?: string }
+      expect(secondState.reasoningTail).toBe('tail-3')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reasoning 节流期间出现 newToolCalls → 立即冲掉窗口、立即 upsert 且取消定时器', async () => {
+    vi.useFakeTimers()
+    try {
+      const { sink, renderer } = makeSink()
+      await sink.onEvent({ type: 'lifecycle', phase: 'started' })
+
+      await sink.onEvent({
+        type: 'activity-state',
+        state: { status: '推理中…', activities: ['a'], reasoningTail: 'r1' },
+      })
+      await sink.onEvent({
+        type: 'activity-state',
+        state: { status: '推理中…', activities: ['a'], reasoningTail: 'r2' },
+      })
+      // r2 进入节流。tool 事件应立即冲掉窗口
+      await sink.onEvent({
+        type: 'activity-state',
+        state: {
+          status: '正在 read_file…',
+          activities: ['正在 read_file…'],
+          newToolCalls: ['read_file'],
+        },
+      })
+
+      // r1（首次激活）+ tool（立即推）= 2 次；r2 被丢弃
+      expect(getMethodCalls(renderer, 'upsertProgressMessage')).toHaveLength(2)
+      const lastState = getMethodCalls(renderer, 'upsertProgressMessage').at(-1)?.args[3] as {
+        toolHistory: Map<string, number>
+      }
+      expect(lastState.toolHistory.get('read_file')).toBe(1)
+
+      // 把时间推进到时间窗末，定时器若没被取消就会再 fire 一次
+      await vi.advanceTimersByTimeAsync(REASONING_THROTTLE_MS_TEST * 2)
+      expect(getMethodCalls(renderer, 'upsertProgressMessage')).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('节流期间 finalize 取消 timer，不再额外推一次 upsert（终态由 finalizeDone 覆盖）', async () => {
+    vi.useFakeTimers()
+    try {
+      const { sink, renderer } = makeSink()
+      const usage: SessionUsageInfo = {
+        durationMs: 1,
+        totalCostUSD: 0,
+        modelUsage: [],
+      }
+
+      await sink.onEvent({ type: 'lifecycle', phase: 'started' })
+      await sink.onEvent({
+        type: 'activity-state',
+        state: { status: '推理中…', activities: ['a'], reasoningTail: 'r1' },
+      })
+      await sink.onEvent({
+        type: 'activity-state',
+        state: { status: '推理中…', activities: ['a'], reasoningTail: 'r2' },
+      })
+      await sink.onEvent({ type: 'usage-info', usage })
+      await sink.onEvent({ type: 'lifecycle', phase: 'completed', finalMessages: [] })
+      await sink.finalize()
+
+      // 推进时间窗后：定时器应已被 finalize 取消，不再产生第二次 upsert
+      await vi.advanceTimersByTimeAsync(REASONING_THROTTLE_MS_TEST * 2)
+
+      // 仅一次 upsert（首次激活 r1）；finalizeDone 是另一个方法
+      expect(getMethodCalls(renderer, 'upsertProgressMessage')).toHaveLength(1)
+      expect(getMethodCalls(renderer, 'finalizeProgressMessageDone')).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('clear=true 取消 reasoning 节流定时器', async () => {
+    vi.useFakeTimers()
+    try {
+      const { sink, renderer } = makeSink()
+      await sink.onEvent({ type: 'lifecycle', phase: 'started' })
+      await sink.onEvent({
+        type: 'activity-state',
+        state: { status: '推理中…', activities: ['a'], reasoningTail: 'r1' },
+      })
+      await sink.onEvent({
+        type: 'activity-state',
+        state: { status: '推理中…', activities: ['a'], reasoningTail: 'r2' },
+      })
+      await sink.onEvent({ type: 'activity-state', state: { clear: true } })
+
+      await vi.advanceTimersByTimeAsync(REASONING_THROTTLE_MS_TEST * 2)
+      // r1 一次 + clear 不算 upsert，定时器被取消
+      expect(getMethodCalls(renderer, 'upsertProgressMessage')).toHaveLength(1)
+      expect(getMethodCalls(renderer, 'deleteProgressMessage')).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('assistant-message 取消 reasoning 节流定时器（避免对已删 progress 发 update）', async () => {
+    vi.useFakeTimers()
+    try {
+      const { sink, renderer } = makeSink()
+      await sink.onEvent({ type: 'lifecycle', phase: 'started' })
+      await sink.onEvent({
+        type: 'activity-state',
+        state: { status: '推理中…', activities: ['a'], reasoningTail: 'r1' },
+      })
+      await sink.onEvent({
+        type: 'activity-state',
+        state: { status: '推理中…', activities: ['a'], reasoningTail: 'r2' },
+      })
+      await sink.onEvent({ type: 'assistant-message', text: 'hello' })
+
+      await vi.advanceTimersByTimeAsync(REASONING_THROTTLE_MS_TEST * 2)
+      // r1 一次 upsert；assistant-message 删 progress 并 reply；定时器取消后 r2 不会补发
+      expect(getMethodCalls(renderer, 'upsertProgressMessage')).toHaveLength(1)
+      expect(getMethodCalls(renderer, 'postThreadReply')).toHaveLength(1)
+      expect(getMethodCalls(renderer, 'deleteProgressMessage')).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+// 与源文件常量保持一致；测试里硬编码避免引入私有导出。
+const REASONING_THROTTLE_MS_TEST = 1200
 
 describe('SlackEventSink: isMeaningful pin 行为', () => {
   const cases: Array<{

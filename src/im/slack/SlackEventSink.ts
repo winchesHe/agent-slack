@@ -42,7 +42,16 @@ interface SinkLocalState {
   pendingUsage: SessionUsageInfo | undefined
   usageTailStats: SessionUsageTailStats
   ackAdded: boolean
+  // reasoning 节流：last update 时间戳 + 待提交的最新 state + 定时器句柄。
+  // 仅 reasoning-only 增量进入节流；非 reasoning 事件（新 tool / clear / status 切换）立即冲掉窗口。
+  lastProgressUpdateAt: number | undefined
+  reasoningPendingState: Exclude<ActivityState, { clear: true }> | undefined
+  reasoningTimer: ReturnType<typeof setTimeout> | undefined
 }
+
+// reasoning summary 流的 chat.update 节流窗口。Slack chat.update 限速约 1 req/s/channel，
+// 取 1.2s 留缓冲；窗口内的 reasoningTail 增量只保留最新一份，到点合并推一次。
+const REASONING_THROTTLE_MS = 1200
 
 function makeStateKey(state: ActivityState): string {
   // key diff 只比较真正会改变“当前状态快照”的字段。
@@ -181,6 +190,20 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
     pendingUsage: undefined,
     usageTailStats: emptyUsageTailStats(),
     ackAdded: false,
+    lastProgressUpdateAt: undefined,
+    reasoningPendingState: undefined,
+    reasoningTimer: undefined,
+  }
+
+  // 取消并清空 reasoning 节流定时器与待提交 state。
+  // 在 finalize / clear / 非 reasoning 事件 / assistant-message 等需要立即推送或终止的路径调用，
+  // 避免延迟回调在 progress 已被替换或删除后再触发一次无效 chat.update。
+  function cancelReasoningThrottle(): void {
+    if (local.reasoningTimer !== undefined) {
+      clearTimeout(local.reasoningTimer)
+      local.reasoningTimer = undefined
+    }
+    local.reasoningPendingState = undefined
   }
 
   function debugCutover(message: string, meta?: unknown): void {
@@ -216,6 +239,7 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
     if (state.clear) {
       // clear 是显式清场信号：progress 和状态条都要收掉，并重置 key，
       // 避免后续同 key 状态被误判成“已经刷过”。
+      cancelReasoningThrottle()
       if (local.progressMessageTs) {
         await deps.renderer.deleteProgressMessage(
           deps.web,
@@ -260,6 +284,49 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
     }
 
     if (local.progressMessageTs) {
+      // 仅 reasoningTail-only 增量进入节流路径：已有 progress + 有 reasoningTail + 无新工具调用 + 非 composing-only。
+      // 非 reasoning 事件（新工具 / status 切换 / composing 切换）会落到 else 分支并冲掉窗口。
+      const isReasoningOnlyIncrement =
+        Boolean(state.reasoningTail) && !hasNewToolCalls && !state.composing
+      const now = Date.now()
+      const elapsed =
+        local.lastProgressUpdateAt === undefined ? Infinity : now - local.lastProgressUpdateAt
+
+      if (isReasoningOnlyIncrement && elapsed < REASONING_THROTTLE_MS) {
+        // 进入节流：保留最新 state，到点统一推一次。
+        // 旧的 pending 直接覆盖（最新即可，无需累加）。
+        local.reasoningPendingState = state
+        if (local.reasoningTimer !== undefined) {
+          clearTimeout(local.reasoningTimer)
+        }
+        const remaining = REASONING_THROTTLE_MS - elapsed
+        local.reasoningTimer = setTimeout(() => {
+          const pending = local.reasoningPendingState
+          local.reasoningPendingState = undefined
+          local.reasoningTimer = undefined
+          if (!pending || !local.progressMessageTs) {
+            return
+          }
+          // fire-and-forget：节流回调不阻塞调用栈；失败由 renderer 内部 safeRender 兜底。
+          void (async () => {
+            const nextTs = await deps.renderer.upsertProgressMessage(
+              deps.web,
+              deps.channelId,
+              deps.threadTs,
+              toProgressUiState(pending, local.toolHistory, local.toolLatestLabel),
+              local.progressMessageTs,
+            )
+            if (nextTs) {
+              local.progressMessageTs = nextTs
+            }
+            local.lastProgressUpdateAt = Date.now()
+          })()
+        }, remaining)
+        return
+      }
+
+      // 非 reasoning-only 或窗口已过：立即推 + 冲掉任何 pending 节流。
+      cancelReasoningThrottle()
       const nextProgressTs = await deps.renderer.upsertProgressMessage(
         deps.web,
         deps.channelId,
@@ -271,6 +338,7 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
       if (nextProgressTs) {
         local.progressMessageTs = nextProgressTs
       }
+      local.lastProgressUpdateAt = Date.now()
       return
     }
 
@@ -288,6 +356,7 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
       if (nextProgressTs) {
         local.progressMessageTs = nextProgressTs
       }
+      local.lastProgressUpdateAt = Date.now()
       return
     }
 
@@ -308,6 +377,10 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
       textLength: text.length,
       threadTs: deps.threadTs,
     })
+
+    // 先取消 reasoning 节流定时器：assistant-message 即将删除 progress，
+    // 不能让节流回调在 progress 已删后再触发一次 chat.update（会写到一条已不存在的 ts）。
+    cancelReasoningThrottle()
 
     // 先删除 progress 再发 reply，避免"reply 已出现但 progress 还在中间挂着"的视觉抖动。
     // 如果反过来（先 reply 再 delete），chat.delete 可能耗时 1s+，
@@ -417,6 +490,11 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
     },
     async finalize() {
       try {
+        // finalize 立即取消任何 reasoning 节流定时器：
+        // 终态会用 finalizeProgressMessage* 把整条 progress 替换成完成/失败/停止文案，
+        // 节流回调若延迟 fire 会再发一次 chat.update，要么打回中间态、要么打到已被删除的 ts，
+        // 都是无效或破坏性的。这里不做 flush（终态本身就覆盖最终内容）。
+        cancelReasoningThrottle()
         debugCutover('finalize start', {
           channelId: deps.channelId,
           pendingUsage: Boolean(local.pendingUsage),
