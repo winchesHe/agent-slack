@@ -2,7 +2,6 @@ import { markdownToBlocks, splitBlocksWithText, type Block } from 'markdown-to-s
 import type { WebClient } from '@slack/web-api'
 import type { Logger } from '@/logger/logger.ts'
 import type { SessionUsageInfo, StopReason } from '@/core/events.ts'
-import { isRenderDebugEnabled } from '@/workspace/config'
 
 export interface SlackRendererDeps {
   logger: Logger
@@ -193,13 +192,11 @@ function formatTokenCount(n: number): string {
 
 export function createSlackRenderer(deps: SlackRendererDeps): SlackRenderer {
   const log = deps.logger.withTag('slack:render')
-  const renderDebug = isRenderDebugEnabled()
 
+  // 详细的 Slack API 调用诊断；走 debug 级别，由 LOG_LEVEL=debug 统一开启，
+  // 不再依赖单独的 SLACK_RENDER_DEBUG env 开关（已废弃，env 收窄到凭证/URL/LOG_LEVEL）。
   function debugRender(message: string, meta?: unknown): void {
-    if (!renderDebug) {
-      return
-    }
-    log.info(`[render-debug] ${message}`, meta)
+    log.debug(`[render-debug] ${message}`, meta)
   }
 
   // 所有 Slack API 调用都走同一兜底，避免上层再写重复 try/catch。

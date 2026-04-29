@@ -9,7 +9,6 @@ import type { Logger } from '@/logger/logger.ts'
 import type { EventSink } from '@/im/types.ts'
 import { STATUS, getShuffledLoadingMessages } from './thinking-messages.ts'
 import { REASONING_EMOJI, type SessionUsageTailStats, type SlackRenderer } from './SlackRenderer.ts'
-import { isRenderDebugEnabled } from '@/workspace/config.ts'
 
 export interface SlackEventSinkDeps {
   web: WebClient
@@ -181,7 +180,6 @@ function toProgressUiState(
 
 export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
   const log = deps.logger.withTag('slack:sink')
-  const renderDebug = isRenderDebugEnabled()
   const local: SinkLocalState = {
     progressMessageTs: undefined,
     toolHistory: new Map<string, number>(),
@@ -223,11 +221,10 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
     local.reasoningPendingState = undefined
   }
 
+  // sink 侧 progress / cutover 详细诊断；走 debug 级别，由 LOG_LEVEL=debug 统一开启，
+  // 不再依赖单独的 SLACK_RENDER_DEBUG env 开关（已废弃）。
   function debugCutover(message: string, meta?: unknown): void {
-    if (!renderDebug) {
-      return
-    }
-    log.info(`[render-debug] ${message}`, meta)
+    log.debug(`[render-debug] ${message}`, meta)
   }
 
   async function shouldSuppressUsage(): Promise<boolean> {

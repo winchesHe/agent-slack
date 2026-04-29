@@ -79,9 +79,8 @@ SLACK_SIGNING_SECRET=${args.slackSigningSecret}
   const tailBlock = `
 # ---------- 日志 & 调试 ----------
 # 日志级别: trace | debug | info | warn | error
+# 详细的 Slack 渲染诊断（[render-debug] ...）走 debug 级，必要时改为 LOG_LEVEL=debug。
 LOG_LEVEL=info
-# Slack Block Kit 渲染调试: 1 启用 / 0 禁用
-# SLACK_RENDER_DEBUG=0
 
 # ---------- Slack live E2E（可选；真实发 Slack 消息）----------
 # SLACK_E2E_CHANNEL_ID=C...
