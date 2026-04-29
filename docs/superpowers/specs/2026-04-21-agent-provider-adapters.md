@@ -15,7 +15,7 @@
 
 - `AgentExecutor` 抽象已存在，实装只有一个：`AiSdkExecutor`，内部通过 `@ai-sdk/openai-compatible` 指向 **LiteLLM 代理**（见 `src/application/createApplication.ts`）。
 - `src/workspace/config.ts` 原先把 `agent.provider` 写死为 `z.literal('litellm')`；本次改为 `z.enum(['litellm', 'anthropic']).default('litellm')`（**方案 A：config.yaml 单一权威**）。
-- env（**方案 A 收窄后**）：凭证/URL/debug 类 —— `LITELLM_BASE_URL` / `LITELLM_API_KEY` / `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `LOG_LEVEL` / `SLACK_RENDER_DEBUG`。已移除：`AGENT_PROVIDER`、`AGENT_MODEL`、`PROVIDER_NAME`。
+- env（**方案 A 收窄后**）：凭证/URL/debug 类 —— `LITELLM_BASE_URL` / `LITELLM_API_KEY` / `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `LOG_LEVEL`。已移除：`AGENT_PROVIDER`、`AGENT_MODEL`、`PROVIDER_NAME`。
 
 ### 1.2 目标
 
@@ -91,7 +91,6 @@ LITELLM_API_KEY=sk-...
 
 # 日志 & 调试
 LOG_LEVEL=info
-# SLACK_RENDER_DEBUG=0
 ```
 
 **已移除**：`AGENT_PROVIDER`、`AGENT_MODEL`、`PROVIDER_NAME`（这三项全部迁移到 config.yaml 或硬编码；方案 A "config.yaml 单一权威行为配置"）。
@@ -250,7 +249,7 @@ LOG_LEVEL=info
 | `src/cli/commands/onboard.ts` | 见 §3.5：插入 provider 选择步骤；按 provider 分支问凭证；调用对应 validator；**将 provider 写入 config.yaml** |
 | `src/cli/templates.ts` | `defaultConfigYaml(model, provider)` 签名新增 `provider`，在 `agent:` 块写 `provider: ${provider}` 行；`defaultEnv` 按 provider 生成两套变体（`DefaultEnvArgs` 为 discriminated union，anthropic 分支含 `ANTHROPIC_API_KEY` + 可选 `ANTHROPIC_BASE_URL`，**不含 AGENT_PROVIDER**） |
 | `src/cli/validators.ts` | 新增 `validateAnthropic({ apiKey, baseUrl? })`，一期实装为形状校验（`sk-ant-` 前缀 + 非空），signature 预留 fetcher 注入位以后升级为真实网络校验 |
-| `.env.example` | 精简为凭证/URL/debug 五组（Slack / LiteLLM / Anthropic / LOG_LEVEL / SLACK_RENDER_DEBUG）；不含 AGENT_* / PROVIDER_NAME |
+| `.env.example` | 精简为凭证/URL/debug 四组（Slack / LiteLLM / Anthropic / LOG_LEVEL）；不含 AGENT_* / PROVIDER_NAME |
 | `README.md` | "配置"节新增 provider 矩阵与 env 清单 |
 | `AGENTS.md` | Identity & Boundaries 一行从 "Vercel AI SDK + LiteLLM" 改为 "Vercel AI SDK（LiteLLM 默认；可切 Anthropic）"；Env 变更联动规则的字段集合收窄 |
 | `package.json` | 新增 `@ai-sdk/anthropic` |

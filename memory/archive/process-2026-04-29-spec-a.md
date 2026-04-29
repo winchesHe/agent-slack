@@ -21,17 +21,6 @@
    - E2E `src/e2e/live/run-thinking-responses.ts` grep `:fluent-thinking-3d:` 仍能命中（一轮中至少有一行）
    - 仅更新 e2e 注释（行 39 / 134-135 描述"每个 chunk 一行"改为"每轮一行"），断言不变
 
-3. **`[render-debug]` 双点改 `log.debug`，废弃 `SLACK_RENDER_DEBUG` env**
-   - 改动点：
-     - `src/im/slack/SlackRenderer.ts:202` `log.info` → `log.debug`
-     - `src/im/slack/SlackEventSink.ts:190` `log.info` → `log.debug`
-     - 删除 `isRenderDebugEnabled()` 调用与 `renderDebug` 门控（直接走 logger 级别）
-     - `src/workspace/config.ts` 移除 `isRenderDebugEnabled` 导出
-   - 联动同步：
-     - `.env.example` 删除 `SLACK_RENDER_DEBUG` 段
-     - `src/cli/templates.ts:defaultEnv` 删除 `SLACK_RENDER_DEBUG` 注释行
-     - `AGENTS.md` 如有提及一并删除（grep 确认）
-
 ### 范围外（→ Spec B 后续做）
 
 - `bash.ts:47` `执行命令` log 不动（用户决策：保持 info）
@@ -42,7 +31,6 @@
 
 - **Chunk A1 — Sink 节流**：在 `SlackEventSink.ts` 加 reasoning 节流；同目录加测试
 - **Chunk A2 — Renderer reasoning log 单次化**：改 `SlackRenderer.ts:308` 逻辑 + 测试
-- **Chunk A3 — render-debug 改 debug 级 + 删 env**：源码 + `.env.example` + `templates.ts` + AGENTS 联动
 - **Chunk A4 — E2E 注释更新**：仅注释，无断言变更
 
 每个 Chunk 完成后给测试结论让用户 review，再提交 commit、进下一个。

@@ -206,27 +206,11 @@ function formatTokenCount(n: number): string {
 export function createSlackRenderer(deps: SlackRendererDeps): SlackRenderer {
   const log = deps.logger.withTag('slack:render')
 
-  // 详细的 Slack API 调用诊断；走 debug 级别，由 LOG_LEVEL=debug 统一开启，
-  // 不再依赖单独的 SLACK_RENDER_DEBUG env 开关（已废弃，env 收窄到凭证/URL/LOG_LEVEL）。
-  function debugRender(message: string, meta?: unknown): void {
-    log.debug(`[render-debug] ${message}`, meta)
-  }
-
   // 所有 Slack API 调用都走同一兜底，避免上层再写重复 try/catch。
   async function safeRender<T>(label: string, fn: () => Promise<T>): Promise<T | undefined> {
-    const startedAt = Date.now()
-    debugRender(`api start ${label}`, { startedAt })
     try {
-      const result = await fn()
-      debugRender(`api success ${label}`, {
-        durationMs: Date.now() - startedAt,
-      })
-      return result
+      return await fn()
     } catch (error) {
-      debugRender(`api failed ${label}`, {
-        durationMs: Date.now() - startedAt,
-        error: error instanceof Error ? error.message : String(error),
-      })
       log.warn(`slack api failed: ${label}`, error)
       return undefined
     }
@@ -266,12 +250,6 @@ export function createSlackRenderer(deps: SlackRendererDeps): SlackRenderer {
     addStopped: (client, channelId, messageTs) =>
       addReaction(client, channelId, messageTs, 'black_square_for_stop'),
     async setStatus(client, channelId, threadTs, status, loadingMessages) {
-      debugRender('setStatus requested', {
-        channelId,
-        hasLoadingMessages: Boolean(loadingMessages && loadingMessages.length > 0),
-        status,
-        threadTs,
-      })
       const args = {
         channel_id: channelId,
         thread_ts: threadTs,
@@ -286,10 +264,6 @@ export function createSlackRenderer(deps: SlackRendererDeps): SlackRenderer {
       )
     },
     async clearStatus(client, channelId, threadTs) {
-      debugRender('clearStatus requested', {
-        channelId,
-        threadTs,
-      })
       const args = {
         channel_id: channelId,
         thread_ts: threadTs,
@@ -301,13 +275,6 @@ export function createSlackRenderer(deps: SlackRendererDeps): SlackRenderer {
       )
     },
     async upsertProgressMessage(client, channelId, threadTs, state, prevTs) {
-      debugRender('upsertProgressMessage requested', {
-        channelId,
-        prevTs,
-        status: state.status,
-        threadTs,
-        toolHistorySize: state.toolHistory.size,
-      })
       const blocks = buildProgressBlocks(state)
       const text = fallbackText(state)
 
@@ -338,12 +305,6 @@ export function createSlackRenderer(deps: SlackRendererDeps): SlackRenderer {
     },
     async finalizeProgressMessageDone(client, channelId, threadTs, prevTs, toolHistory) {
       void threadTs
-      debugRender('finalizeProgressMessageDone requested', {
-        channelId,
-        prevTs,
-        threadTs,
-        toolHistorySize: toolHistory.size,
-      })
       const toolHistoryText = formatToolHistory(toolHistory)
       const line = toolHistoryText ? `✅ 完成 · ${toolHistoryText}` : '✅ 完成'
 
@@ -358,12 +319,6 @@ export function createSlackRenderer(deps: SlackRendererDeps): SlackRenderer {
     },
     async finalizeProgressMessageStopped(client, channelId, threadTs, prevTs, reason) {
       void threadTs
-      debugRender('finalizeProgressMessageStopped requested', {
-        channelId,
-        prevTs,
-        reason,
-        threadTs,
-      })
       const line =
         reason === 'max_steps' ? '⏹️ 已达到 maxSteps 上限，任务已暂停' : '⏹️ 已被用户中止'
 
@@ -378,12 +333,6 @@ export function createSlackRenderer(deps: SlackRendererDeps): SlackRenderer {
     },
     async finalizeProgressMessageError(client, channelId, threadTs, prevTs, errorMessage) {
       void threadTs
-      debugRender('finalizeProgressMessageError requested', {
-        channelId,
-        errorMessage,
-        prevTs,
-        threadTs,
-      })
       const line = `⚠️ 出错：${errorMessage}`
 
       await safeRender('chat.update(progress-error)', () =>
@@ -397,11 +346,6 @@ export function createSlackRenderer(deps: SlackRendererDeps): SlackRenderer {
     },
     async deleteProgressMessage(client, channelId, threadTs, prevTs) {
       void threadTs
-      debugRender('deleteProgressMessage requested', {
-        channelId,
-        prevTs,
-        threadTs,
-      })
 
       await safeRender('chat.delete(progress)', () =>
         client.chat.delete({
@@ -417,24 +361,11 @@ export function createSlackRenderer(deps: SlackRendererDeps): SlackRenderer {
         return
       }
 
-      debugRender('postThreadReply requested', {
-        channelId,
-        hasWorkspaceLabel: Boolean(options?.workspaceLabel),
-        textLength: trimmed.length,
-        threadTs,
-      })
-
       // markdown 先转 blocks，再按 Slack 限制自然切块。
       const blocks = markdownToBlocks(trimmed, { preferSectionBlocks: false })
       const chunks = splitBlocksWithText(blocks)
 
       for (const [index, chunk] of chunks.entries()) {
-        debugRender('postThreadReply chunk', {
-          channelId,
-          chunkIndex: index,
-          chunkTextLength: chunk.text.length,
-          threadTs,
-        })
         // workspaceLabel 只加在首块，避免后续分片重复噪音。
         const messageBlocks =
           index === 0 && options?.workspaceLabel

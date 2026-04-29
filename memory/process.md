@@ -20,9 +20,8 @@
 ### Spec A —— Reasoning 流降噪（已完成）
 
 详见 `archive/process-2026-04-29-spec-a.md`。四个 commit：
-- `fc4ba6c` Sink 节流（reasoning chat.update 1.2s 时间窗）
+- `fc4ba6c` Sink 节流（reasoning chat.update 时间窗）
 - `c97538c` reasoning emoji log 由 Renderer 每 chunk 一行降为 Sink turn 内一次
-- `939a3fd` 废弃 SLACK_RENDER_DEBUG，[render-debug] 走 log.debug
 - `726f9b6` E2E 注释更新
 
 后续穿插的小优化：

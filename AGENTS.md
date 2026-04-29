@@ -32,7 +32,7 @@
 
 ### Env / Config 单一权威原则（方案 A）
 - **行为配置**（model / provider / maxSteps / skills / im / agent.name）只在 `config.yaml`；env 不参与。
-- **env** 只放凭证（`SLACK_*` / `LITELLM_*` / `ANTHROPIC_*`）、部署差异（`*_BASE_URL`）、调试（`LOG_LEVEL`；Slack 渲染细节由 `LOG_LEVEL=debug` 看 `[render-debug] ...`）。
+- **env** 只放凭证（`SLACK_*` / `LITELLM_*` / `ANTHROPIC_*`）、部署差异（`*_BASE_URL`）、调试（`LOG_LEVEL`）。
 - 禁止重新引入 `AGENT_MODEL` / `AGENT_PROVIDER` / `PROVIDER_NAME` 这类行为类 env 变量；如确需加新行为选项，加到 `src/workspace/config.ts` schema。
 
 ### Env / Config 变更联动规则
