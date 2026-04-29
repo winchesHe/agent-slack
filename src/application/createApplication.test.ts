@@ -389,9 +389,12 @@ describe('createApplication', () => {
         reasoningEffort: 'low',
         reasoningSummary: 'detailed',
         store: false,
+        strictSchemas: false,
       },
     })
-    expect(executorArgs?.providerName).toBe('openai-responses')
+    // openai-responses 路径下 providerName 必须是 undefined：避免向 /responses 端点注入
+    // stream_options（那是 /chat/completions 字段）。OpenAI Responses 流式响应自带 usage。
+    expect(executorArgs?.providerName).toBeUndefined()
   })
 
   it('config.agent.provider=litellm 时不传 extraProviderOptions', async () => {

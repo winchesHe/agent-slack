@@ -503,6 +503,19 @@ export function createAiSdkExecutor(deps: AiSdkExecutorDeps): AgentExecutor {
 
             case 'error': {
               terminatedByErrorPart = true
+              // 完整打印 error 详情供排查（redactErrorMessage 仅做敏感词脱敏，丢失结构）
+              log.error('[error-part] received error stream chunk', {
+                errorType: typeof part.error,
+                errorString: String(part.error),
+                errorJson: (() => {
+                  try {
+                    return JSON.stringify(part.error, Object.getOwnPropertyNames(part.error))
+                  } catch {
+                    return '[unserializable]'
+                  }
+                })(),
+                errorStack: part.error instanceof Error ? part.error.stack : undefined,
+              })
               // error part 代表 provider 已给出明确终态，这里直接转成 failed 并停止后续消费。
               yield {
                 type: 'lifecycle',
@@ -550,7 +563,21 @@ export function createAiSdkExecutor(deps: AiSdkExecutorDeps): AgentExecutor {
         }
 
         // 其余异常视为真正失败，保留日志并压成统一 lifecycle(failed) 事件。
-        log.error('executor stream error', err)
+        log.error('[catch-error] executor stream error', {
+          errorType: typeof err,
+          errorString: String(err),
+          errorMessage: err instanceof Error ? err.message : undefined,
+          errorName: err instanceof Error ? err.name : undefined,
+          errorStack: err instanceof Error ? err.stack : undefined,
+          errorCause: err instanceof Error ? String((err as { cause?: unknown }).cause) : undefined,
+          errorJson: (() => {
+            try {
+              return JSON.stringify(err, Object.getOwnPropertyNames(err ?? {}))
+            } catch {
+              return '[unserializable]'
+            }
+          })(),
+        })
         yield {
           type: 'lifecycle',
           phase: 'failed',

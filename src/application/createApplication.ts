@@ -128,6 +128,12 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
             reasoningEffort: ctx.config.agent.responses.reasoningEffort,
             reasoningSummary: ctx.config.agent.responses.reasoningSummary,
             store: false, // spec §9 决策：不在 OpenAI 服务端长期保留对话内容
+            // 关闭 OpenAI Responses API 的 strict function schema 校验。
+            // strict 模式要求 required 数组包含 properties 全部 key（即所有字段都必填，可选字段须用 nullable union 表达）。
+            // 但本仓库的内置 tools（如 bash 的 timeout_ms）大量使用 zod .optional()，转出的 JSON schema
+            // 不符合 strict 形态。LiteLLM 网关在 /responses 端点会以 400 invalid_function_parameters 拒绝请求。
+            // 设 false 让 ai-sdk 直接发送 zod 转出的宽松 schema，与 /chat/completions 路径一致。
+            strictSchemas: false,
           },
         }
       : undefined
@@ -297,7 +303,12 @@ function buildProviderRuntime(
     return {
       model: p.responses(modelName),
       modelName,
-      providerNameForOptions: 'openai-responses',
+      // 关键：不写 providerNameForOptions（保持 undefined）。
+      // 否则 AiSdkExecutor 会向 providerOptions['openai-responses'] 注入 stream_options，
+      // 但 /responses 端点不接受 stream_options 字段（这是 /chat/completions 才有的），
+      // 实测会让 LiteLLM 在长 reasoning 流式下 hang/拒绝响应。
+      // OpenAI Responses API 在 streaming 模式下 finish chunk 已自动包含 usage，无需 stream_options。
+      providerNameForOptions: undefined,
     }
   }
   throw new ConfigError(
