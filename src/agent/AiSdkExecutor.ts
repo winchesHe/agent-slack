@@ -35,6 +35,7 @@ interface ModelUsageSnapshot {
   inputTokens: number
   outputTokens: number
   cachedInputTokens: number
+  reasoningTokens: number
   costUSD: number
 }
 
@@ -192,6 +193,16 @@ function toSafeInt(v: unknown): number {
   return Number.isFinite(n) ? n : 0
 }
 
+// 从 finish chunk 的 providerMetadata 中提取 OpenAI Responses API 的 reasoning_tokens。
+// 字段路径：providerMetadata.openai.reasoningTokens（@ai-sdk/openai 已 camelCase 映射）。
+function extractReasoningTokens(providerMetadata: unknown): number {
+  if (!providerMetadata || typeof providerMetadata !== 'object') return 0
+  const openai = (providerMetadata as Record<string, unknown>).openai
+  if (!openai || typeof openai !== 'object') return 0
+  const v = (openai as Record<string, unknown>).reasoningTokens
+  return toSafeInt(v)
+}
+
 function updateUsage(
   agg: AggregatorState,
   modelName: string,
@@ -202,6 +213,7 @@ function updateUsage(
     inputTokens: 0,
     outputTokens: 0,
     cachedInputTokens: 0,
+    reasoningTokens: 0,
     costUSD: 0,
   }
 
@@ -209,6 +221,7 @@ function updateUsage(
     inputTokens: current.inputTokens + toSafeInt(usage.promptTokens ?? usage.inputTokens),
     outputTokens: current.outputTokens + toSafeInt(usage.completionTokens ?? usage.outputTokens),
     cachedInputTokens: current.cachedInputTokens + toSafeInt(usage.cachedInputTokens),
+    reasoningTokens: current.reasoningTokens + extractReasoningTokens(providerMetadata),
     costUSD: current.costUSD + (extractCostFromMetadata(providerMetadata) ?? 0),
   })
 }
@@ -220,6 +233,8 @@ function buildUsageInfo(agg: AggregatorState): SessionUsageInfo {
     outputTokens: usage.outputTokens,
     cachedInputTokens: usage.cachedInputTokens,
     cacheHitRate: usage.inputTokens > 0 ? usage.cachedInputTokens / usage.inputTokens : 0,
+    // 仅 >0 才写入字段；零值时缺省，避免 Slack usage 行误增 (0 thinking) 段。
+    ...(usage.reasoningTokens > 0 ? { reasoningTokens: usage.reasoningTokens } : {}),
   }))
 
   return {

@@ -823,4 +823,71 @@ describe('AiSdkExecutor 粗事件映射', () => {
 
     expect(calls.length).toBeGreaterThan(0)
   })
+
+  it('finish 携带 providerMetadata.openai.reasoningTokens 时透出到 usage-info', async () => {
+    const executor = createExecutor(
+      createMockModel([
+        [
+          { type: 'response-metadata', id: 'resp_1', modelId: 'mock-model' },
+          { type: 'reasoning', textDelta: 'thinking…' },
+          { type: 'text-delta', textDelta: 'done' },
+          {
+            type: 'finish',
+            finishReason: 'stop',
+            usage: { promptTokens: 100, completionTokens: 200 },
+            providerMetadata: { openai: { reasoningTokens: 132 } },
+          },
+        ],
+      ]),
+    )
+
+    const events = await collect(
+      executor.execute({
+        systemPrompt: 'system',
+        messages: [{ role: 'user', content: 'hi' }],
+        abortSignal: new AbortController().signal,
+      }),
+    )
+
+    const usageInfo = events.find((e) => e.type === 'usage-info')
+    expect(usageInfo?.type).toBe('usage-info')
+    if (usageInfo?.type === 'usage-info') {
+      expect(usageInfo.usage.modelUsage[0]?.reasoningTokens).toBe(132)
+    }
+  })
+
+  // 注意：本用例验证"零值时字段缺省"。buildUsageInfo 必须用 spread 条件展开
+  //   `...(usage.reasoningTokens > 0 ? { reasoningTokens: usage.reasoningTokens } : {})`
+  // 而**不能**写成 `reasoningTokens: usage.reasoningTokens`（那会显式赋 0、`'in'` 检查会过）。
+  it('providerMetadata 无 openai.reasoningTokens 时 modelUsage 不带 reasoningTokens 字段', async () => {
+    const executor = createExecutor(
+      createMockModel([
+        [
+          { type: 'response-metadata', id: 'resp_1', modelId: 'mock-model' },
+          { type: 'text-delta', textDelta: 'plain' },
+          {
+            type: 'finish',
+            finishReason: 'stop',
+            usage: { promptTokens: 5, completionTokens: 5 },
+            providerMetadata: { litellm: { cost: 0.01 } },
+          },
+        ],
+      ]),
+    )
+
+    const events = await collect(
+      executor.execute({
+        systemPrompt: 'system',
+        messages: [{ role: 'user', content: 'hi' }],
+        abortSignal: new AbortController().signal,
+      }),
+    )
+
+    const usageInfo = events.find((e) => e.type === 'usage-info')
+    if (usageInfo?.type === 'usage-info') {
+      const first = usageInfo.usage.modelUsage[0]
+      expect(first).toBeDefined()
+      expect('reasoningTokens' in first!).toBe(false)
+    }
+  })
 })
