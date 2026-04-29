@@ -51,6 +51,12 @@
 | 触发条件 | 查阅位置 |
 |---|---|
 | 架构 | `docs/superpowers/specs/2026-04-17-agent-slack-architecture-design.md` |
+| 工程经验沉淀（动手前先扫一遍可复用规则） | `.agent-slack/experience.md` |
+
+### `.agent-slack/experience.md` 使用约定
+- **何时读**：开始一个新任务、写 plan、改 provider 装配、写 live e2e、加单测、排查异常前必读。
+- **何时写**：每完成一个含"踩坑 → 解法"的 task，把可在下次复用的规则提炼进去。**不要**记录一次性事件流水，只沉淀"触发条件 + 决策 + 反例"三段式的判断规则。
+- **不要写**：项目本身的功能描述（那是 spec）、操作步骤（那是 plan）、个人吐槽。
 
 ## Task Completion Checklist
 
