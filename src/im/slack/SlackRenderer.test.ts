@@ -545,7 +545,8 @@ describe('SlackRenderer postSessionUsage', () => {
       | { args: { text?: string } }
       | undefined
     expect(post?.args.text).toContain('1.4k tokens')
-    expect(post?.args.text).toContain('(132 thinking)')
+    // reasoning 段统一 k 形式：132 / 1000 = 0.132 → toFixed(1) = 0.1
+    expect(post?.args.text).toContain('(0.1k thinking)')
   })
 
   it('reasoningTokens 缺省/为 0 时 usage 行不含 thinking 段', async () => {

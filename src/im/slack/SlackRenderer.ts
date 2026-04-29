@@ -151,7 +151,9 @@ function formatUsageLine(usage: SessionUsageInfo, tailStats?: SessionUsageTailSt
     }
 
     if (model.reasoningTokens && model.reasoningTokens > 0) {
-      segment += ` (${formatTokenCount(model.reasoningTokens)} thinking)`
+      // reasoning 段总是用 k 形式，与同段 total tokens 视觉单位对齐。
+      // 即便 <1000 也写 0.x k，避免裸数字与 "Xk tokens" 形式不一致看起来怪。
+      segment += ` (${(model.reasoningTokens / 1000).toFixed(1)}k thinking)`
     }
 
     parts.push(segment)
