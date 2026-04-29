@@ -619,7 +619,7 @@ describe('SlackEventSink: reasoning 节流（1.2s 时间窗，仅 reasoning-only
 })
 
 // 与源文件常量保持一致；测试里硬编码避免引入私有导出。
-const REASONING_THROTTLE_MS_TEST = 1200
+const REASONING_THROTTLE_MS_TEST = 300
 
 describe('SlackEventSink: reasoning log（turn 内一次 info，含 :fluent-thinking-3d:）', () => {
   it('多次 reasoningTail 只打一次 info；含 emoji 字符串与 tailPrefix', async () => {

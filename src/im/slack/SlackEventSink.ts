@@ -52,9 +52,9 @@ interface SinkLocalState {
   reasoningLogged: boolean
 }
 
-// reasoning summary 流的 chat.update 节流窗口。Slack chat.update 限速约 1 req/s/channel，
-// 取 1.2s 留缓冲；窗口内的 reasoningTail 增量只保留最新一份，到点合并推一次。
-const REASONING_THROTTLE_MS = 1200
+// reasoning summary 流的 chat.update 节流窗口。注意 Slack chat.update 限速约 1 req/s/channel，
+// 这里取 300ms 是为了让 reasoning 增量更跟手，可能触发限速；窗口内的 reasoningTail 增量只保留最新一份，到点合并推一次。
+const REASONING_THROTTLE_MS = 300
 
 function makeStateKey(state: ActivityState): string {
   // key diff 只比较真正会改变“当前状态快照”的字段。
