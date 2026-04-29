@@ -19,6 +19,8 @@
 | 想在 e2e 拦 wire 请求做断言 | 不用 `globalThis.fetch = spy`：含 axios / Slack WebClient 的 import 链下不可靠（实测拦得到 Slack 拦不到 ai-sdk）。用业务终态反推（如 `(N thinking)` 出现 ⟹ 端点 + reasoning + 解码全链路 OK） |
 | e2e 要换 provider/option 跑全链路 | 用 cwd workspace 临时备份 + 改写 `.agent-slack/config.yaml`，finally 还原。不要 tmp workspace（实测 socket mode 下 mention 进不来） |
 | reasoning 流式 / 长上下文 e2e | 内置 `for attempt in 1..2` retry，失败重置 matched 状态再 trigger，总 timeout = 单次 × 2 |
+| 想用 e2e 验 reasoning summary 流式渲染（progress block emoji / reasoningTail 显示） | 必须 `reasoningSummary: 'detailed'` 强制输出 summary 文本流。`'auto'` 时模型对简单 prompt 常**只**给 `reasoning_tokens` 计数、**不**发 `reasoning_summary_text.delta` 事件，summary 流路径不触发；token 计数（`thinkingTailObserved`）和 summary 流（`progressEmojiRendered`）是**两条独立链路**，分别断言 |
+| 想验证 progress 中间状态（用完即被替换、e2e 跑完无 UI 痕迹） | SlackRenderer 在该路径打 info 级永久 log，e2e 跑完按时间窗 grep `.agent-slack/logs/agent-YYYY-MM-DD.log`。例：`progress reasoning emoji rendered: :fluent-thinking-3d:` |
 
 ## 单测（vitest）
 
