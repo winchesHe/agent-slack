@@ -233,6 +233,32 @@ describe('SlackRenderer progress message', () => {
     })
   })
 
+  it('reasoningTail 进度块前缀使用 :fluent-thinking-3d: emoji', async () => {
+    const { web, calls } = mockWeb()
+    const renderer = createSlackRenderer({ logger: stubLogger() })
+
+    await renderer.upsertProgressMessage(web, 'C1', 't1', {
+      status: '思考中…',
+      activities: ['思考中…'],
+      toolHistory: new Map(),
+      reasoningTail: '正在分析这个问题',
+    })
+
+    const post = calls.find((c) => c.method === 'chat.postMessage') as
+      | { args: { blocks?: Array<{ elements?: Array<{ text?: string }> }> } }
+      | undefined
+
+    const allText =
+      post?.args.blocks
+        ?.flatMap((b) => b.elements ?? [])
+        .map((e) => e.text ?? '')
+        .join('|') ?? ''
+
+    expect(allText).toContain(':fluent-thinking-3d:')
+    expect(allText).toContain('正在分析这个问题')
+    expect(allText).not.toContain('🤔')
+  })
+
   it('upsertProgressMessage 失败时返回 undefined', async () => {
     const web = {
       chat: {

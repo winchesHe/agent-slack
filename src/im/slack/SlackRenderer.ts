@@ -117,7 +117,7 @@ function buildProgressBlocks(state: ProgressUiState): Block[] {
   }
 
   if (state.reasoningTail) {
-    blocks.push(buildContextBlock(`🤔 ${state.reasoningTail}`))
+    blocks.push(buildContextBlock(`:fluent-thinking-3d: ${state.reasoningTail}`))
   }
 
   const lastActivity = [...state.activities]
