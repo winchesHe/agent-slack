@@ -29,7 +29,7 @@ agent-slack start           # 启动（前台阻塞）
 | --- | --- | --- |
 | `examples/config.example.yaml` | `.agent-slack/config.yaml` | agent / provider / model / maxSteps / context / skills / daemon |
 | `examples/channel-tasks.example.yaml` | `.agent-slack/channel-tasks.yaml` | Slack 频道任务监听规则 |
-| `examples/system.example.md` | `.agent-slack/system.md` | workspace system prompt |
+| `examples/system.md` | `.agent-slack/system.md` | workspace system prompt（Slack 场景默认骨架，鼓励按项目改写） |
 | `examples/.env.example` | `.agent-slack/.env.local` | Slack / provider 凭证、debug、live E2E env |
 
 这些文件是模板源（`src/workspace/templates/` 下的 generator 直接读取它们），只包含占位符，不含真实凭证。`.agent-slack/.env.local`、session、logs、channel task ledger 仍应保持 git ignore。

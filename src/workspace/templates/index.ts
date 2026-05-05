@@ -11,8 +11,9 @@
 //   .env.example                ← generateEnvExample()
 //   config.example.yaml         ← generateConfigYaml({ mode: 'example' })
 //   channel-tasks.example.yaml  ← generateChannelTasksYaml({ mode: 'example' })
-//   system.example.md           ← generateSystemMd({ mode: 'example' })
-//   system.workspace.md         ← generateSystemMd({ mode: 'workspace' })
+//   system.md                   ← generateSystemMd({ mode: 'workspace' })
+//                                 generateSystemMd({ mode: 'example' }) 在 system.md 前
+//                                 拼接一段引导注释。
 
 export {
   generateConfigYaml,

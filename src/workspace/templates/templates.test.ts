@@ -41,12 +41,16 @@ describe('templates: example mode 与 examples/* 一致', () => {
     )
   })
 
-  it('generateSystemMd({ mode: example }) == examples/system.example.md', () => {
-    expect(generateSystemMd({ mode: 'example' })).toBe(readExample('system.example.md'))
+  it('generateSystemMd({ mode: workspace }) == examples/system.md', () => {
+    expect(generateSystemMd({ mode: 'workspace' })).toBe(readExample('system.md'))
   })
 
-  it('generateSystemMd({ mode: workspace }) == examples/system.workspace.md', () => {
-    expect(generateSystemMd({ mode: 'workspace' })).toBe(readExample('system.workspace.md'))
+  it('generateSystemMd({ mode: example }) 在前面拼接引导段，正文与 system.md 一致', () => {
+    const out = generateSystemMd({ mode: 'example' })
+    const body = readExample('system.md')
+    expect(out.endsWith(body)).toBe(true)
+    expect(out).toMatch(/^<!--/)
+    expect(out).toContain('复制到 .agent-slack/system.md')
   })
 })
 

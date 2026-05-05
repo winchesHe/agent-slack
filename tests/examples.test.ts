@@ -24,11 +24,12 @@ describe('agent-slack 配置示例', () => {
     expect(parsed.rules.map((rule) => rule.id)).toEqual(['daily-watch', 'bot-alert-watch'])
   })
 
-  it('system.example.md 和 .env.example 存在且不包含真实 token', async () => {
-    const system = await fs.readFile(path.join(examplesDir, 'system.example.md'), 'utf8')
+  it('system.md 和 .env.example 存在且不包含真实 token', async () => {
+    const system = await fs.readFile(path.join(examplesDir, 'system.md'), 'utf8')
     const env = await fs.readFile(path.join(examplesDir, '.env.example'), 'utf8')
 
-    expect(system).toContain('System Prompt 示例')
+    expect(system).toContain('# System Prompt')
+    expect(system).toContain('Slack')
     expect(env).toContain('SLACK_BOT_TOKEN=xoxb-...')
     expect(env).not.toMatch(/xox[baprs]-[0-9A-Za-z-]{20,}/)
   })
