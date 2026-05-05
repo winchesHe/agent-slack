@@ -5,19 +5,19 @@ import { describe, expect, it } from 'vitest'
 import { parseChannelTasksConfig } from '@/channelTasks/config.ts'
 import { parseConfig } from '@/workspace/config.ts'
 
-const repoRoot = process.cwd()
+const examplesDir = path.join(process.cwd(), 'examples')
 
 describe('agent-slack 配置示例', () => {
-  it('config.yaml 能被 workspace config schema 解析', async () => {
-    const raw = await fs.readFile(path.join(repoRoot, 'config.example.yaml'), 'utf8')
+  it('config.example.yaml 能被 workspace config schema 解析', async () => {
+    const raw = await fs.readFile(path.join(examplesDir, 'config.example.yaml'), 'utf8')
     const parsed = parseConfig(YAML.parse(raw))
 
     expect(parsed.agent.maxSteps).toBe(50)
     expect(parsed.im.provider).toBe('slack')
   })
 
-  it('channel-tasks.yaml 能被 channel task schema 解析', async () => {
-    const raw = await fs.readFile(path.join(repoRoot, 'channel-tasks.example.yaml'), 'utf8')
+  it('channel-tasks.example.yaml 能被 channel task schema 解析', async () => {
+    const raw = await fs.readFile(path.join(examplesDir, 'channel-tasks.example.yaml'), 'utf8')
     const parsed = parseChannelTasksConfig(YAML.parse(raw))
 
     expect(parsed.version).toBe(1)
@@ -25,8 +25,8 @@ describe('agent-slack 配置示例', () => {
   })
 
   it('system.example.md 和 .env.example 存在且不包含真实 token', async () => {
-    const system = await fs.readFile(path.join(repoRoot, 'system.example.md'), 'utf8')
-    const env = await fs.readFile(path.join(repoRoot, '.env.example'), 'utf8')
+    const system = await fs.readFile(path.join(examplesDir, 'system.example.md'), 'utf8')
+    const env = await fs.readFile(path.join(examplesDir, '.env.example'), 'utf8')
 
     expect(system).toContain('System Prompt 示例')
     expect(env).toContain('SLACK_BOT_TOKEN=xoxb-...')

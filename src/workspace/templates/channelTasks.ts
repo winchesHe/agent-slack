@@ -1,106 +1,20 @@
-// channel-tasks.yaml 模板生成器（单一权威）。
+// channel-tasks.yaml 模板生成器（**单一权威**）。
 //
-// - generateChannelTasksYaml({ mode: 'example' })：与根目录 channel-tasks.example.yaml 字节一致；守护测试断言。
-// - generateChannelTasksYaml({ mode: 'workspace' })：dashboard "生成模板" 按钮 / upgrade 创建空模板用。
+// 模板源在 examples/channel-tasks.example.yaml；本文件只负责：
+// 1. example mode：原样返回 examples/channel-tasks.example.yaml。
+// 2. workspace mode：去掉示例引导注释，前置 workspace 头部说明。
+
+import { CHANNEL_TASKS_EXAMPLE, stripExampleLeadingComments } from './_assets.ts'
 
 export interface GenerateChannelTasksYamlArgs {
   mode: 'example' | 'workspace'
 }
 
-const EXAMPLE_HEADER = `# Slack 频道任务监听配置示例。
-# 复制到你的 workspace: .agent-slack/channel-tasks.yaml
-# 文件缺失时功能关闭；保存后需要重启 agent-slack start 或 daemon。
-
-`
-
 const WORKSPACE_HEADER = `# Slack 频道任务监听配置。
 # 文件缺失时该功能关闭；enabled=false 时即使配置了规则也不会监听执行。
 `
 
-const BODY = `version: 1
-enabled: false
-
-rules:
-  - id: daily-watch
-    enabled: false
-    description: 示例：监听指定频道里的用户消息，让 agent 在触发消息 thread 中总结处理。
-
-    # Slack channel ID，建议使用 C/G 开头的 ID，不建议使用频道名。
-    channelIds: [C0123456789]
-
-    source:
-      # 普通 user message：通常没有 subtype，带 user 字段。
-      includeUserMessages: true
-      # bot message：通常带 bot_id/app_id；某些真实消息可能没有 subtype。
-      includeBotMessages: false
-      # 允许触发的 Slack user ID。生产建议显式填写。
-      userIds: [U0123456789]
-      # 允许触发的 Slack bot ID。
-      botIds: []
-      # 允许触发的 Slack app ID。
-      appIds: []
-
-    message:
-      # 根消息会创建 thread 并在 thread 中回复。
-      includeRootMessages: true
-      # thread 回复默认不触发，避免同一讨论中噪音过大。
-      includeThreadReplies: false
-      # none = 无 subtype 的普通消息；bot_message = bot 来源消息。
-      allowSubtypes: [none]
-      requireText: true
-      # 文本里 @当前 agent 时跳过频道任务，避免和 app_mention 重复执行。
-      ignoreAgentMentions: true
-
-    # 可选文本过滤；两个数组都为空时，只要 channel/source/message 命中就触发。
-    match:
-      containsAny: []
-      regexAny: []
-
-    task:
-      prompt: |
-        请阅读触发消息，判断是否需要后续处理，并给出简洁结论。
-      includeOriginalMessage: true
-      includePermalink: true
-
-    # 首版固定为 true：始终回复到触发消息所属 thread。
-    reply:
-      inThread: true
-
-    # 避免 Slack 重试或进程重连导致同一消息重复执行。
-    dedupe:
-      enabled: true
-
-  - id: bot-alert-watch
-    enabled: false
-    description: 示例：监听某个 bot/app 发出的告警消息。
-    channelIds: [C0123456789]
-    source:
-      includeUserMessages: false
-      includeBotMessages: true
-      userIds: []
-      botIds: [B0123456789]
-      appIds: [A0123456789]
-    message:
-      includeRootMessages: true
-      includeThreadReplies: false
-      allowSubtypes: [bot_message]
-      requireText: true
-      ignoreAgentMentions: true
-    match:
-      containsAny: ['ALERT', '告警']
-      regexAny: []
-    task:
-      prompt: |
-        请分析这条告警消息，说明影响范围、优先级和建议下一步。
-      includeOriginalMessage: true
-      includePermalink: true
-    reply:
-      inThread: true
-    dedupe:
-      enabled: true
-`
-
 export function generateChannelTasksYaml(args: GenerateChannelTasksYamlArgs): string {
-  const header = args.mode === 'example' ? EXAMPLE_HEADER : WORKSPACE_HEADER
-  return `${header}${BODY}`
+  if (args.mode === 'example') return CHANNEL_TASKS_EXAMPLE
+  return WORKSPACE_HEADER + stripExampleLeadingComments(CHANNEL_TASKS_EXAMPLE)
 }

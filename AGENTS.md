@@ -38,13 +38,13 @@
 ### Env / Config 变更联动规则
 对任何 env 变量或配置文件字段的引入/修改/删除，必须**同步检查**以下处（顺序即检查顺序）：
 1. **Schema**（运行时校验唯一权威）：`src/workspace/config.ts:ConfigSchema` / `src/channelTasks/config.ts:ChannelTasksConfigSchema`
-2. **模板 generator**（**单一权威**，onboard / upgrade / dashboard 都从这里取）：`src/workspace/templates/{config,env,channelTasks,system}.ts`
+2. **模板源**（**单一权威**，onboard / upgrade / dashboard 经 generator 间接读取）：`examples/{.env.example,config.example.yaml,channel-tasks.example.yaml,system.example.md,system.workspace.md}`；generator 在 `src/workspace/templates/{config,env,channelTasks,system}.ts`，只做选择和参数化，不内联模板正文
 3. **`agent-slack upgrade` CLI**：`src/workspace/upgrade.ts`。**通常无需手改**——upgrade 自动把 generator 里"用户文件缺失的顶层 key"追加到 workspace 的 `config.yaml` / `channel-tasks.yaml`；嵌套缺失（父存在子缺失）只列入告警，需用户手补
 4. **Dashboard 常用字段表单**：`src/dashboard/configFields.ts`。判断该字段是否常用：
    - 常用 → 加入 `COMMON_CONFIG_FIELDS`（path / label / type / options / help）
    - 不常用 → 不加，用户走 Raw YAML 兜底即可
 5. **运行时加载/装配**：`src/application/createApplication.ts` 等装配代码（如新字段需要在装配阶段读取）
-6. **根目录 `*.example.*`**：跑 `pnpm gen:examples` 重新生成；`src/workspace/templates/templates.test.ts` 守护测试断言字节一致，CI 漂移立即失败
+6. **`examples/` 模板源**：直接编辑对应文件；`src/workspace/templates/templates.test.ts` 守护 generator 输出（example mode 字节一致 + workspace mode 派生行为），CI 漂移立即失败
 7. **`.env` / `.agent-slack/.env.local`**（凭证类）：若新字段是 env，本地模板存在时只追加注释块，**不动已有值**；行为字段不放 env
 8. **相关 spec / README 对应段落**
 

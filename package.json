@@ -12,6 +12,7 @@
   },
   "files": [
     "bin",
+    "examples",
     "README.md"
   ],
   "scripts": {
@@ -31,8 +32,7 @@
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
     "typecheck": "tsc --noEmit",
-    "smoke": "tsx scripts/smoke.ts",
-    "gen:examples": "tsx scripts/gen-examples.ts"
+    "smoke": "tsx scripts/smoke.ts"
   },
   "publishConfig": {
     "access": "public",

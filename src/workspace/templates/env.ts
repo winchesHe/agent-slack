@@ -1,7 +1,11 @@
 // .env / .env.local 模板生成器。
 //
-// - generateEnvExample()：与根目录 .env.example 字节一致；守护测试断言。
+// - generateEnvExample()：直接返回 examples/.env.example 内容。
 // - generateEnvLocal(args)：onboard 根据用户输入写入 .agent-slack/.env.local。
+//
+// 模板源在 examples/.env.example；不要在本文件硬编码示例正文。
+
+import { ENV_EXAMPLE } from './_assets.ts'
 
 export interface SlackEnvCreds {
   slackBotToken: string
@@ -21,38 +25,19 @@ export type GenerateEnvLocalArgs =
       anthropicBaseUrl?: string
     })
 
-const TAIL_BLOCK = `
-# ---------- 日志 & 调试 ----------
-# 日志级别: trace | debug | info | warn | error
-LOG_LEVEL=info
+// 从 examples/.env.example 末尾切出公共尾部（日志 + Slack live E2E 段），
+// 让 .env.local 与 .env.example 的尾部内容自动同步。
+const TAIL_SENTINEL = '# ---------- 日志 & 调试 ----------'
+const tailIndex = ENV_EXAMPLE.indexOf(TAIL_SENTINEL)
+if (tailIndex < 0) {
+  throw new Error(
+    `agent-slack: examples/.env.example 缺少哨兵注释 "${TAIL_SENTINEL}"，无法切出公共尾部。`,
+  )
+}
+const TAIL_BLOCK = '\n' + ENV_EXAMPLE.slice(tailIndex)
 
-# ---------- Slack live E2E（可选；真实发 Slack 消息）----------
-# SLACK_E2E_CHANNEL_ID=C...
-# SLACK_E2E_TRIGGER_USER_TOKEN=xoxp-...
-# SLACK_E2E_TIMEOUT_MS=240000
-# SLACK_E2E_RESULT_PATH=.agent-slack/e2e/result.json
-`
-
-// 根目录 .env.example：示例占位符版本（无真实凭证），开头带工程引言。
 export function generateEnvExample(): string {
-  return `# agent-slack 环境变量示例（复制为 .env.local；onboard 会在 workspace 生成 .agent-slack/.env.local）
-# 行为配置（model / provider / maxSteps / skills）全部在 config.yaml，env 仅放凭证/URL/debug。
-
-# ---------- Slack（必填）----------
-SLACK_BOT_TOKEN=xoxb-...
-SLACK_APP_TOKEN=xapp-...
-SLACK_SIGNING_SECRET=...
-
-# ---------- LiteLLM（config.yaml agent.provider=litellm 或 openai-responses 时必填）----------
-# openai-responses 复用同一组 LiteLLM 凭证（走网关的 /responses 端点）
-LITELLM_BASE_URL=http://localhost:4000
-LITELLM_API_KEY=sk-...
-
-# ---------- Anthropic（config.yaml agent.provider=anthropic 时必填）----------
-# ANTHROPIC_API_KEY=sk-ant-...
-# 可选；走自建网关时覆盖，默认 https://api.anthropic.com/v1
-# ANTHROPIC_BASE_URL=
-${TAIL_BLOCK}`
+  return ENV_EXAMPLE
 }
 
 // onboard 写入 .agent-slack/.env.local：基于用户实际填写的凭证。

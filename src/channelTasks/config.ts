@@ -140,7 +140,6 @@ export async function loadChannelTasksConfigFile(
   return parseChannelTasksConfig(YAML.parse(await readFile(configFile, 'utf8')))
 }
 
-// 模板从 `src/workspace/templates/channelTasks.ts` 单一权威生成（含两个示例规则）。
-// 历史上这里曾内联一份单规则模板，与根目录 channel-tasks.example.yaml 不同步；
-// 现已废弃内联模板，dashboard/upgrade 都从 generator 取，杜绝两份漂移。
+// 模板从 `src/workspace/templates/channelTasks.ts` 生成；正文源在 `examples/channel-tasks.example.yaml`。
+// dashboard / upgrade 都经 generator 取，杜绝多处漂移。
 export const CHANNEL_TASKS_CONFIG_TEMPLATE = generateChannelTasksYaml({ mode: 'workspace' })
