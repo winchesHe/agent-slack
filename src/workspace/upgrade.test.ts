@@ -7,7 +7,7 @@ describe('planUpgradeYaml — 顶层缺失 key 自动追加', () => {
   it('用户文件缺整段 daemon → 追加 daemon 块（含中文注释），结构可被 schema 解析', () => {
     const template = generateConfigYaml({
       mode: 'workspace',
-      model: 'gpt-5.4',
+      model: 'gpt-5.5',
       provider: 'litellm',
     })
     // 模拟旧版用户配置：没有 daemon 段
@@ -57,7 +57,7 @@ describe('planUpgradeYaml — 嵌套缺失', () => {
     const userYaml = `agent:
   name: default
   provider: litellm
-  model: gpt-5.4
+  model: gpt-5.5
   maxSteps: 50
 skills:
   enabled: ['*']

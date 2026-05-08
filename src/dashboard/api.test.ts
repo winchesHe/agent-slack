@@ -33,7 +33,7 @@ describe('updateConfigFields — 局部覆盖式表单提交', () => {
   it('已有 config 改 model + maxSteps：保留中文注释，新值落盘并通过 schema 校验', async () => {
     const original = generateConfigYaml({
       mode: 'workspace',
-      model: 'gpt-5.4',
+      model: 'gpt-5.5',
       provider: 'litellm',
     })
     writeFileSync(configFile, original, 'utf8')

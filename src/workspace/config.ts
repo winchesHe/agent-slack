@@ -4,7 +4,7 @@ export const ConfigSchema = z.object({
   agent: z
     .object({
       name: z.string().default('default'),
-      model: z.string().default('gpt-5.4'),
+      model: z.string().default('gpt-5.5'),
       maxSteps: z.number().int().positive().default(50),
       // provider 为唯一权威来源（env 不参与），默认 litellm
       provider: z.enum(['litellm', 'anthropic', 'openai-responses']).default('litellm'),

@@ -18,7 +18,7 @@ export interface GenerateConfigYamlArgs {
 }
 
 const DEFAULT_PROVIDER: ConfigYamlProvider = 'litellm'
-const DEFAULT_MODEL = 'gpt-5.4'
+const DEFAULT_MODEL = 'gpt-5.5'
 
 export function generateConfigYaml(args: GenerateConfigYamlArgs): string {
   if (args.mode === 'example') return CONFIG_EXAMPLE

@@ -14,7 +14,7 @@
 
 当前 `agent.provider='litellm'` 通过 `@ai-sdk/openai-compatible` 走 LiteLLM 网关的 `/chat/completions` 端点。该端点在带 `tools` 时**静默丢弃 `reasoning_effort`**（OpenAI 上游限制，见 BerriAI/litellm#23914），导致：
 
-- gpt-5.4 在 Slack 真实路径（始终带工具）下 `reasoning_tokens` 始终为 0
+- gpt-5.5 在 Slack 真实路径（始终带工具）下 `reasoning_tokens` 始终为 0
 - 客户端拿不到 reasoning summary 文字，Slack 用户看不到模型思考过程
 - 与 codex 终端体验脱节（codex 走 OpenAI Responses API，可逐字看 thinking）
 
@@ -24,7 +24,7 @@
 
 具体可观测产出：
 - Slack progress block 在模型推理阶段逐字流出 reasoning summary，前缀 `:fluent-thinking-3d:` 自定义 emoji
-- 终态 usage 行在 `gpt-5.4: 1.4k tokens` 后追加 `(132 thinking)` 子段，明示有多少 token 是 reasoning
+- 终态 usage 行在 `gpt-5.5: 1.4k tokens` 后追加 `(132 thinking)` 子段，明示有多少 token 是 reasoning
 - `agent.provider='litellm'` / `'anthropic'` 路径完全不动；现有部署零影响
 
 ### 1.3 非目标
@@ -71,7 +71,7 @@ Slack 用户 → SlackAdapter → ConversationOrchestrator
 agent: z.object({
   // 既有字段不动
   name: z.string().default('default'),
-  model: z.string().default('gpt-5.4'),
+  model: z.string().default('gpt-5.5'),
   maxSteps: z.number().int().positive().default(50),
 
   // provider 枚举扩展：新增 'openai-responses'
@@ -99,7 +99,7 @@ agent: z.object({
 ```yaml
 agent:
   provider: openai-responses    # 切到新路径
-  model: gpt-5.4
+  model: gpt-5.5
   responses:                    # 全用默认即可省略整段
     reasoningEffort: medium
     reasoningSummary: auto
@@ -115,7 +115,7 @@ agent:
 
 `package.json` 新增 `@ai-sdk/openai@^1.3.24`。已验证：
 - 提供 `provider.responses(modelId)` factory
-- `OpenAIResponsesModelId` 含 `(string & {})`，接受任意模型名（如 `gpt-5.4`）
+- `OpenAIResponsesModelId` 含 `(string & {})`，接受任意模型名（如 `gpt-5.5`）
 - `OpenAIProviderSettings` 支持 `baseURL` / `apiKey` / `headers` / `compatibility` / `fetch`
 - 与 `ai@^4.0.0` 兼容（peerDeps `zod ^3`）
 
@@ -125,7 +125,7 @@ agent:
 if (modelId.startsWith("o") || modelId.startsWith("gpt-5")) { ... isReasoningModel: true ... }
 ```
 
-v1.3.22 及更早只检测 `startsWith("o")`，`gpt-5.4` 不会触发 reasoning 字段注入到请求体——会导致这个 spec 的所有 thinking 表现完全无效。**实施时必须 ≥ 1.3.24**。
+v1.3.22 及更早只检测 `startsWith("o")`，`gpt-5.5` 不会触发 reasoning 字段注入到请求体——会导致这个 spec 的所有 thinking 表现完全无效。**实施时必须 ≥ 1.3.24**。
 
 ### 4.2 `src/application/createApplication.ts`
 
@@ -326,13 +326,13 @@ for (const model of usage.modelUsage) {
 
 最终 Slack 看到（举例）：
 ```
-:agent_time: 5.4s · $0.013 · gpt-5.4: 1.4k tokens (132 thinking) · :agent_memory: 1 memory · :agent_tool: 3 tools
+:agent_time: 5.4s · $0.013 · gpt-5.5: 1.4k tokens (132 thinking) · :agent_memory: 1 memory · :agent_tool: 3 tools
 ```
 
 **双括号视觉考量**：若同一 model 段同时触发 `(<X>% cache)` 和 `(N thinking)`，会出现：
 
 ```
-gpt-5.4: 1.4k tokens (62% cache) (132 thinking)
+gpt-5.5: 1.4k tokens (62% cache) (132 thinking)
 ```
 
 接受此形态——括号语义边界清晰（一是命中率、一是思考子集），且同时出现要求模型既高 cache hit 又有 reasoning，实际不常见。如未来视觉问题再合并成 `(62% cache · 132 thinking)`。

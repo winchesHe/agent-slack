@@ -51,7 +51,7 @@ function buildDeps(o: BuildDepsOverrides = {}): {
     litellmKey: o.answers?.litellmKey ?? 'sk-test',
     anthropicKey: o.answers?.anthropicKey ?? 'sk-ant-xxx',
     anthropicBaseUrl: o.answers?.anthropicBaseUrl ?? '',
-    model: o.answers?.model ?? 'gpt-5.4',
+    model: o.answers?.model ?? 'gpt-5.5',
     confirmProceed: o.answers?.confirmProceed ?? true,
   }
   const textQueue =
@@ -109,7 +109,7 @@ describe('runOnboard', () => {
     expect(fs.dirs.has(path.join(root, 'skills'))).toBe(true)
     expect(fs.dirs.has(path.join(root, 'logs'))).toBe(true)
 
-    expect(fs.files.get(`${root}/config.yaml`)).toContain('model: gpt-5.4')
+    expect(fs.files.get(`${root}/config.yaml`)).toContain('model: gpt-5.5')
     expect(fs.files.get(`${root}/system.md`)).toContain('System Prompt')
     expect(fs.files.get(`${root}/.env.local`)).toContain('SLACK_BOT_TOKEN=xoxb-test')
     expect(fs.files.get(`${root}/.env.local`)).toContain('LITELLM_API_KEY=sk-test')

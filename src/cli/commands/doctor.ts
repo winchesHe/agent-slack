@@ -37,7 +37,7 @@ export async function doctorCommand(opts: { cwd: string }): Promise<void> {
   warn(
     'config.yaml 存在',
     existsSync(paths.configFile),
-    `缺失则使用默认配置（agent.name=default / model=gpt-5.4 / provider=litellm）。建议 agent-slack onboard 生成。`,
+    `缺失则使用默认配置（agent.name=default / model=gpt-5.5 / provider=litellm）。建议 agent-slack onboard 生成。`,
   )
   warn(
     'system.md 存在',

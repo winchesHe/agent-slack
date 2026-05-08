@@ -15,10 +15,10 @@ agent:
   provider: litellm
 
   # 模型 ID 需要和 provider 对应：
-  # - litellm: 由你的 LiteLLM 网关决定，例如 gpt-5.4
+  # - litellm: 由你的 LiteLLM 网关决定，例如 gpt-5.5
   # - anthropic: 例如 claude-sonnet-4-5
   # - openai-responses: gpt-5* 系列（必须 OpenAI reasoning 模型）
-  model: gpt-5.4
+  model: gpt-5.5
 
   # 单轮 agent run 最多调用模型/工具的步数。
   maxSteps: 50

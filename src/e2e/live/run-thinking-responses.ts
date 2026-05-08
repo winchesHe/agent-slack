@@ -59,7 +59,7 @@ async function rewriteCwdConfig(): Promise<{ original: string }> {
   const next = [
     'agent:',
     '  provider: openai-responses',
-    '  model: gpt-5.4',
+    '  model: gpt-5.5',
     '  responses:',
     // medium 是 spec 默认。low 在简单 prompt 下经常 reasoning_tokens=0；medium 更稳定地触发 reasoning 报告。
     '    reasoningEffort: medium',

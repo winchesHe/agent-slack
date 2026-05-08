@@ -17,10 +17,7 @@ import {
   generateSystemMd,
 } from './index.ts'
 
-const examplesDir = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  '../../../examples',
-)
+const examplesDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../examples')
 
 function readExample(name: string): string {
   return readFileSync(path.join(examplesDir, name), 'utf8')
@@ -69,10 +66,10 @@ describe('templates: config workspace mode', () => {
     expect(out).toContain('provider: slack')
   })
 
-  it('未指定参数时使用默认值 litellm / gpt-5.4', () => {
+  it('未指定参数时使用默认值 litellm / gpt-5.5', () => {
     const out = generateConfigYaml({ mode: 'workspace' })
     expect(out).toMatch(/^\s*provider: litellm$/m)
-    expect(out).toMatch(/^\s*model: gpt-5\.4$/m)
+    expect(out).toMatch(/^\s*model: gpt-5\.5$/m)
   })
 })
 

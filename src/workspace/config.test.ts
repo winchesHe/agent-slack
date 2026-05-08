@@ -4,6 +4,7 @@ import { parseConfig, DEFAULT_CONFIG } from './config.ts'
 describe('parseConfig', () => {
   it('空配置返回默认值', () => {
     expect(parseConfig({})).toEqual(DEFAULT_CONFIG)
+    expect(DEFAULT_CONFIG.agent.model).toBe('gpt-5.5')
     expect(DEFAULT_CONFIG.agent.maxSteps).toBe(50)
     expect(DEFAULT_CONFIG.agent.context).toEqual({
       maxApproxChars: 900_000,
