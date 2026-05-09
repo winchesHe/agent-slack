@@ -72,7 +72,17 @@ export interface GetOrCreateArgs {
 export interface SessionStore {
   getOrCreate(args: GetOrCreateArgs): Promise<Session>
   getMeta(id: string): Promise<SessionMeta | undefined>
+  /**
+   * 默认行为（A3 持久化层切断）：返回最后一个 compact boundary 之后（含 boundary）的消息。
+   * 边界识别按权威性排序：
+   *   1. compact.jsonl 中的 messageId 与 jsonl 的 message.id 匹配
+   *   2. 严格正则 /^\[compact: (manual|auto)\]\n/（兼容旧 session）
+   *   3. 无 boundary → 返回全量
+   * 完整 transcript 用 loadFullTranscript 显式获取。
+   */
   loadMessages(id: string): Promise<CoreMessage[]>
+  /** 完整 jsonl，供审计 / dashboard / 数据导出使用 */
+  loadFullTranscript(id: string): Promise<CoreMessage[]>
   appendMessage(id: string, msg: CoreMessage): Promise<void>
   /** 追加一条非对话型运行事件到 <sessionDir>/events.jsonl（目录不存在则跳过） */
   appendEvent(
@@ -115,6 +125,35 @@ function normalizeAutoCompactState(meta: SessionMeta): AutoCompactState {
     ...defaultAutoCompactState(),
     ...meta.context?.autoCompact,
   }
+}
+
+const COMPACT_BOUNDARY_REGEX = /^\[compact: (manual|auto)\]\n/
+
+/**
+ * 找最后一个 compact boundary 的 index，按权威性排序：
+ * 1. compact.jsonl 中的 messageId 与 jsonl 的 message.id 匹配
+ * 2. assistant content 严格匹配正则（兼容旧 session）
+ * 3. 找不到返回 -1
+ */
+function findBoundaryIndex(
+  messages: CoreMessage[],
+  compactMessageIds: Set<string>,
+): number {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i]!
+    const id = (message as { id?: unknown }).id
+    if (typeof id === 'string' && compactMessageIds.has(id)) {
+      return i
+    }
+    if (
+      message.role === 'assistant' &&
+      typeof message.content === 'string' &&
+      COMPACT_BOUNDARY_REGEX.test(message.content)
+    ) {
+      return i
+    }
+  }
+  return -1
 }
 
 export function createSessionStore(paths: WorkspacePaths): SessionStore {
@@ -178,12 +217,20 @@ export function createSessionStore(paths: WorkspacePaths): SessionStore {
       return { id, dir, meta }
     },
 
-    async loadMessages(id) {
+    async loadFullTranscript(id) {
       const raw = await readFile(path.join(resolveDir(id), 'messages.jsonl'), 'utf8')
       return raw
         .split('\n')
         .filter((l) => l.length > 0)
         .map((l) => JSON.parse(l) as CoreMessage)
+    },
+
+    async loadMessages(id) {
+      const all = await this.loadFullTranscript(id)
+      const records = await this.loadCompactRecords(id)
+      const compactIds = new Set(records.map((r) => r.messageId))
+      const boundaryIdx = findBoundaryIndex(all, compactIds)
+      return boundaryIdx === -1 ? all : all.slice(boundaryIdx)
     },
 
     async appendMessage(id, msg) {

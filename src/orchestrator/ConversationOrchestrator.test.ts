@@ -396,7 +396,8 @@ describe('ConversationOrchestrator 粗事件消费', () => {
       failureCount: 0,
       breakerOpen: false,
     })
-    await expect(store.loadMessages(session.id)).resolves.toMatchObject([
+    // loadMessages 现在默认切片到 boundary 之后；用 loadFullTranscript 验证完整 jsonl 持久化。
+    await expect(store.loadFullTranscript(session.id)).resolves.toMatchObject([
       ...history,
       { role: 'user', content: 'current' },
       { role: 'assistant', content: '[compact: auto]\n摘要' },
@@ -551,8 +552,8 @@ describe('ConversationOrchestrator 粗事件消费', () => {
       { type: 'assistant-message', text: '[compact: manual]\n摘要' },
       { type: 'lifecycle', phase: 'completed', finalMessages },
     ])
-    const persistedMessages = await store.loadMessages('slack:C:t')
-    // toMatchObject：appendMessage 自动补 id，断言只关心 role/content/id 的相对存在性。
+    // 验证完整持久化用 loadFullTranscript（loadMessages 默认切片到 boundary 之后）。
+    const persistedMessages = await store.loadFullTranscript('slack:C:t')
     expect(persistedMessages).toMatchObject([
       { role: 'user', content: '/compact' },
       ...finalMessages,
@@ -1179,6 +1180,9 @@ describe('ConversationOrchestrator 粗事件消费', () => {
         }
       },
       async loadMessages(id) {
+        return [...(messagesBySession.get(id) ?? [])]
+      },
+      async loadFullTranscript(id) {
         return [...(messagesBySession.get(id) ?? [])]
       },
       async appendMessage(id, msg) {

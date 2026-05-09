@@ -77,6 +77,74 @@ describe('SessionStore', () => {
     expect((msgs[0] as { id?: unknown }).id).toBe(provided)
   })
 
+  describe('loadMessages 切片语义（A3 持久化层切断）', () => {
+    it('返回最后一个 compact boundary 之后（含 boundary）的消息', async () => {
+      const { store, session } = await createStoreWithSession('t-slice-record')
+      await store.appendMessage(session.id, { role: 'user', content: 'pre-1' })
+      await store.appendMessage(session.id, { role: 'assistant', content: 'pre-2' })
+      const summaryId = '11111111-1111-4111-8111-111111111111'
+      await store.appendMessage(session.id, {
+        id: summaryId,
+        role: 'assistant',
+        content: '[compact: auto]\nsummary body',
+      } as CoreMessage)
+      await store.appendCompactRecord(session.id, {
+        schemaVersion: 1,
+        messageId: summaryId,
+        mode: 'auto',
+        createdAt: new Date().toISOString(),
+      })
+      await store.appendMessage(session.id, { role: 'user', content: 'post-1' })
+
+      const sliced = await store.loadMessages(session.id)
+      expect(sliced).toHaveLength(2)
+      expect((sliced[0] as { id?: unknown }).id).toBe(summaryId)
+      expect(sliced[1]).toMatchObject({ role: 'user', content: 'post-1' })
+
+      // loadFullTranscript 仍返回完整 4 条
+      const full = await store.loadFullTranscript(session.id)
+      expect(full).toHaveLength(4)
+    })
+
+    it('compact.jsonl 缺失时回退到严格正则匹配 (兼容旧 session)', async () => {
+      const { store, session } = await createStoreWithSession('t-slice-fallback')
+      await store.appendMessage(session.id, { role: 'user', content: 'pre-1' })
+      await store.appendMessage(session.id, {
+        role: 'assistant',
+        content: '[compact: manual]\nlegacy summary',
+      })
+      await store.appendMessage(session.id, { role: 'user', content: 'post-1' })
+
+      // 不写 compact.jsonl 模拟旧 session
+      const sliced = await store.loadMessages(session.id)
+      expect(sliced).toHaveLength(2)
+      expect(sliced[0]).toMatchObject({ content: '[compact: manual]\nlegacy summary' })
+    })
+
+    it('严格正则不识别散文中的 [compact: 前缀（避免假阳性）', async () => {
+      const { store, session } = await createStoreWithSession('t-slice-strict')
+      await store.appendMessage(session.id, { role: 'user', content: 'pre-1' })
+      // assistant 在散文里用 "[compact:..." 文学化表达
+      await store.appendMessage(session.id, {
+        role: 'assistant',
+        content: '[compact: 这次任务的核心是...] 接下来我会...',
+      })
+      await store.appendMessage(session.id, { role: 'user', content: 'post-1' })
+
+      const sliced = await store.loadMessages(session.id)
+      // 严格正则不识别该用法 → 返回全量
+      expect(sliced).toHaveLength(3)
+    })
+
+    it('完全无 boundary 时返回全量（兼容无 compact 历史的会话）', async () => {
+      const { store, session } = await createStoreWithSession('t-slice-empty')
+      await store.appendMessage(session.id, { role: 'user', content: 'a' })
+      await store.appendMessage(session.id, { role: 'assistant', content: 'b' })
+      const sliced = await store.loadMessages(session.id)
+      expect(sliced).toHaveLength(2)
+    })
+  })
+
   it('append + loadMessages 保留 assistant tool-call 与 tool-result 原样顺序', async () => {
     const { store, session } = await createStoreWithSession('t-tool')
     const messages: CoreMessage[] = [
