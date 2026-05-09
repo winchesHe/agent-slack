@@ -3,7 +3,6 @@ import type { CoreMessage } from 'ai'
 import {
   MODEL_CONTEXT_PRUNED_NOTICE_TITLE,
   TOOL_RESULT_COMPACTED_NOTICE_TITLE,
-  buildCompactCandidateMessages,
   buildModelMessages,
   estimateMessagesChars,
   type ModelMessageBudget,
@@ -30,10 +29,6 @@ function assistant(content: string): CoreMessage {
 
 function compactSummary(content = '摘要'): CoreMessage {
   return assistant(`[compact: manual]\n${content}`)
-}
-
-function structuredCompactSummary(id: string, content = '摘要'): CoreMessage {
-  return { id, role: 'assistant', content } as CoreMessage
 }
 
 function toolPair(toolCallId: string): CoreMessage[] {
@@ -178,63 +173,20 @@ describe('buildModelMessages', () => {
     expect(messages).not.toContainEqual(user('a'.repeat(80)))
   })
 
-  it('存在 compact summary 时从最后一次 compact 边界后续接', () => {
-    const compact = compactSummary('旧历史摘要')
-    const history = [user('old-before'), assistant('old-answer'), compact, user('after-compact')]
+  it('history[0] 是 compact boundary 时保留 boundary 并续接 tail', () => {
+    // A3 切片后：history 由 SessionStore.loadMessages 切片提供；
+    // 若存在 boundary 必为 history[0]——buildModelMessages 不再扫描旧 boundary。
+    const compact = compactSummary('boundary')
     const current = user('current')
 
     const messages = buildModelMessages({
-      history,
+      history: [compact, user('after-compact')],
       userMessage: current,
       budget: defaultBudget,
       messagesJsonlPath,
     })
 
     expect(messages).toEqual([compact, user('after-compact'), current])
-  })
-
-  it('优先使用 compactMessageIds 识别结构化 compact boundary', () => {
-    const compact = structuredCompactSummary('msg-compact', '结构化摘要')
-    const current = user('current')
-
-    const messages = buildModelMessages({
-      history: [user('old-before'), compact, user('after-compact')],
-      userMessage: current,
-      budget: defaultBudget,
-      messagesJsonlPath,
-      compactMessageIds: ['msg-compact'],
-    })
-
-    expect(messages).toEqual([compact, user('after-compact'), current])
-  })
-
-  it('compact candidate 只统计最后 compact boundary 后的候选视图', () => {
-    const firstCompact = compactSummary('first')
-    const lastCompact = compactSummary('last')
-    const current = user('current')
-
-    const messages = buildCompactCandidateMessages({
-      history: [user('stale'), firstCompact, user('old-tail'), lastCompact, user('fresh-tail')],
-      userMessage: current,
-    })
-
-    expect(messages).toEqual([lastCompact, user('fresh-tail'), current])
-    expect(estimateMessagesChars(messages)).toBeGreaterThan(0)
-  })
-
-  it('多次 compact 时只保留最后一次 compact summary', () => {
-    const firstCompact = compactSummary('first')
-    const lastCompact = compactSummary('last')
-    const current = user('current')
-
-    const messages = buildModelMessages({
-      history: [firstCompact, user('stale-tail'), lastCompact, assistant('fresh-tail')],
-      userMessage: current,
-      budget: defaultBudget,
-      messagesJsonlPath,
-    })
-
-    expect(messages).toEqual([lastCompact, assistant('fresh-tail'), current])
   })
 
   it('compact boundary 后的 tail 超预算时保留 compact summary 并裁剪 tail', () => {

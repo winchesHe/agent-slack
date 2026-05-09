@@ -13,8 +13,8 @@ export interface ModelMessageBudget {
 
 export const DEFAULT_MODEL_MESSAGE_BUDGET: ModelMessageBudget = {
   // 字符数预算 (JSON.stringify 后)，约 3 字符 ≈ 1 token。
-  // 900_000 字符 ≈ 300k tokens，对应 400k token 窗口模型；triggerRatio 0.8 时在 ~240k tokens 触发压缩。
-  maxApproxChars: 900_000,
+  // 1_000_000 字符 ≈ 250K-330K tokens，覆盖 Sonnet 1M context beta；triggerRatio 0.8 时在 ~800K chars / ~270K tokens 触发压缩。
+  maxApproxChars: 1_000_000,
   // 仅作模型视图尾部保留窗口；不参与 autoCompact 触发判定（条数与 token 无稳定换算关系）。
   keepRecentMessages: 80,
   keepRecentToolResults: 20,
@@ -26,16 +26,20 @@ export const DEFAULT_MODEL_MESSAGE_BUDGET: ModelMessageBudget = {
 }
 
 export interface BuildModelMessagesArgs {
+  /**
+   * 已经过 SessionStore.loadMessages 切片的历史——若存在 compact boundary，
+   * 必为 history[0]（含 boundary 自身）。本函数不再扫描旧 boundary。
+   */
   history: CoreMessage[]
   userMessage: CoreMessage
   budget: ModelMessageBudget
   messagesJsonlPath: string
-  compactMessageIds?: string[]
 }
 
 export const MODEL_CONTEXT_PRUNED_NOTICE_TITLE = '[历史上下文已按预算裁剪]'
 export const TOOL_RESULT_COMPACTED_NOTICE_TITLE = '[旧工具结果已压缩]'
-export const COMPACT_SUMMARY_PREFIX = '[compact:'
+
+const COMPACT_BOUNDARY_REGEX = /^\[compact: (manual|auto)\]\n/
 
 function estimateMessageChars(message: CoreMessage): number {
   return JSON.stringify(message).length
@@ -56,51 +60,12 @@ function createCompactedToolResultNotice(messagesJsonlPath: string): string {
   return `${TOOL_RESULT_COMPACTED_NOTICE_TITLE}；完整内容保存在：${messagesJsonlPath}`
 }
 
-function messageId(message: CoreMessage): string | undefined {
-  return 'id' in message && typeof message.id === 'string' ? message.id : undefined
-}
-
-function isCompactSummaryMessage(message: CoreMessage, compactMessageIds: Set<string>): boolean {
-  const id = messageId(message)
-  if (id && compactMessageIds.has(id)) {
-    return true
-  }
-
-  return message.role === 'assistant' && typeof message.content === 'string'
-    ? message.content.trimStart().startsWith(COMPACT_SUMMARY_PREFIX)
-    : false
-}
-
-function splitHistoryAtLastCompact(
-  history: CoreMessage[],
-  compactMessageIds: Set<string>,
-): {
-  compactSummary: CoreMessage | undefined
-  tailHistory: CoreMessage[]
-} {
-  for (let i = history.length - 1; i >= 0; i -= 1) {
-    const message = history[i]!
-    if (isCompactSummaryMessage(message, compactMessageIds)) {
-      return {
-        compactSummary: message,
-        tailHistory: history.slice(i + 1),
-      }
-    }
-  }
-
-  return { compactSummary: undefined, tailHistory: history }
-}
-
-export function buildCompactCandidateMessages(input: {
-  compactMessageIds?: string[]
-  history: CoreMessage[]
-  userMessage: CoreMessage
-}): CoreMessage[] {
-  const { compactSummary, tailHistory } = splitHistoryAtLastCompact(
-    input.history,
-    new Set(input.compactMessageIds ?? []),
+function isBoundaryMessage(message: CoreMessage): boolean {
+  return (
+    message.role === 'assistant' &&
+    typeof message.content === 'string' &&
+    COMPACT_BOUNDARY_REGEX.test(message.content)
   )
-  return [...(compactSummary ? [compactSummary] : []), ...tailHistory, input.userMessage]
 }
 
 function assistantToolCallIds(message: CoreMessage): Set<string> {
@@ -248,7 +213,6 @@ function compactOldToolResults(
 }
 
 export function buildModelMessages({
-  compactMessageIds,
   history,
   userMessage,
   budget,
@@ -257,14 +221,18 @@ export function buildModelMessages({
   const maxApproxChars = Math.max(1, budget.maxApproxChars)
   const keepRecentMessages = Math.max(1, budget.keepRecentMessages)
   const keepRecentToolResults = Math.max(1, budget.keepRecentToolResults)
-  const { compactSummary, tailHistory } = splitHistoryAtLastCompact(
-    history,
-    new Set(compactMessageIds ?? []),
-  )
+
+  // history 来自 SessionStore.loadMessages 切片版：若存在 boundary，必为 history[0]。
+  // boundary pin 住，预算裁剪只作用于 boundary 之后的 tail。
+  const hasBoundary = history.length > 0 && isBoundaryMessage(history[0]!)
+  const boundaryPrefix = hasBoundary ? [history[0]!] : []
+  const tailHistory = hasBoundary ? history.slice(1) : history
+
   let selectedStart = tailHistory.length
   let selectedChars =
-    estimateMessageChars(userMessage) + (compactSummary ? estimateMessageChars(compactSummary) : 0)
-  let selectedMessageCount = 1 + (compactSummary ? 1 : 0)
+    estimateMessageChars(userMessage) +
+    (hasBoundary ? estimateMessageChars(history[0]!) : 0)
+  let selectedMessageCount = 1 + (hasBoundary ? 1 : 0)
 
   for (let i = tailHistory.length - 1; i >= 0; i -= 1) {
     const nextMessage = tailHistory[i]!
@@ -279,11 +247,9 @@ export function buildModelMessages({
     selectedMessageCount = nextMessageCount
   }
 
-  const prefixMessages = compactSummary ? [compactSummary] : []
-
   if (selectedStart === 0) {
     return compactOldToolResults(
-      [...prefixMessages, ...tailHistory, userMessage],
+      [...boundaryPrefix, ...tailHistory, userMessage],
       keepRecentToolResults,
       messagesJsonlPath,
     )
@@ -292,7 +258,7 @@ export function buildModelMessages({
   const adjustedStart = adjustStartToPreserveToolPairs(tailHistory, selectedStart)
   if (adjustedStart === 0) {
     return compactOldToolResults(
-      [...prefixMessages, ...tailHistory, userMessage],
+      [...boundaryPrefix, ...tailHistory, userMessage],
       keepRecentToolResults,
       messagesJsonlPath,
     )
@@ -300,7 +266,7 @@ export function buildModelMessages({
 
   return compactOldToolResults(
     [
-      ...prefixMessages,
+      ...boundaryPrefix,
       createPrunedNotice(messagesJsonlPath),
       ...tailHistory.slice(adjustedStart),
       userMessage,

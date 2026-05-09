@@ -10,7 +10,6 @@ import type { AbortRegistry } from './AbortRegistry.ts'
 import { emitSyntheticFailed } from './emitSyntheticFailed.ts'
 import {
   DEFAULT_MODEL_MESSAGE_BUDGET,
-  buildCompactCandidateMessages,
   buildModelMessages,
   estimateMessagesChars,
   type ModelMessageBudget,
@@ -98,9 +97,6 @@ export function createConversationOrchestrator(
     })
   }
 
-  const compactMessageIds = (records: Awaited<ReturnType<SessionStore['loadCompactRecords']>>) =>
-    records.map((record) => record.messageId)
-
   const appendCompactRecords = async (
     sessionId: string,
     finalMessages: Array<{ id: string }>,
@@ -175,8 +171,9 @@ export function createConversationOrchestrator(
             })
             await deps.sessionStore.setStatus(session.id, 'running')
 
+            // loadMessages 默认切片到最后一个 compact boundary 之后（含 boundary）。
+            // candidate / model view 直接消费切片版，不再扫描旧 boundary。
             const history = await deps.sessionStore.loadMessages(session.id)
-            let compactRecords = await deps.sessionStore.loadCompactRecords(session.id)
             const userMsg: CoreMessage = { role: 'user', content: input.text }
             const mentionCommand = deps.mentionCommandRouter?.match(input.text)
             if (mentionCommand && deps.mentionCommandRouter) {
@@ -208,11 +205,9 @@ export function createConversationOrchestrator(
             let modelHistory = history
             if (deps.contextCompactor && autoCompactConfig?.enabled) {
               const autoCompactState = await deps.sessionStore.getAutoCompactState(session.id)
-              const candidateMessages = buildCompactCandidateMessages({
-                compactMessageIds: compactMessageIds(compactRecords),
-                history,
-                userMessage: userMsg,
-              })
+              // candidate = 切片后 history（含可能存在的 boundary）+ 当前 user message。
+              // 不再需要 buildCompactCandidateMessages——切片由 SessionStore 完成。
+              const candidateMessages: CoreMessage[] = [...history, userMsg]
 
               if (!autoCompactState.breakerOpen && shouldTriggerAutoCompact(candidateMessages)) {
                 let autoCompactActivitySent = false
@@ -247,8 +242,8 @@ export function createConversationOrchestrator(
                       lastAttemptAt: new Date().toISOString(),
                       lastSuccessAt: new Date().toISOString(),
                     })
+                    // 重新 loadMessages：自动从新 boundary 之后切片（boundary 自身在内）
                     modelHistory = await deps.sessionStore.loadMessages(session.id)
-                    compactRecords = await deps.sessionStore.loadCompactRecords(session.id)
                   }
                 } catch (error) {
                   log.warn('auto compact 失败，回退到模型视图裁剪', error)
@@ -262,7 +257,6 @@ export function createConversationOrchestrator(
             }
 
             const modelMessages = buildModelMessages({
-              compactMessageIds: compactMessageIds(compactRecords),
               history: modelHistory,
               userMessage: userMsg,
               budget: modelMessageBudget,
