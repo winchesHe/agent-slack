@@ -11,7 +11,9 @@ export const COMPACT_SYSTEM_PROMPT = `你是 agent-slack 的上下文压缩助�
 - 不输出本地绝对路径、session/jsonl 路径、完整记录路径。
 - 输出 Markdown；不要输出 JSON；不要调用工具；不超过 8 条要点。`
 
-const COMPACT_INPUT_MAX_CHARS = 120_000
+// 过渡缓解：与 maxApproxChars 默认值（1M）同量级，避免"前 N K 静默丢失"。
+// TODO(Chunk 3)：删除该硬截，改用三层处理（tool_result 占位 + 剥图 + PTL retry）。
+const COMPACT_INPUT_MAX_CHARS = 1_000_000
 const COMPACT_SUMMARY_MAX_CHARS = 1_200
 
 function serializeMessages(messages: CoreMessage[]): string {
