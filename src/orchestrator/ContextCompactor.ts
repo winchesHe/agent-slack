@@ -65,6 +65,10 @@ function assistantMessage(content: string): CompletedFinalMessages[number] {
 export function createContextCompactor(deps: ContextCompactorDeps): ContextCompactor {
   const log = deps.logger.withTag('context:compact')
 
+  // 切片版 history 通常只在 head 含 boundary 自身——manualCompact 不该把上一次
+  // boundary 再压一次（避免摘要叠摘要），过滤之；严格正则避免假阳性。
+  const COMPACT_BOUNDARY_REGEX = /^\[compact: (manual|auto)\]\n/
+
   return {
     async manualCompact(args) {
       const compactableMessages = args.history.filter(
@@ -72,7 +76,7 @@ export function createContextCompactor(deps: ContextCompactorDeps): ContextCompa
           !(
             message.role === 'assistant' &&
             typeof message.content === 'string' &&
-            message.content.startsWith('[compact:')
+            COMPACT_BOUNDARY_REGEX.test(message.content)
           ),
       )
 
