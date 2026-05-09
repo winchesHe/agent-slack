@@ -56,6 +56,27 @@ describe('SessionStore', () => {
     expect(msgs[0]).toMatchObject({ role: 'user', content: 'hi' })
   })
 
+  it('appendMessage 在缺失 id 时自动补 randomUUID', async () => {
+    const { store, session } = await createStoreWithSession('t-id-assign')
+    await store.appendMessage(session.id, { role: 'user', content: 'hello' })
+    const msgs = await store.loadMessages(session.id)
+    const id = (msgs[0] as { id?: unknown }).id
+    expect(typeof id).toBe('string')
+    expect(id).toMatch(/^[0-9a-f-]{36}$/)
+  })
+
+  it('appendMessage 保留显式提供的 id', async () => {
+    const { store, session } = await createStoreWithSession('t-id-keep')
+    const provided = '00000000-0000-4000-0000-000000000001'
+    await store.appendMessage(session.id, {
+      id: provided,
+      role: 'user',
+      content: 'hi',
+    } as CoreMessage)
+    const msgs = await store.loadMessages(session.id)
+    expect((msgs[0] as { id?: unknown }).id).toBe(provided)
+  })
+
   it('append + loadMessages 保留 assistant tool-call 与 tool-result 原样顺序', async () => {
     const { store, session } = await createStoreWithSession('t-tool')
     const messages: CoreMessage[] = [
@@ -91,7 +112,9 @@ describe('SessionStore', () => {
     }
 
     const msgs = await store.loadMessages(session.id)
-    expect(msgs).toEqual(messages)
+    // 用 toMatchObject 而非 toEqual——SessionStore 现在会自动补 id 字段，
+    // 该测试目的是验证 tool-call/tool-result 顺序与结构，不是 id 字段缺省。
+    expect(msgs).toMatchObject(messages)
   })
 
   it('setStatus 接受 stopped', async () => {

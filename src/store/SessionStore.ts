@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile, appendFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import type { CoreMessage } from 'ai'
 import type { WorkspacePaths } from '@/workspace/paths.ts'
@@ -186,7 +187,15 @@ export function createSessionStore(paths: WorkspacePaths): SessionStore {
     },
 
     async appendMessage(id, msg) {
-      await appendFile(path.join(resolveDir(id), 'messages.jsonl'), JSON.stringify(msg) + '\n')
+      // 强制 id：边界识别（compact.jsonl.messageId）依赖此字段稳定存在；
+      // CoreMessage 类型层不带 id，但 jsonl 由 SessionStore 自己写自己读，
+      // 运行时多带 id 不影响 AI SDK 调用（送进 streamText 前不读 jsonl）。
+      const existing = (msg as { id?: unknown }).id
+      const withId =
+        typeof existing === 'string' && existing.length > 0
+          ? msg
+          : { ...msg, id: randomUUID() }
+      await appendFile(path.join(resolveDir(id), 'messages.jsonl'), JSON.stringify(withId) + '\n')
     },
 
     async appendEvent(args, event) {

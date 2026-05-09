@@ -305,7 +305,8 @@ describe('ConversationOrchestrator 粗事件消费', () => {
 
     await orch.handle(makeInput({ text: 'current' }), sink)
 
-    expect(executorMessages).toEqual([
+    // toMatchObject：history 经 appendMessage 后多了 id 字段，断言只关心 role/content 与裁剪 notice 内容。
+    expect(executorMessages).toMatchObject([
       {
         role: 'user',
         content: `[历史上下文已按预算裁剪]\n本次仅加载最近对话片段；完整会话记录仍保存在：${path.join(
@@ -318,7 +319,8 @@ describe('ConversationOrchestrator 粗事件消费', () => {
       { role: 'user', content: 'current' },
     ])
     const persistedMessages = await store.loadMessages(session.id)
-    expect(persistedMessages).toEqual([...history, { role: 'user', content: 'current' }])
+    // toMatchObject：appendMessage 自动补 id，断言只关心 role/content。
+    expect(persistedMessages).toMatchObject([...history, { role: 'user', content: 'current' }])
   })
 
   it('达到自动 compact 阈值时先整理上下文，再继续主 executor', async () => {
@@ -371,8 +373,13 @@ describe('ConversationOrchestrator 粗事件消费', () => {
 
     await orch.handle(makeInput({ text: 'current' }), sink)
 
-    expect(contextCompactor.autoCompact).toHaveBeenCalledWith({
-      session: expect.objectContaining({ id: session.id }),
+    // toMatchObject：messages 元素被 SessionStore 自动补 id，仅断言 role/content。
+    expect(contextCompactor.autoCompact).toHaveBeenCalledOnce()
+    const autoCompactArg = (
+      contextCompactor.autoCompact as unknown as ReturnType<typeof vi.fn>
+    ).mock.calls[0]?.[0] as { session: { id: string }; messages: CoreMessage[]; trigger: string }
+    expect(autoCompactArg).toMatchObject({
+      session: { id: session.id },
       messages: [...history, { role: 'user', content: 'current' }],
       trigger: 'budget',
     })
@@ -545,7 +552,11 @@ describe('ConversationOrchestrator 粗事件消费', () => {
       { type: 'lifecycle', phase: 'completed', finalMessages },
     ])
     const persistedMessages = await store.loadMessages('slack:C:t')
-    expect(persistedMessages).toEqual([{ role: 'user', content: '/compact' }, ...finalMessages])
+    // toMatchObject：appendMessage 自动补 id，断言只关心 role/content/id 的相对存在性。
+    expect(persistedMessages).toMatchObject([
+      { role: 'user', content: '/compact' },
+      ...finalMessages,
+    ])
     await expect(store.loadCompactRecords('slack:C:t')).resolves.toMatchObject([
       {
         schemaVersion: 1,
