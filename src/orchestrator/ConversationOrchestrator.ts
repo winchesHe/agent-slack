@@ -71,17 +71,11 @@ export function createConversationOrchestrator(
       return false
     }
 
+    // 触发只看体积（当前以字符估算近似 token；后续会切到真实 input_tokens）。
+    // 不再用消息条数兜底——条数与 token 没稳定换算关系，会在 token 充足时过早触发。
     const triggerRatio = Math.min(Math.max(autoCompactConfig.triggerRatio, 0.01), 1)
     const charThreshold = Math.max(1, Math.ceil(modelMessageBudget.maxApproxChars * triggerRatio))
-    const messageThreshold = Math.max(
-      1,
-      Math.ceil(modelMessageBudget.keepRecentMessages * triggerRatio),
-    )
-
-    return (
-      estimateMessagesChars(candidateMessages) >= charThreshold ||
-      candidateMessages.length >= messageThreshold
-    )
+    return estimateMessagesChars(candidateMessages) >= charThreshold
   }
 
   const recordAutoCompactFailure = async (

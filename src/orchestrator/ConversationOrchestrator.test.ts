@@ -358,7 +358,9 @@ describe('ConversationOrchestrator 粗事件消费', () => {
       abortRegistry: new AbortRegistry<string>(),
       systemPrompt: '',
       modelMessageBudget: {
-        maxApproxChars: 10_000,
+        // 字符体积阈值故意调小（80% × 50 = 40 chars），让 3 条短消息触发；
+        // 不再依赖已被移除的"消息条数兜底触发"。
+        maxApproxChars: 50,
         keepRecentMessages: 3,
         keepRecentToolResults: 20,
         autoCompact: { enabled: true, triggerRatio: 0.8, maxFailures: 2 },
@@ -436,7 +438,8 @@ describe('ConversationOrchestrator 粗事件消费', () => {
       abortRegistry: new AbortRegistry<string>(),
       systemPrompt: '',
       modelMessageBudget: {
-        maxApproxChars: 10_000,
+        // 同上：用字符阈值（80% × 50 = 40 chars）让短消息触发 compact。
+        maxApproxChars: 50,
         keepRecentMessages: 3,
         keepRecentToolResults: 20,
         autoCompact: { enabled: true, triggerRatio: 0.8, maxFailures: 2 },

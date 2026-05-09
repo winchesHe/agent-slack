@@ -273,10 +273,10 @@ agent:
 ```
 
 - `maxApproxChars`：模型视图的近似字符预算。默认 `900000`，作为跨 provider 的保守上限，避免把文件型 transcript 无限制塞入 prompt。
-- `keepRecentMessages`：最多保留的最近消息数。默认 `80`，用于限制大量短消息导致的无限增长。
+- `keepRecentMessages`：模型视图末尾保留的最近消息数上限。默认 `80`，**仅用于 `buildModelMessages` 的尾部窗口裁剪**；不参与 autoCompact 触发判定。
 - `keepRecentToolResults`：最多保留的最近完整 tool-result 数。默认 `20`，更旧 tool-result 只在模型视图中替换为占位提示。
 - `autoCompact.enabled`：自动 compact 默认开启。它只在主流程前置阶段运行；手动 `/compact` 不受该开关影响。
-- `autoCompact.triggerRatio`：自动触发阈值，默认 `0.8`。当最后 compact boundary 之后的候选模型视图达到 `maxApproxChars` 或 `keepRecentMessages` 的 80% 时触发。
+- `autoCompact.triggerRatio`：自动触发阈值，默认 `0.8`。当最后 compact boundary 之后的候选模型视图字符体积达到 `maxApproxChars` 的 80% 时触发；**消息条数不再作为触发条件**（条数与 token 没有稳定换算关系，会在 token 充足时过早触发并导致摘要叠摘要的信息衰减）。
 - `autoCompact.maxFailures`：同 session 自动 compact 连续失败上限，默认 `2`。达到上限后本 session 自动 compact 熔断，主流程继续使用 Phase 1/2。
 
 预算是 best-effort：为保护 tool-call/tool-result 配对，实际输出可能略超预算；正确性优先于硬截断。
@@ -406,8 +406,8 @@ compact marker 必须是稳定可识别的数据，而不是只能靠自然语�
 触发规则：
 
 - 默认开启：`agent.context.autoCompact.enabled = true`。
-- 字符阈值：`candidateApproxChars >= maxApproxChars * triggerRatio`。
-- 消息数阈值：`candidateMessageCount >= keepRecentMessages * triggerRatio`。
+- 体积阈值：`candidateApproxChars >= maxApproxChars * triggerRatio`（当前用字符近似 token；后续切片会替换为最近一次 API 响应的真实 input_tokens 与模型 context window 比对）。
+- **消息条数不再作为触发条件**：条数与 token 无稳定换算关系，密集 tool 调用 thread 会在条数到达阈值时被错误触发，造成摘要叠摘要、信息密度衰减。
 - 只统计最后 compact boundary 之后的候选视图，避免 append-only 完整历史导致每轮重复 compact。
 - 若 boundary 后有效消息少于 2 条，跳过 auto compact，避免生成空摘要。
 

@@ -82,7 +82,7 @@ agent:
   maxSteps: 50
   context:
     maxApproxChars: 900000      # 只限制发给模型的历史视图，不裁剪 messages.jsonl
-    keepRecentMessages: 80      # 最多加载最近消息数，避免短消息无限增长
+    keepRecentMessages: 80      # 模型视图末尾保留的最近消息数；仅作 buildModelMessages 尾部窗口，不参与 autoCompact 触发
     keepRecentToolResults: 20   # 最近 N 个工具结果保留完整；更旧结果仅在模型视图中压缩
     autoCompact:
       enabled: true             # 达到预算阈值时自动压缩上下文，然后继续本轮回复
