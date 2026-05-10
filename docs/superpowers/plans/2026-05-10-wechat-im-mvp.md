@@ -1935,3 +1935,1380 @@ src/im/wechat/
 Adapter / Renderer / EventSink 仍未引入（在 Chunk 3）。
 
 ---
+
+## Chunk 3: WechatAdapter / Renderer / EventSink + 端到端装配（S3）
+
+**Chunk 目标：** 实现 `WechatRenderer` / `WechatEventSink` / `WechatAdapter` 三件套并装配进 `createApplication`。本 chunk 完成后**仅启用 wechat 的工作区可完整工作**：扫码登录 → long-poll 收消息 → orchestrator 处理 → 文本回复送达。Slack 路径仍无回归；双开模式可同进程运行。
+
+**Chunk 验证终点（运行 `pnpm vitest run` 全绿 + 手动验证清单通过）：**
+- 新增 `WechatRenderer.test.ts` 全绿（事件 → 文本段；分段策略；工具调用摘要；failed 错误文案）
+- 新增 `WechatEventSink.test.ts` 全绿（finalize 顺序；段间 sleep；起始消息；段内失败处理）
+- 新增 `WechatAdapter.test.ts` 全绿（凭证存在/不存在路径；processMessage；errcode -14 relogin；stop abort）
+- 改造 `createApplication.test.ts` 全绿（仅 wechat 时 adapter 真实装配；双开两个 adapter）
+- 现有所有测试无回归
+- `pnpm tsc -b` 类型零错
+- 手动验证清单（spec §12.4）至少 #1（仅 wechat 文本 round-trip）和 #2（重启复用凭证）通过
+
+**前置依赖（来自 Chunk 1 / Chunk 2）：**
+- `src/im/types.ts` 的 `InboundMessage.imProvider` 已是 `ImProvider` union（含 `'wechat'`）
+- `src/store/SessionStore.ts` 的 `imProvider` 字段已升级为 union 且 `getOrCreate` / `appendEvent` 按 imProvider 分桶
+- `ctx.paths.wechatCredentialsFile: string` 已在 `WorkspacePaths` 定义并被 `resolveWorkspacePaths` 返回
+- `src/agent/tools/index.ts` 的 `buildBuiltinTools` 已按 `ctx.confirm` 条件注入
+- `WechatApi.sendText(toUserId: string, text: string, contextToken: string): Promise<void>` 签名（Chunk 2 定义）
+- `WechatApi.setToken(token: string): void` 方法（Chunk 2 定义）
+- `WechatApi.fetchQrCode()` / `pollQrStatus(qrcode)` / `getUpdates(buf, signal?)` 签名（Chunk 2 定义）
+- `CredentialsStore` 的 `load / save / clear` 接口（Chunk 2 定义）
+
+**参考文件**：
+- [external-references/CowAgent/channel/weixin/weixin_channel.py](../../../external-references/CowAgent/channel/weixin/weixin_channel.py)
+- spec §7（WechatAdapter）/ §8（Renderer / EventSink）/ §10（createApplication 装配）
+
+---
+
+### Task 3.1: `WechatRenderer` 实现 + 测试
+
+**Files:**
+- Create: `src/im/wechat/WechatRenderer.ts`
+- Create: `src/im/wechat/WechatRenderer.test.ts`
+
+按 spec §8.1：累积事件，最终产出 `string[]` 文本段列表。
+
+- [ ] **Step 3.1.1: 创建 `src/im/wechat/WechatRenderer.ts`**
+
+```ts
+import type { AgentExecutionEvent } from '@/core/events.ts'
+import type { Logger } from '@/logger/logger.ts'
+
+export interface WechatRendererDeps {
+  logger: Logger
+}
+
+export interface WechatRenderer {
+  /** 累积一个事件到 renderer 内部状态 */
+  onEvent(event: AgentExecutionEvent): void
+  /** finalize 时取出所有待发送的文本段 */
+  flush(): string[]
+  /** 起始消息文本（首段） */
+  readonly STARTING_MESSAGE: string
+}
+
+const TEXT_CHUNK_LIMIT = 4000
+const STARTING_MESSAGE = '开始处理...'
+
+export function createWechatRenderer(deps: WechatRendererDeps): WechatRenderer {
+  const log = deps.logger.withTag('wechat:renderer')
+  // 累积态
+  const assistantTexts: string[] = []
+  const toolNamesUsed = new Set<string>()
+  let terminalPhase: 'completed' | 'stopped' | 'failed' | undefined
+  let failedError: string | undefined
+
+  return {
+    STARTING_MESSAGE,
+
+    onEvent(event) {
+      switch (event.type) {
+        case 'assistant-message':
+          if (event.text.trim()) assistantTexts.push(event.text)
+          break
+        case 'activity-state':
+          // 注意：clear / newToolCalls 在 event.state 上（src/core/events.ts ActivityState union），不在 event 顶层
+          if (event.state.clear !== true && event.state.newToolCalls?.length) {
+            for (const name of event.state.newToolCalls) toolNamesUsed.add(name)
+          }
+          break
+        case 'lifecycle':
+          if (event.phase === 'completed' || event.phase === 'stopped' || event.phase === 'failed') {
+            terminalPhase = event.phase
+            if (event.phase === 'failed') failedError = event.error.message
+          }
+          break
+        case 'usage-info':
+          // wechat 不展示 usage
+          break
+      }
+    },
+
+    flush() {
+      const segments: string[] = []
+
+      // 工具调用摘要
+      if (toolNamesUsed.size > 0) {
+        const sorted = [...toolNamesUsed].sort()
+        segments.push(`🔧 使用了工具: ${sorted.join(', ')}`)
+      }
+
+      // assistant 文本拼接 + 分段
+      const fullText = assistantTexts.join('\n\n').trim()
+      if (fullText) {
+        segments.push(...splitText(fullText, TEXT_CHUNK_LIMIT))
+      }
+
+      // 失败态追加错误提示
+      if (terminalPhase === 'failed' && failedError) {
+        const safeError = failedError.split('\n')[0]?.slice(0, 200) ?? '未知错误'
+        segments.push(`⚠️ 处理失败：${safeError}`)
+      }
+
+      // 没任何输出时，至少回复一条占位文本，避免静默
+      if (segments.length === 0) {
+        log.warn('flush 时无任何 segment（assistant text 与 tool 调用都为空）')
+        segments.push('（本轮无输出）')
+      }
+
+      return segments
+    },
+  }
+}
+
+/** 按 \n\n / \n / 硬切 三级策略把超长文本分段 */
+export function splitText(text: string, limit: number): string[] {
+  if (text.length <= limit) return [text]
+  const chunks: string[] = []
+  let rest = text
+  while (rest.length > 0) {
+    if (rest.length <= limit) {
+      chunks.push(rest)
+      break
+    }
+    // 优先在 limit 以内的 \n\n 切
+    let cut = rest.lastIndexOf('\n\n', limit)
+    if (cut <= 0) cut = rest.lastIndexOf('\n', limit)
+    if (cut <= 0) cut = limit
+    chunks.push(rest.slice(0, cut))
+    rest = rest.slice(cut).replace(/^\n+/, '')
+  }
+  return chunks
+}
+```
+
+- [ ] **Step 3.1.2: 创建 `src/im/wechat/WechatRenderer.test.ts`**
+
+```ts
+import { describe, it, expect } from 'vitest'
+import { createWechatRenderer, splitText } from './WechatRenderer.ts'
+import type { AgentExecutionEvent } from '@/core/events.ts'
+
+const stubLogger = () => {
+  const make = (): { debug: () => void; info: () => void; warn: () => void; error: () => void; withTag: () => unknown } => ({
+    debug: () => {}, info: () => {}, warn: () => {}, error: () => {},
+    withTag: () => make(),
+  })
+  return make() as never
+}
+
+describe('WechatRenderer', () => {
+  it('仅有 final assistant text → 单段', () => {
+    const r = createWechatRenderer({ logger: stubLogger() })
+    r.onEvent({ type: 'assistant-message', text: '你好' } as AgentExecutionEvent)
+    r.onEvent({ type: 'lifecycle', phase: 'completed', finalMessages: [] } as AgentExecutionEvent)
+    expect(r.flush()).toEqual(['你好'])
+  })
+
+  it('多段 assistant 文本拼接，间用 \\n\\n', () => {
+    const r = createWechatRenderer({ logger: stubLogger() })
+    r.onEvent({ type: 'assistant-message', text: '第一段' } as AgentExecutionEvent)
+    r.onEvent({ type: 'assistant-message', text: '第二段' } as AgentExecutionEvent)
+    r.onEvent({ type: 'lifecycle', phase: 'completed', finalMessages: [] } as AgentExecutionEvent)
+    expect(r.flush()).toEqual(['第一段\n\n第二段'])
+  })
+
+  it('含工具调用 → 摘要前缀放在最前面', () => {
+    const r = createWechatRenderer({ logger: stubLogger() })
+    r.onEvent({
+      type: 'activity-state',
+      state: { status: 's', activities: [], newToolCalls: ['bash', 'read_file'] },
+    } as AgentExecutionEvent)
+    r.onEvent({
+      type: 'activity-state',
+      state: { status: 's', activities: [], newToolCalls: ['bash'] },  // 重复 bash 应去重
+    } as AgentExecutionEvent)
+    r.onEvent({ type: 'assistant-message', text: '完成了' } as AgentExecutionEvent)
+    r.onEvent({ type: 'lifecycle', phase: 'completed', finalMessages: [] } as AgentExecutionEvent)
+    const segments = r.flush()
+    expect(segments[0]).toBe('🔧 使用了工具: bash, read_file')
+    expect(segments[1]).toBe('完成了')
+  })
+
+  it('失败态 → 末段追加错误提示', () => {
+    const r = createWechatRenderer({ logger: stubLogger() })
+    r.onEvent({ type: 'assistant-message', text: '试图处理...' } as AgentExecutionEvent)
+    r.onEvent({
+      type: 'lifecycle', phase: 'failed', error: { message: 'rate limit exceeded\n  at line 42' },
+    } as AgentExecutionEvent)
+    const segments = r.flush()
+    expect(segments[segments.length - 1]).toBe('⚠️ 处理失败：rate limit exceeded')
+  })
+
+  it('无任何输出 → 占位文本"（本轮无输出）"', () => {
+    const r = createWechatRenderer({ logger: stubLogger() })
+    r.onEvent({ type: 'lifecycle', phase: 'completed', finalMessages: [] } as AgentExecutionEvent)
+    expect(r.flush()).toEqual(['（本轮无输出）'])
+  })
+
+  it('STARTING_MESSAGE 是 "开始处理..."', () => {
+    const r = createWechatRenderer({ logger: stubLogger() })
+    expect(r.STARTING_MESSAGE).toBe('开始处理...')
+  })
+})
+
+describe('splitText', () => {
+  it('短文本不切', () => {
+    expect(splitText('hello', 100)).toEqual(['hello'])
+  })
+
+  it('优先按 \\n\\n 切', () => {
+    const text = 'a'.repeat(50) + '\n\n' + 'b'.repeat(50) + '\n\n' + 'c'.repeat(50)
+    const chunks = splitText(text, 60)
+    expect(chunks.length).toBeGreaterThan(1)
+    expect(chunks[0]).toBe('a'.repeat(50))
+  })
+
+  it('无 \\n\\n 时回退到 \\n 切', () => {
+    const text = 'aaaa\nbbbb\ncccc\ndddd'
+    const chunks = splitText(text, 6)
+    // 期望按行切：'aaaa', 'bbbb', 'cccc', 'dddd' 或类似
+    expect(chunks.every((c) => c.length <= 6)).toBe(true)
+    expect(chunks.join('').replace(/\n/g, '')).toBe('aaaabbbbccccdddd')
+  })
+
+  it('硬切兜底（超长无换行字符串）', () => {
+    const text = 'a'.repeat(100)
+    const chunks = splitText(text, 30)
+    expect(chunks.every((c) => c.length <= 30)).toBe(true)
+    expect(chunks.join('')).toBe(text)
+  })
+})
+```
+
+- [ ] **Step 3.1.3: 跑测试**
+
+Run: `pnpm vitest run src/im/wechat/WechatRenderer.test.ts`
+Expected: 全绿
+
+---
+
+### Task 3.2: `WechatEventSink` 实现 + 测试
+
+**Files:**
+- Create: `src/im/wechat/WechatEventSink.ts`
+- Create: `src/im/wechat/WechatEventSink.test.ts`
+
+按 spec §8.2：构造时由 adapter 注入 `{ toUserId, contextToken, api, renderer, logger }` 快照；onEvent 累积；首个事件时立即发"开始处理..."；finalize 串行发所有 segments，段间 sleep 500ms。
+
+- [ ] **Step 3.2.1: 创建 `src/im/wechat/WechatEventSink.ts`**
+
+```ts
+import type { AgentExecutionEvent } from '@/core/events.ts'
+import type { EventSink } from '@/im/types.ts'
+import type { Logger } from '@/logger/logger.ts'
+import type { WechatApi } from './WechatApi.ts'
+import type { WechatRenderer } from './WechatRenderer.ts'
+
+export interface WechatEventSinkDeps {
+  api: WechatApi
+  renderer: WechatRenderer
+  toUserId: string
+  contextToken: string
+  logger: Logger
+}
+
+const SEGMENT_INTER_DELAY_MS = 500
+
+export function createWechatEventSink(deps: WechatEventSinkDeps): EventSink {
+  const log = deps.logger.withTag('wechat:sink')
+  let startingMessageSent = false
+  let terminalPhase: 'completed' | 'stopped' | 'failed' | undefined
+
+  return {
+    get terminalPhase() { return terminalPhase },
+
+    async onEvent(event: AgentExecutionEvent) {
+      try {
+        // 首个事件触发"开始处理..."一次
+        if (!startingMessageSent) {
+          startingMessageSent = true
+          // 不 await：起始消息失败不应阻塞 orchestrator
+          deps.api
+            .sendText(deps.toUserId, deps.renderer.STARTING_MESSAGE, deps.contextToken)
+            .catch((err) => log.warn('起始消息发送失败', { err }))
+        }
+
+        if (event.type === 'lifecycle') {
+          if (event.phase === 'completed' || event.phase === 'stopped' || event.phase === 'failed') {
+            terminalPhase = event.phase
+          }
+        }
+
+        deps.renderer.onEvent(event)
+      } catch (err) {
+        log.error('onEvent 内部异常（不冒泡）', err)
+      }
+    },
+
+    async finalize() {
+      const segments = deps.renderer.flush()
+      for (const [i, seg] of segments.entries()) {
+        try {
+          await deps.api.sendText(deps.toUserId, seg, deps.contextToken)
+        } catch (err) {
+          log.error('段发送失败', { i, err })
+          // 不重试，避免 spam 触发风控
+          // 尝试发一条简短的失败提示（也可能失败，再 catch）
+          try {
+            await deps.api.sendText(deps.toUserId, '[消息发送失败]', deps.contextToken)
+          } catch { /* 二次失败放弃 */ }
+        }
+        if (i < segments.length - 1) await sleep(SEGMENT_INTER_DELAY_MS)
+      }
+    },
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((res) => setTimeout(res, ms))
+}
+```
+
+- [ ] **Step 3.2.2: 创建 `src/im/wechat/WechatEventSink.test.ts`**
+
+```ts
+import { describe, it, expect, vi } from 'vitest'
+import { createWechatEventSink } from './WechatEventSink.ts'
+import { createWechatRenderer } from './WechatRenderer.ts'
+import type { AgentExecutionEvent } from '@/core/events.ts'
+
+const stubLogger = () => {
+  const make = (): { debug: () => void; info: () => void; warn: () => void; error: () => void; withTag: () => unknown } => ({
+    debug: () => {}, info: () => {}, warn: () => {}, error: () => {},
+    withTag: () => make(),
+  })
+  return make() as never
+}
+
+const stubApi = () => {
+  const sendText = vi.fn().mockResolvedValue(undefined)
+  return { sendText, baseUrl: '', cdnBaseUrl: '' } as never
+}
+
+describe('WechatEventSink', () => {
+  it('首个事件触发"开始处理..."消息（不阻塞 onEvent 返回）', async () => {
+    const api = stubApi()
+    const renderer = createWechatRenderer({ logger: stubLogger() })
+    const sink = createWechatEventSink({
+      api, renderer, toUserId: 'uA', contextToken: 'ctx', logger: stubLogger(),
+    })
+    await sink.onEvent({ type: 'assistant-message', text: 'hi' } as AgentExecutionEvent)
+    // 等微任务清空
+    await new Promise((r) => setTimeout(r, 10))
+    expect(api.sendText).toHaveBeenCalledWith('uA', '开始处理...', 'ctx')
+  })
+
+  it('finalize 串行发所有 segment；段间 500ms sleep', async () => {
+    const api = stubApi()
+    const renderer = createWechatRenderer({ logger: stubLogger() })
+    // 灌入：1 个工具 + 1 段 assistant text → flush() 返回 2 个 segment
+    renderer.onEvent({
+      type: 'activity-state',
+      state: { status: 's', activities: [], newToolCalls: ['bash'] },
+    } as AgentExecutionEvent)
+    renderer.onEvent({ type: 'assistant-message', text: '完成' } as AgentExecutionEvent)
+    renderer.onEvent({ type: 'lifecycle', phase: 'completed', finalMessages: [] } as AgentExecutionEvent)
+
+    const sink = createWechatEventSink({
+      api, renderer, toUserId: 'uA', contextToken: 'ctx', logger: stubLogger(),
+    })
+    const t0 = Date.now()
+    await sink.finalize()
+    const elapsed = Date.now() - t0
+
+    // 起始消息消除：finalize 不发起始消息
+    // sendText 被调用：2 个 segment（不含起始消息）
+    expect(api.sendText.mock.calls.length).toBe(2)
+    expect(api.sendText.mock.calls[0]).toEqual(['uA', '🔧 使用了工具: bash', 'ctx'])
+    expect(api.sendText.mock.calls[1]).toEqual(['uA', '完成', 'ctx'])
+    // 段间 sleep ~500ms（允许时序抖动）
+    expect(elapsed).toBeGreaterThanOrEqual(450)
+    expect(elapsed).toBeLessThan(2_000)
+  })
+
+  it('段内发送失败 → log + 尝试发"[消息发送失败]"（不抛、不停发后续段）', async () => {
+    const api = {
+      sendText: vi.fn()
+        .mockRejectedValueOnce(new Error('limit'))            // 第 1 段失败
+        .mockResolvedValueOnce(undefined)                      // [消息发送失败] 提示成功
+        .mockResolvedValueOnce(undefined)                      // 第 2 段成功
+    } as never
+    const renderer = createWechatRenderer({ logger: stubLogger() })
+    renderer.onEvent({ type: 'assistant-message', text: 'A'.repeat(5000) } as AgentExecutionEvent)
+    renderer.onEvent({ type: 'lifecycle', phase: 'completed', finalMessages: [] } as AgentExecutionEvent)
+
+    const sink = createWechatEventSink({
+      api, renderer, toUserId: 'uA', contextToken: 'ctx', logger: stubLogger(),
+    })
+    await sink.finalize()
+    // 至少 3 次调用：失败段 + 失败提示 + 后续段
+    expect(api.sendText.mock.calls.length).toBeGreaterThanOrEqual(3)
+  })
+
+  it('terminalPhase 在 lifecycle 终态后可读', async () => {
+    const renderer = createWechatRenderer({ logger: stubLogger() })
+    const sink = createWechatEventSink({
+      api: stubApi(), renderer, toUserId: 'uA', contextToken: 'ctx', logger: stubLogger(),
+    })
+    expect(sink.terminalPhase).toBeUndefined()
+    await sink.onEvent({ type: 'lifecycle', phase: 'completed', finalMessages: [] } as AgentExecutionEvent)
+    expect(sink.terminalPhase).toBe('completed')
+  })
+})
+```
+
+- [ ] **Step 3.2.3: 跑测试**
+
+Run: `pnpm vitest run src/im/wechat/WechatEventSink.test.ts`
+Expected: 全绿
+
+- [ ] **Step 3.2.4: 提交 Task 3.1 + 3.2**
+
+```bash
+git add src/im/wechat/WechatRenderer.ts src/im/wechat/WechatRenderer.test.ts \
+        src/im/wechat/WechatEventSink.ts src/im/wechat/WechatEventSink.test.ts
+git commit -m "$(cat <<'EOF'
+feat(wechat): WechatRenderer + WechatEventSink
+
+- Renderer: 累积 AgentExecutionEvent → string[] 文本段
+  - 工具调用按字典序去重，作为首段 "🔧 使用了工具: ..."
+  - assistant text 拼接后按 \n\n / \n / 硬切 三级分段（4000 字符上限）
+  - failed 终态追加 "⚠️ 处理失败：<错误>"
+  - 无输出时占位文本避免静默
+- EventSink: 首个 event 立即发"开始处理..."（不阻塞）；
+  finalize 串行发所有 segment 段间 500ms sleep；
+  段内失败仅记日志不重试（防风控），尝试发"[消息发送失败]"提示
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+EOF
+)"
+```
+
+---
+
+### Task 3.3: `WechatAdapter` QR 登录子流程 + 测试
+
+**Files:**
+- Create: `src/im/wechat/WechatAdapter.ts`（仅扫码登录部分）
+- Create: `src/im/wechat/WechatAdapter.test.ts`（仅扫码登录用例）
+
+按 spec §7.1。本 task 仅落地"扫码登录"子流程；long-poll loop 在 Task 3.4 加。先把 adapter 文件骨架 + login 流程能独立测了再说。
+
+- [ ] **Step 3.3.1: 创建 `src/im/wechat/WechatAdapter.ts` 骨架**
+
+```ts
+import type { IMAdapter } from '@/im/IMAdapter.ts'
+import type { Logger } from '@/logger/logger.ts'
+import type { WechatApi, WechatCredentials } from './WechatApi.ts'
+import type { CredentialsStore } from './CredentialsStore.ts'
+import qrcodeTerminal from 'qrcode-terminal'
+
+export interface WechatAdapterDeps {
+  api: WechatApi
+  credentialsStore: CredentialsStore
+  credentialsFile: string
+  logger: Logger
+  // orchestrator / runQueue / sessionStore / abortRegistry / renderer 等
+  // 在 Task 3.4 接入
+}
+
+const QR_LOGIN_TIMEOUT_MS = 480_000
+const QR_POLL_INTERVAL_MS = 1_000
+const QR_MAX_REFRESHES = 10
+
+export function createWechatAdapter(deps: WechatAdapterDeps): IMAdapter {
+  const log = deps.logger.withTag('wechat')
+  let stopRequested = false
+  // long-poll signal (Task 3.4 用)
+  // const stopCtl = new AbortController()
+
+  return {
+    id: 'wechat',
+
+    async start() {
+      let creds = await deps.credentialsStore.load(deps.credentialsFile)
+      if (!creds) {
+        log.info('未找到凭证，开始扫码登录...')
+        creds = await qrLogin(deps, () => stopRequested)
+        if (!creds) {
+          throw new Error('扫码登录被中止或失败')
+        }
+        await deps.credentialsStore.save(deps.credentialsFile, creds)
+        log.info(`扫码登录成功，凭证已写入 ${deps.credentialsFile}`)
+      }
+      deps.api.setToken(creds.token)
+      log.info(`Wechat adapter 已就绪 botId=${creds.botId}`)
+      // long-poll loop 在 Task 3.4 接入
+    },
+
+    async stop() {
+      stopRequested = true
+      // stopCtl.abort()  Task 3.4
+    },
+  }
+}
+
+/**
+ * 扫码登录主循环。返回拿到的 credentials 或 undefined（被 stop 中止 / 超时）。
+ */
+export async function qrLogin(
+  deps: WechatAdapterDeps,
+  isStopped: () => boolean,
+): Promise<WechatCredentials | undefined> {
+  const log = deps.logger.withTag('wechat:qr')
+  const deadline = Date.now() + QR_LOGIN_TIMEOUT_MS
+  let refreshCount = 0
+  let qr = await deps.api.fetchQrCode()
+  printQrToTerminal(qr.qrcode_img_content)
+  log.info(`扫码 URL: ${qr.qrcode_img_content}`)
+
+  while (!isStopped()) {
+    if (Date.now() >= deadline) {
+      log.warn(`扫码登录超时 ${QR_LOGIN_TIMEOUT_MS}ms`)
+      return undefined
+    }
+    const status = await deps.api.pollQrStatus(qr.qrcode)
+    if (status.status === 'wait') {
+      // 继续轮询
+    } else if (status.status === 'scaned') {
+      log.info('已扫码，请在手机上确认...')
+    } else if (status.status === 'expired') {
+      refreshCount++
+      if (refreshCount >= QR_MAX_REFRESHES) {
+        log.warn(`二维码刷新 ${QR_MAX_REFRESHES} 次仍未扫码，放弃`)
+        return undefined
+      }
+      log.info(`二维码已过期，刷新（${refreshCount}/${QR_MAX_REFRESHES}）`)
+      qr = await deps.api.fetchQrCode()
+      printQrToTerminal(qr.qrcode_img_content)
+    } else if (status.status === 'confirmed') {
+      if (!status.bot_token || !status.ilink_bot_id) {
+        log.error('扫码 confirmed 但服务端未返回 token/bot_id')
+        return undefined
+      }
+      log.info(`扫码登录成功 bot_id=${status.ilink_bot_id}`)
+      return {
+        token: status.bot_token,
+        baseUrl: status.baseurl ?? deps.api.baseUrl,
+        botId: status.ilink_bot_id,
+        userId: status.ilink_user_id ?? '',
+      }
+    }
+
+    await sleep(QR_POLL_INTERVAL_MS)
+  }
+
+  log.info('扫码登录被 stop 中止')
+  return undefined
+}
+
+function printQrToTerminal(qrUrl: string): void {
+  console.log('\n' + '='.repeat(60))
+  console.log('  请使用微信扫描二维码登录（约 8 分钟内有效）')
+  console.log('='.repeat(60))
+  qrcodeTerminal.generate(qrUrl, { small: true }, (qr) => {
+    try { console.log(qr) } catch { /* 终端不支持 unicode 时静默 */ }
+  })
+  console.log(`  二维码 URL: ${qrUrl}\n`)
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((res) => setTimeout(res, ms))
+}
+```
+
+- [ ] **Step 3.3.2: 创建 `src/im/wechat/WechatAdapter.test.ts`**
+
+```ts
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { createCredentialsStore } from './CredentialsStore.ts'
+import { qrLogin, createWechatAdapter } from './WechatAdapter.ts'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+
+const stubLogger = () => {
+  const make = (): { debug: () => void; info: () => void; warn: () => void; error: () => void; withTag: () => unknown } => ({
+    debug: () => {}, info: () => {}, warn: () => {}, error: () => {},
+    withTag: () => make(),
+  })
+  return make() as never
+}
+
+describe('qrLogin', () => {
+  it('confirmed 状态返回完整凭证', async () => {
+    const api = {
+      baseUrl: 'https://ilink.example/',
+      cdnBaseUrl: '',
+      fetchQrCode: vi.fn().mockResolvedValue({ qrcode: 'qr1', qrcode_img_content: 'https://qr/1' }),
+      pollQrStatus: vi.fn().mockResolvedValue({
+        status: 'confirmed',
+        bot_token: 'tok',
+        ilink_bot_id: 'b1',
+        ilink_user_id: 'u1',
+        baseurl: 'https://ilink.cn/',
+      }),
+      setToken: vi.fn(),
+    } as never
+    const creds = await qrLogin(
+      { api, credentialsStore: createCredentialsStore(), credentialsFile: '/tmp/x', logger: stubLogger() },
+      () => false,
+    )
+    expect(creds).toEqual({
+      token: 'tok',
+      baseUrl: 'https://ilink.cn/',
+      botId: 'b1',
+      userId: 'u1',
+    })
+  })
+
+  it('expired 自动刷新；超过 10 次放弃', async () => {
+    const api = {
+      baseUrl: '', cdnBaseUrl: '',
+      fetchQrCode: vi.fn().mockResolvedValue({ qrcode: 'qr', qrcode_img_content: '' }),
+      pollQrStatus: vi.fn().mockResolvedValue({ status: 'expired' }),
+      setToken: vi.fn(),
+    } as never
+    const creds = await qrLogin(
+      { api, credentialsStore: createCredentialsStore(), credentialsFile: '/tmp/x', logger: stubLogger() },
+      () => false,
+    )
+    expect(creds).toBeUndefined()
+    // 1 次初始 + 10 次刷新 = 11 次（最后一次刷新被拒后 return undefined）
+    expect(api.fetchQrCode.mock.calls.length).toBe(11)
+  })
+
+  it('isStopped() 返回 true 时立即退出', async () => {
+    let stopped = false
+    const api = {
+      baseUrl: '', cdnBaseUrl: '',
+      fetchQrCode: vi.fn().mockResolvedValue({ qrcode: 'qr', qrcode_img_content: '' }),
+      pollQrStatus: vi.fn().mockImplementation(async () => {
+        stopped = true
+        return { status: 'wait' }
+      }),
+      setToken: vi.fn(),
+    } as never
+    const creds = await qrLogin(
+      { api, credentialsStore: createCredentialsStore(), credentialsFile: '/tmp/x', logger: stubLogger() },
+      () => stopped,
+    )
+    expect(creds).toBeUndefined()
+  })
+
+  it('confirmed 但缺 token / bot_id → 返回 undefined', async () => {
+    const api = {
+      baseUrl: '', cdnBaseUrl: '',
+      fetchQrCode: vi.fn().mockResolvedValue({ qrcode: 'qr', qrcode_img_content: '' }),
+      pollQrStatus: vi.fn().mockResolvedValue({ status: 'confirmed' }),  // 缺 token / bot_id
+      setToken: vi.fn(),
+    } as never
+    const creds = await qrLogin(
+      { api, credentialsStore: createCredentialsStore(), credentialsFile: '/tmp/x', logger: stubLogger() },
+      () => false,
+    )
+    expect(creds).toBeUndefined()
+  })
+})
+
+describe('createWechatAdapter.start', () => {
+  let dir: string
+  beforeEach(() => {
+    dir = mkdtempSync(path.join(tmpdir(), 'wechat-adapter-'))
+  })
+
+  it('凭证存在 → 跳过扫码，直接 setToken', async () => {
+    const credsFile = path.join(dir, 'credentials.json')
+    const store = createCredentialsStore()
+    await store.save(credsFile, { token: 'tok-saved', baseUrl: '', botId: '', userId: '' })
+
+    const api = {
+      baseUrl: '',
+      cdnBaseUrl: '',
+      setToken: vi.fn(),
+      fetchQrCode: vi.fn(),  // 不应被调
+    } as never
+    const adapter = createWechatAdapter({
+      api, credentialsStore: store, credentialsFile: credsFile, logger: stubLogger(),
+    })
+    await adapter.start()
+    expect(api.setToken).toHaveBeenCalledWith('tok-saved')
+    expect(api.fetchQrCode).not.toHaveBeenCalled()
+  })
+
+  it('凭证不存在 → 走扫码登录；登录失败抛错', async () => {
+    const credsFile = path.join(dir, 'credentials.json')
+    const api = {
+      baseUrl: '',
+      cdnBaseUrl: '',
+      fetchQrCode: vi.fn().mockResolvedValue({ qrcode: 'qr', qrcode_img_content: '' }),
+      pollQrStatus: vi.fn().mockResolvedValue({ status: 'expired' }),  // 立即 expired，触发刷新循环
+      setToken: vi.fn(),
+    } as never
+    const adapter = createWechatAdapter({
+      api,
+      credentialsStore: createCredentialsStore(),
+      credentialsFile: credsFile,
+      logger: stubLogger(),
+    })
+    // expired 模式刷新 10 次后放弃
+    await expect(adapter.start()).rejects.toThrow(/扫码登录/)
+  })
+
+  it('start() 期间调 stop() → qrLogin 提前退出，start reject', async () => {
+    const credsFile = path.join(dir, 'nope.json')
+    const api = {
+      baseUrl: '',
+      cdnBaseUrl: '',
+      fetchQrCode: vi.fn().mockResolvedValue({ qrcode: 'qr', qrcode_img_content: '' }),
+      pollQrStatus: vi.fn().mockResolvedValue({ status: 'wait' }),  // 一直 wait
+      setToken: vi.fn(),
+    } as never
+    const adapter = createWechatAdapter({
+      api,
+      credentialsStore: createCredentialsStore(),
+      credentialsFile: credsFile,
+      logger: stubLogger(),
+    })
+    const startPromise = adapter.start()
+    // 让一次 pollQrStatus 进行后再 stop
+    await new Promise((r) => setTimeout(r, 1100))  // 等一个 poll 周期
+    await adapter.stop()
+    await expect(startPromise).rejects.toThrow(/扫码登录/)
+  })
+})
+```
+
+- [ ] **Step 3.3.3: 跑测试**
+
+Run: `pnpm vitest run src/im/wechat/WechatAdapter.test.ts`
+Expected: 全绿（最后一个 stop case 会等 1.1s，OK）
+
+---
+
+### Task 3.4: WechatAdapter long-poll loop + processMessage + 测试
+
+**Files:**
+- Modify: `src/im/wechat/WechatAdapter.ts`
+- Modify: `src/im/wechat/WechatAdapter.test.ts`
+
+按 spec §7.2 / §7.3。本 task 给 adapter 加 long-poll loop 与 processMessage。需要拿到 orchestrator / sessionStore / runQueue / abortRegistry / renderer 才能完整接入。
+
+- [ ] **Step 3.4.1: 扩展 `WechatAdapterDeps`**
+
+```ts
+import type {
+  ConversationOrchestrator,
+} from '@/orchestrator/ConversationOrchestrator.ts'
+import type { SessionStore } from '@/store/SessionStore.ts'
+import type { SessionRunQueue } from '@/orchestrator/SessionRunQueue.ts'
+import type { AbortRegistry } from '@/orchestrator/AbortRegistry.ts'
+import type { WechatRenderer } from './WechatRenderer.ts'
+import type { InboundMessage } from '@/im/types.ts'
+import { createWechatEventSink } from './WechatEventSink.ts'
+import {
+  ERRCODE_SESSION_EXPIRED,
+  WeixinItemType,
+  WeixinMessageType,
+  type InboundWeixinMessage,
+} from './protocol.ts'
+
+export interface WechatAdapterDeps {
+  api: WechatApi
+  credentialsStore: CredentialsStore
+  credentialsFile: string
+  orchestrator: ConversationOrchestrator
+  sessionStore: SessionStore
+  runQueue: SessionRunQueue
+  abortRegistry: AbortRegistry<string>
+  renderer: WechatRenderer
+  logger: Logger
+}
+```
+
+- [ ] **Step 3.4.2: long-poll loop 实现**
+
+把 `start()` 改成（在原有扫码 + setToken 之后）启动 long-poll 异步循环：
+
+```ts
+async start() {
+  // ...原有扫码 + setToken 逻辑...
+  const stopCtl = new AbortController()
+  // 把 stopCtl 存到闭包外层（用 closure 引用）
+  ;(deps as unknown as { _stopCtl?: AbortController })._stopCtl = stopCtl
+
+  // 启动 long-poll loop（不 await，让 start() 返回）
+  void runLongPollLoop(deps, stopCtl.signal)
+},
+
+async stop() {
+  stopRequested = true
+  const stopCtl = (deps as unknown as { _stopCtl?: AbortController })._stopCtl
+  if (stopCtl) stopCtl.abort()
+},
+```
+
+注：闭包变量比 deps 黑魔法清晰。把 `let stopCtl: AbortController | undefined` 提到 `createWechatAdapter` 函数顶层。
+
+更干净的写法：
+
+```ts
+export function createWechatAdapter(deps: WechatAdapterDeps): IMAdapter {
+  const log = deps.logger.withTag('wechat')
+  let stopRequested = false
+  let stopCtl: AbortController | undefined
+
+  return {
+    id: 'wechat',
+    async start() {
+      // ...扫码 + setToken...
+      stopCtl = new AbortController()
+      void runLongPollLoop(deps, stopCtl.signal, () => stopRequested)
+    },
+    async stop() {
+      stopRequested = true
+      stopCtl?.abort()
+    },
+  }
+}
+```
+
+- [ ] **Step 3.4.3: 实现 `runLongPollLoop`**
+
+文件末尾加：
+
+```ts
+const RETRY_DELAY_MS = 2_000
+const BACKOFF_DELAY_MS = 30_000
+const MAX_CONSECUTIVE_FAILURES = 3
+const DEDUP_TTL_MS = 7 * 60 * 60 * 1_000  // 7 小时
+
+/** 可被 abort signal 提前唤醒的 sleep；abort 时 resolve（不 throw） */
+function interruptibleSleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) return resolve()
+    const t = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    function onAbort() {
+      clearTimeout(t)
+      resolve()
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+async function runLongPollLoop(
+  deps: WechatAdapterDeps,
+  signal: AbortSignal,
+  isStopped: () => boolean,
+): Promise<void> {
+  const log = deps.logger.withTag('wechat:poll')
+  let buf = ''
+  let consecutiveFailures = 0
+  // 入站消息去重：msgId → expireAt
+  const dedup = new Map<string, number>()
+  // context_token 缓存：userId → contextToken
+  const contextTokens = new Map<string, string>()
+
+  while (!signal.aborted && !isStopped()) {
+    try {
+      const resp = await deps.api.getUpdates(buf, signal)
+      if (signal.aborted || isStopped()) break
+
+      if (resp.errcode === ERRCODE_SESSION_EXPIRED) {
+        log.warn('session 过期 (errcode -14)，触发 relogin...')
+        await deps.credentialsStore.clear(deps.credentialsFile)
+        const newCreds = await qrLogin(deps, isStopped)
+        if (!newCreds) {
+          log.error('relogin 失败，5 分钟后重试（可被 stop signal 提前唤醒）')
+          await interruptibleSleep(300_000, signal)
+          continue
+        }
+        await deps.credentialsStore.save(deps.credentialsFile, newCreds)
+        deps.api.setToken(newCreds.token)
+        buf = ''
+        consecutiveFailures = 0
+        continue
+      }
+
+      const isError = (resp.ret ?? 0) !== 0 || (resp.errcode ?? 0) !== 0
+      if (isError) {
+        consecutiveFailures++
+        log.error('getUpdates 错误', {
+          ret: resp.ret, errcode: resp.errcode, errmsg: resp.errmsg,
+          consecutiveFailures, max: MAX_CONSECUTIVE_FAILURES,
+        })
+        await interruptibleSleep(
+          consecutiveFailures >= MAX_CONSECUTIVE_FAILURES ? BACKOFF_DELAY_MS : RETRY_DELAY_MS,
+          signal,
+        )
+        continue
+      }
+
+      consecutiveFailures = 0
+      if (resp.get_updates_buf) buf = resp.get_updates_buf
+
+      // 清理过期 dedup
+      const now = Date.now()
+      for (const [mid, expireAt] of dedup) {
+        if (expireAt < now) dedup.delete(mid)
+      }
+
+      for (const raw of resp.msgs ?? []) {
+        try {
+          await processMessage(deps, raw, dedup, contextTokens)
+        } catch (err) {
+          log.error('processMessage 异常', { err })
+        }
+      }
+    } catch (err) {
+      if (signal.aborted || isStopped()) break
+      consecutiveFailures++
+      log.error('getUpdates 异常', { err, consecutiveFailures })
+      await interruptibleSleep(
+        consecutiveFailures >= MAX_CONSECUTIVE_FAILURES ? BACKOFF_DELAY_MS : RETRY_DELAY_MS,
+        signal,
+      )
+    }
+  }
+  log.info('long-poll loop 退出')
+}
+
+async function processMessage(
+  deps: WechatAdapterDeps,
+  raw: InboundWeixinMessage,
+  dedup: Map<string, number>,
+  contextTokens: Map<string, string>,
+): Promise<void> {
+  const log = deps.logger.withTag('wechat:msg')
+  if (raw.message_type !== WeixinMessageType.USER) return  // 仅处理用户消息
+
+  const msgId = String(raw.message_id ?? raw.seq ?? '')
+  if (!msgId) return
+  if (dedup.has(msgId)) return
+  dedup.set(msgId, Date.now() + DEDUP_TTL_MS)
+
+  const fromUserId = raw.from_user_id
+  // 1. 先更新 contextToken 缓存（spec §7.3 顺序保证：媒体提示也能拿到 token）
+  if (raw.context_token) contextTokens.set(fromUserId, raw.context_token)
+  const contextToken = contextTokens.get(fromUserId) ?? ''
+
+  // 2. 解析 item_list
+  let textBody = ''
+  let hasMedia = false
+  for (const item of raw.item_list ?? []) {
+    if (item.type === WeixinItemType.TEXT) {
+      const ti = (item as { text_item?: { text?: string } }).text_item
+      if (ti?.text) textBody += (textBody ? '\n' : '') + ti.text
+    } else {
+      hasMedia = true
+    }
+  }
+
+  // 3. 媒体消息提示（MVP 不支持）
+  if (hasMedia) {
+    log.info('收到媒体消息（MVP 阶段不支持，已忽略）', { fromUserId })
+    try {
+      await deps.api.sendText(
+        fromUserId,
+        '目前暂不支持图片/语音/文件/视频，请发送文字消息',
+        contextToken,
+      )
+    } catch (err) {
+      log.warn('媒体不支持提示发送失败', { err })
+    }
+    if (!textBody) return  // 纯媒体消息丢弃
+    // 文本+媒体混合：文本继续走 orchestrator
+  }
+
+  if (!textBody) return  // 没文本不进 orchestrator
+
+  // 4. 构造 InboundMessage 并送入 orchestrator
+  const inbound: InboundMessage = {
+    imProvider: 'wechat',
+    channelId: fromUserId,
+    channelName: fromUserId,
+    threadTs: fromUserId,
+    messageTs: msgId,
+    userId: fromUserId,
+    userName: fromUserId,
+    text: textBody,
+    confirmSender: undefined,  // wechat 不注入 confirm tool
+  }
+
+  const sink = createWechatEventSink({
+    api: deps.api,
+    renderer: deps.renderer,
+    toUserId: fromUserId,
+    contextToken,
+    logger: deps.logger,
+  })
+
+  // fire-and-forget：单条消息处理失败不阻塞下一条入站
+  void deps.orchestrator
+    .handle(inbound, sink)
+    .catch((err) => log.error('orchestrator.handle 失败', { err }))
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((res) => setTimeout(res, ms))
+}
+```
+
+- [ ] **Step 3.4.4: 加测试用例（processMessage 行为）**
+
+**先动 `WechatAdapter.ts`**：在文件末尾加 `export { processMessage }`（同文件内 `function processMessage(...)` 声明被 export，TS 合法）。
+
+**再改 `WechatAdapter.test.ts`**：在文件**顶部已有的 import 块**追加（不是末尾，ES import 必须在文件顶部）：
+
+```ts
+import { processMessage as _processMessage } from './WechatAdapter.ts'
+
+describe('processMessage', () => {
+  const stubOrchestrator = () => ({ handle: vi.fn().mockResolvedValue(undefined) })
+  const stubApi = () => ({
+    baseUrl: '', cdnBaseUrl: '', setToken: vi.fn(),
+    sendText: vi.fn().mockResolvedValue(undefined),
+    fetchQrCode: vi.fn(), pollQrStatus: vi.fn(), getUpdates: vi.fn(), getConfig: vi.fn(),
+  })
+
+  const baseDeps = (api = stubApi(), orch = stubOrchestrator()): WechatAdapterDeps => ({
+    api: api as never,
+    credentialsStore: createCredentialsStore(),
+    credentialsFile: '/tmp/x',
+    orchestrator: orch as never,
+    sessionStore: {} as never,
+    runQueue: {} as never,
+    abortRegistry: {} as never,
+    renderer: { onEvent: () => {}, flush: () => [], STARTING_MESSAGE: '...' },
+    logger: stubLogger(),
+  })
+
+  it('文本消息 → 调 orchestrator.handle，sendText 不被调（除非 sink finalize）', async () => {
+    const api = stubApi()
+    const orch = stubOrchestrator()
+    const deps = baseDeps(api, orch)
+    await _processMessage(
+      deps,
+      {
+        message_type: 1, message_id: 'm1', from_user_id: 'uA', to_user_id: 'bot',
+        context_token: 'ctx', item_list: [{ type: 1, text_item: { text: 'hi' } }],
+      } as never,
+      new Map(), new Map(),
+    )
+    // orchestrator.handle 是 fire-and-forget，至少调一次
+    await new Promise((r) => setTimeout(r, 10))
+    expect(orch.handle).toHaveBeenCalledOnce()
+    const inbound = orch.handle.mock.calls[0][0]
+    expect(inbound.imProvider).toBe('wechat')
+    expect(inbound.text).toBe('hi')
+    expect(inbound.confirmSender).toBeUndefined()
+  })
+
+  it('media 消息 → 不调 orchestrator，立即 sendText 提示', async () => {
+    const api = stubApi()
+    const orch = stubOrchestrator()
+    const deps = baseDeps(api, orch)
+    await _processMessage(
+      deps,
+      {
+        message_type: 1, message_id: 'm2', from_user_id: 'uA', to_user_id: 'bot',
+        context_token: 'ctx',
+        item_list: [{ type: 2, image_item: { /* MVP 不解析 */ } }],
+      } as never,
+      new Map(), new Map(),
+    )
+    expect(api.sendText).toHaveBeenCalledOnce()
+    expect(api.sendText.mock.calls[0][1]).toMatch(/暂不支持/)
+    expect(orch.handle).not.toHaveBeenCalled()
+  })
+
+  it('文本+媒体混合 → 提示 + 文本进 orchestrator', async () => {
+    const api = stubApi()
+    const orch = stubOrchestrator()
+    const deps = baseDeps(api, orch)
+    await _processMessage(
+      deps,
+      {
+        message_type: 1, message_id: 'm3', from_user_id: 'uA', to_user_id: 'bot',
+        context_token: 'ctx',
+        item_list: [
+          { type: 1, text_item: { text: 'check this' } },
+          { type: 2, image_item: {} },
+        ],
+      } as never,
+      new Map(), new Map(),
+    )
+    await new Promise((r) => setTimeout(r, 10))
+    expect(api.sendText).toHaveBeenCalledOnce()
+    expect(orch.handle).toHaveBeenCalledOnce()
+  })
+
+  it('重复 msgId 被去重', async () => {
+    const api = stubApi()
+    const orch = stubOrchestrator()
+    const deps = baseDeps(api, orch)
+    const dedup = new Map<string, number>()
+    const ctxs = new Map<string, string>()
+    await _processMessage(deps, {
+      message_type: 1, message_id: 'm4', from_user_id: 'uA', to_user_id: 'b',
+      context_token: 'ctx', item_list: [{ type: 1, text_item: { text: 'hi' } }],
+    } as never, dedup, ctxs)
+    await _processMessage(deps, {
+      message_type: 1, message_id: 'm4', from_user_id: 'uA', to_user_id: 'b',
+      context_token: 'ctx', item_list: [{ type: 1, text_item: { text: 'hi' } }],
+    } as never, dedup, ctxs)
+    await new Promise((r) => setTimeout(r, 10))
+    expect(orch.handle.mock.calls.length).toBe(1)
+  })
+
+  it('contextToken 在解析前更新（媒体消息也能拿到 token 发提示）', async () => {
+    const api = stubApi()
+    const deps = baseDeps(api)
+    const ctxs = new Map<string, string>()
+    await _processMessage(deps, {
+      message_type: 1, message_id: 'm5', from_user_id: 'uB', to_user_id: 'b',
+      context_token: 'fresh-token',
+      item_list: [{ type: 2 }],  // 纯媒体
+    } as never, new Map(), ctxs)
+    expect(ctxs.get('uB')).toBe('fresh-token')
+    expect(api.sendText.mock.calls[0][2]).toBe('fresh-token')  // 第三参数 contextToken
+  })
+
+  it('message_type !== 1（非用户消息）跳过', async () => {
+    const api = stubApi()
+    const orch = stubOrchestrator()
+    const deps = baseDeps(api, orch)
+    await _processMessage(deps, {
+      message_type: 2, message_id: 'mX', from_user_id: 'b', to_user_id: 'uA',
+      context_token: '', item_list: [],
+    } as never, new Map(), new Map())
+    expect(orch.handle).not.toHaveBeenCalled()
+    expect(api.sendText).not.toHaveBeenCalled()
+  })
+})
+```
+
+记得在 `WechatAdapter.ts` 末尾加 `export { processMessage }`，否则测试 import 会失败。
+
+- [ ] **Step 3.4.5: 跑测试**
+
+Run: `pnpm vitest run src/im/wechat/WechatAdapter.test.ts`
+Expected: 全绿
+
+- [ ] **Step 3.4.6: 提交 Task 3.3 + 3.4**
+
+```bash
+git add src/im/wechat/WechatAdapter.ts src/im/wechat/WechatAdapter.test.ts
+git commit -m "$(cat <<'EOF'
+feat(wechat): WechatAdapter 完整实现（扫码登录 + long-poll + processMessage）
+
+- 扫码登录子流程 qrLogin：480s 超时，10 次 expired 刷新
+- long-poll loop runLongPollLoop：errcode -14 自动 relogin；
+  连续失败 3 次后退避 30s；stop signal 触发立即退出
+- processMessage：去重 (msgId, TTL 7h) + contextToken 缓存；
+  解析顺序保证媒体消息也能拿到 token 发提示；
+  文本进 orchestrator (fire-and-forget)；构造 InboundMessage
+  时 confirmSender=undefined (wechat 不注入 confirm tool)
+- terminal QR 用 qrcode-terminal 输出 ASCII + URL
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+EOF
+)"
+```
+
+---
+
+### Task 3.5: `createApplication` 实装 wechat adapter 装配
+
+**Files:**
+- Modify: `src/application/createApplication.ts`
+- Modify: `src/application/createApplication.test.ts`
+
+把 Chunk 1 留的 TODO 占位替换为真实 `createWechatAdapter` 调用。
+
+- [ ] **Step 3.5.1: 改 `src/application/createApplication.ts`**
+
+import 区追加：
+
+```ts
+import { WechatApi } from '@/im/wechat/WechatApi.ts'
+import { createCredentialsStore } from '@/im/wechat/CredentialsStore.ts'
+import { createWechatRenderer } from '@/im/wechat/WechatRenderer.ts'
+import { createWechatAdapter } from '@/im/wechat/WechatAdapter.ts'
+```
+
+把 Chunk 1 的 TODO block：
+
+```ts
+if (enabled.includes('wechat')) {
+  // TODO(Chunk 3): 装配 WechatAdapter
+  logger.warn('im.enabled 含 wechat，但 WechatAdapter 尚未实现（计划在 Chunk 3 落地）')
+}
+```
+
+替换为：
+
+```ts
+if (enabled.includes('wechat')) {
+  const wechatApi = new WechatApi({
+    baseUrl: ctx.config.im.wechat.baseUrl,
+    cdnBaseUrl: ctx.config.im.wechat.cdnBaseUrl,
+  })
+  const wechatRenderer = createWechatRenderer({ logger })
+  const wechat = createWechatAdapter({
+    api: wechatApi,
+    credentialsStore: createCredentialsStore(),
+    credentialsFile: ctx.paths.wechatCredentialsFile,
+    orchestrator,
+    sessionStore,
+    runQueue,
+    abortRegistry,
+    renderer: wechatRenderer,
+    logger,
+  })
+  adapters.push(wechat)
+}
+```
+
+- [ ] **Step 3.5.2: 改 `src/application/createApplication.test.ts`**
+
+把 Chunk 1 加的 wechat 用例改成真实装配：
+
+```ts
+it('仅 wechat：adapter 真实装配，id="wechat"，但 start() 未被自动调用', async () => {
+  // 工作区 yaml 写 im.enabled: ['wechat']
+  // env 不设 SLACK_*
+  const app = await createApplicationWithWorkspace({ enabled: ['wechat'] })  // helper 按现有模式
+  expect(app.adapters.length).toBe(1)
+  expect(app.adapters[0].id).toBe('wechat')
+  // 注：测试不调 start()，避免触发扫码登录（无法在 CI 中完成）
+})
+
+it('双开 [slack, wechat]：两个 adapter 都装配', async () => {
+  // 工作区 im.enabled: ['slack', 'wechat']，完整 SLACK env
+  const app = await createApplicationWithWorkspace({ enabled: ['slack', 'wechat'] })
+  expect(app.adapters.length).toBe(2)
+  expect(app.adapters.map((a) => a.id).sort()).toEqual(['slack', 'wechat'])
+})
+```
+
+helper `createApplicationWithWorkspace` 按现有 createApplication.test.ts 模式（mock 工作区 + env）写。
+
+- [ ] **Step 3.5.3: 跑测试**
+
+Run: `pnpm vitest run src/application/createApplication.test.ts`
+Expected: 全绿
+
+- [ ] **Step 3.5.4: 跑全套**
+
+Run: `pnpm vitest run`
+Expected: 全绿
+
+- [ ] **Step 3.5.5: 类型检查**
+
+Run: `pnpm tsc -b`
+Expected: 零错
+
+- [ ] **Step 3.5.6: 提交**
+
+```bash
+git add src/application/createApplication.ts src/application/createApplication.test.ts
+git commit -m "$(cat <<'EOF'
+feat(app): createApplication 装配 WechatAdapter
+
+- enabled 含 wechat 时构造 WechatApi / CredentialsStore /
+  WechatRenderer / WechatAdapter 并 push 进 adapters 数组
+- 删除 Chunk 1 留的 TODO warn
+- 测试覆盖：仅 wechat / 双开 两个装配 case（不触发 start，避免
+  扫码阻塞测试）
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+EOF
+)"
+```
+
+---
+
+### Task 3.6: Chunk 3 终验 + 手动验证
+
+- [ ] **Step 3.6.1: 全套测试**
+
+Run: `pnpm vitest run`
+Expected: 全绿
+
+- [ ] **Step 3.6.2: 类型检查**
+
+Run: `pnpm tsc -b`
+Expected: 零错
+
+- [ ] **Step 3.6.3: lint（如有）**
+
+Run: `pnpm eslint . || echo 'no eslint configured'`
+Expected: 零错
+
+- [ ] **Step 3.6.4: 手动验证 #1（仅 wechat 文本 round-trip）**
+
+操作步骤（**遇到扫码环节 stop，等用户扫完再继续**）：
+1. 新建空工作区 `mkdir /tmp/wechat-mvp-ws && cd /tmp/wechat-mvp-ws`
+2. 写最小 `.agent-slack/config.yaml`：
+   ```yaml
+   agent:
+     provider: anthropic   # 或你环境的 provider
+     model: claude-sonnet-4-5
+   im:
+     enabled: [wechat]
+   ```
+3. 配 LLM env（按 provider）
+4. 启动 `pnpm dev`（或 daemon）
+5. 终端打印二维码 + URL → **暂停，让用户扫码确认**
+6. 凭证写入 `.agent-slack/wechat/credentials.json`，long-poll 启动
+7. 在微信里给 bot 发 "hi"
+8. 观察：bot 先回 "开始处理..."，再回 agent 实际回复
+9. 检查 `.agent-slack/sessions/wechat/` 下生成的 session 目录
+10. 期望：bot 回复送达，无 panic / unhandled rejection
+
+- [ ] **Step 3.6.5: 手动验证 #2（重启复用凭证）**
+
+1. SIGTERM 上一步的进程
+2. 再次启动
+3. 期望：终端**不再打印二维码**，直接进入 long-poll
+4. 给 bot 发文本验证仍能回复
+
+- [ ] **Step 3.6.6: 手动验证 #5（媒体消息忽略）**
+
+给 bot 发图片 / 语音 / 文件 / 视频
+期望：bot 回 "目前暂不支持图片/语音/文件/视频，请发送文字消息"，agent 未被触发（看日志确认）
+
+- [ ] **Step 3.6.7: 手动验证 #6（超长文本分段，可选）**
+
+给 bot 发"请讲一个很长的故事，至少 5000 字"，观察微信里收到的回复是否被分段（每段 4000 字符以内，段间 ~500ms）
+
+- [ ] **Step 3.6.8: 手动验证 #4（双开，可选但推荐）**
+
+修改工作区 yaml 为 `enabled: [slack, wechat]`，配齐 SLACK env，重启。Slack @bot 能回复；微信发文本也能回复；两个会话目录互不干扰。
+
+- [ ] **Step 3.6.9: 提交终验记录（可选）**
+
+如果手动验证有需要登记的偏差，记录到 spec §13 后续待办。
+
+---
+
+## 总结
+
+完成 3 个 chunk 后，仓库新增能力：
+
+1. **多 IM 同进程**：`im.enabled` 配置数组、`createApplication` 按需装配 adapters
+2. **个人微信通道**：扫码登录、文本 round-trip、单聊（MVP，媒体延后）
+3. **抽象层正交化**：confirm tool 按 `ctx.confirm` 条件注入；SessionStore 按 imProvider 路径分桶
+4. **配置迁移**：旧 `im.provider` 自动迁移为 `im.enabled` 数组
+
+**MVP 范围已完成**。下次切片由 spec §13 后续待办挑选启动（媒体收发、多账号、IM-aware prompt 等）。
