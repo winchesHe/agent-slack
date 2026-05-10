@@ -4,6 +4,8 @@ import type { AgentExecutionEvent } from '@/core/events.ts'
 import type { Logger } from '@/logger/logger.ts'
 import type { Session } from '@/store/SessionStore.ts'
 import { formatCompactSummary, type CompactAgent } from '@/agents/compact/index.ts'
+import type { CompactAgentOutput } from '@/agents/compact/types.ts'
+import { groupMessagesByApiRound } from '@/agents/compact/groupMessagesByApiRound.ts'
 import { stripImagesFromMessages } from '@/agents/compact/stripImagesFromMessages.ts'
 import { compactOldToolResults } from '@/orchestrator/modelMessages.ts'
 
@@ -67,6 +69,8 @@ export interface ContextCompactorDeps {
   keepRecentToolResults: number
 }
 
+const MAX_PTL_RETRIES = 3
+
 function assistantMessage(content: string): CompletedFinalMessages[number] {
   return { id: randomUUID(), role: 'assistant', content }
 }
@@ -75,8 +79,6 @@ function assistantMessage(content: string): CompletedFinalMessages[number] {
  * compact 入口预处理（参考 free-code services/compact/compact.ts）：
  * 1. tool_result 占位：超出 keepRecentToolResults 的旧结果替换为占位文本（含 jsonl 路径）
  * 2. 媒体剥离：image / file part 替换为 [image] / [document] 占位
- *
- * 这两层把"对生成摘要无价值但极易炸窗口"的内容剔除，再交给 PTL retry 处理剩余溢出。
  */
 function preprocessForCompact(
   messages: CoreMessage[],
@@ -85,6 +87,59 @@ function preprocessForCompact(
 ): CoreMessage[] {
   const placeheld = compactOldToolResults(messages, keepRecentToolResults, messagesJsonlPath)
   return stripImagesFromMessages(placeheld)
+}
+
+export function isPromptTooLongError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  const name = (error as { name?: string }).name
+  if (name === 'PROMPT_TOO_LONG') return true
+  if (name === 'AI_APICallError' || name === 'APICallError') {
+    const status = (error as { statusCode?: number }).statusCode
+    if (status === 413) return true
+  }
+  return /prompt.+too.+long|context.+window|too.+many.+tokens/i.test(error.message)
+}
+
+interface PTLRetryResult {
+  output: CompactAgentOutput
+  ptlRetryCount: number
+  ptlDroppedMessages: number
+}
+
+async function summarizeWithPTLRetry(
+  compactAgent: CompactAgent,
+  messages: CoreMessage[],
+  log: Logger,
+): Promise<PTLRetryResult> {
+  let attempts = 0
+  let working = messages
+  let totalDropped = 0
+
+  for (;;) {
+    try {
+      const output = await compactAgent.summarize({ messages: working })
+      return { output, ptlRetryCount: attempts, ptlDroppedMessages: totalDropped }
+    } catch (error) {
+      if (!isPromptTooLongError(error) || attempts >= MAX_PTL_RETRIES) {
+        throw error
+      }
+      const groups = groupMessagesByApiRound(working)
+      if (groups.length <= 1) {
+        // 不能再砍——抛 PTL 让上层熔断
+        throw error
+      }
+      attempts += 1
+      const dropped = groups.shift()!
+      totalDropped += dropped.length
+      working = groups.flat()
+      log.warn('compact PTL retry: dropped oldest API round', {
+        attempt: attempts,
+        droppedMessages: dropped.length,
+        totalDropped,
+        remainingMessages: working.length,
+      })
+    }
+  }
 }
 
 export function createContextCompactor(deps: ContextCompactorDeps): ContextCompactor {
@@ -120,22 +175,27 @@ export function createContextCompactor(deps: ContextCompactorDeps): ContextCompa
         args.messagesJsonlPath,
       )
 
-      const summary = await deps.compactAgent.summarize({
-        messages: preprocessed,
-      })
-      const compactMessage = formatCompactSummary({ summary })
-      const responseText = compactMessage
+      const { output, ptlRetryCount, ptlDroppedMessages } = await summarizeWithPTLRetry(
+        deps.compactAgent,
+        preprocessed,
+        log,
+      )
+      const compactMessage = formatCompactSummary({ summary: output.summary })
 
       log.info('manual compact completed', {
         historyMessages: args.history.length,
         preprocessedMessages: preprocessed.length,
+        ptlRetryCount,
+        ptlDroppedMessages,
+        inputTokens: output.usage.inputTokens,
+        outputTokens: output.usage.outputTokens,
         trigger: args.trigger,
         userId: args.userId,
       })
 
       return {
         status: 'compacted',
-        responseText,
+        responseText: compactMessage,
         finalMessages: [assistantMessage(compactMessage)],
       }
     },
@@ -155,14 +215,20 @@ export function createContextCompactor(deps: ContextCompactorDeps): ContextCompa
         args.messagesJsonlPath,
       )
 
-      const summary = await deps.compactAgent.summarize({
-        messages: preprocessed,
-      })
-      const compactMessage = formatCompactSummary({ mode: 'auto', summary })
+      const { output, ptlRetryCount, ptlDroppedMessages } = await summarizeWithPTLRetry(
+        deps.compactAgent,
+        preprocessed,
+        log,
+      )
+      const compactMessage = formatCompactSummary({ mode: 'auto', summary: output.summary })
 
       log.info('auto compact completed', {
         historyMessages: args.messages.length,
         preprocessedMessages: preprocessed.length,
+        ptlRetryCount,
+        ptlDroppedMessages,
+        inputTokens: output.usage.inputTokens,
+        outputTokens: output.usage.outputTokens,
         trigger: args.trigger,
         sessionId: args.session.id,
       })

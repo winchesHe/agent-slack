@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { CoreMessage } from 'ai'
 import type { CompactAgent } from '@/agents/compact/index.ts'
+import type { CompactAgentOutput } from '@/agents/compact/types.ts'
 import type { Logger } from '@/logger/logger.ts'
 import type { Session } from '@/store/SessionStore.ts'
 import { createContextCompactor } from './ContextCompactor.ts'
@@ -42,6 +43,15 @@ function session(): Session {
   }
 }
 
+function output(summary: string, inputTokens = 100, outputTokens = 50): CompactAgentOutput {
+  return {
+    summary,
+    usage: { inputTokens, outputTokens, cachedInputTokens: 0 },
+  }
+}
+
+const messagesJsonlPath = '/workspace/.agent-slack/sessions/slack/c.C.t/messages.jsonl'
+
 describe('ContextCompactor', () => {
   it('历史不足时跳过 compact 并返回可持久化回复', async () => {
     const compactAgent: CompactAgent = {
@@ -54,7 +64,7 @@ describe('ContextCompactor', () => {
       history: [{ role: 'user', content: 'hi' }],
       trigger: 'mention_command',
       userId: 'U',
-      messagesJsonlPath: '/workspace/.agent-slack/sessions/slack/c.C.t/messages.jsonl',
+      messagesJsonlPath,
     })
 
     expect(result.status).toBe('skipped')
@@ -65,9 +75,8 @@ describe('ContextCompactor', () => {
 
   it('调用 compact agent 生成摘要并返回 compact message', async () => {
     const compactAgent: CompactAgent = {
-      summarize: vi.fn(
-        async () =>
-          '摘要内容\n完整会话记录：/workspace/.agent-slack/sessions/slack/c.C.t/messages.jsonl',
+      summarize: vi.fn(async () =>
+        output('摘要内容\n完整会话记录：/workspace/.agent-slack/sessions/slack/c.C.t/messages.jsonl'),
       ),
     }
     const compactor = createContextCompactor({ compactAgent, logger: logger(), keepRecentToolResults: 20 })
@@ -80,7 +89,7 @@ describe('ContextCompactor', () => {
       ],
       trigger: 'mention_command',
       userId: 'U',
-      messagesJsonlPath: '/workspace/.agent-slack/sessions/slack/c.C.t/messages.jsonl',
+      messagesJsonlPath,
     })
 
     expect(result.status).toBe('compacted')
@@ -98,12 +107,14 @@ describe('ContextCompactor', () => {
   it('compact message 会过滤低价值握手内容', async () => {
     const compactAgent: CompactAgent = {
       summarize: vi.fn(async () =>
-        [
-          '用户正在排查 compact 显示顺序。',
-          '- COMPACT_COMMAND_READY abc',
-          '- Reply exactly: COMPACT_COMMAND_READY abc',
-          '- Do not use tools.',
-        ].join('\n'),
+        output(
+          [
+            '用户正在排查 compact 显示顺序。',
+            '- COMPACT_COMMAND_READY abc',
+            '- Reply exactly: COMPACT_COMMAND_READY abc',
+            '- Do not use tools.',
+          ].join('\n'),
+        ),
       ),
     }
     const compactor = createContextCompactor({ compactAgent, logger: logger(), keepRecentToolResults: 20 })
@@ -116,7 +127,7 @@ describe('ContextCompactor', () => {
       ],
       trigger: 'mention_command',
       userId: 'U',
-      messagesJsonlPath: '/workspace/.agent-slack/sessions/slack/c.C.t/messages.jsonl',
+      messagesJsonlPath,
     })
 
     expect(result.responseText).toContain('用户正在排查 compact 显示顺序。')
@@ -127,7 +138,7 @@ describe('ContextCompactor', () => {
 
   it('autoCompact 生成不可直接展示的 auto summary finalMessage', async () => {
     const compactAgent: CompactAgent = {
-      summarize: vi.fn(async () => '自动摘要'),
+      summarize: vi.fn(async () => output('自动摘要')),
     }
     const compactor = createContextCompactor({ compactAgent, logger: logger(), keepRecentToolResults: 20 })
 
@@ -138,7 +149,7 @@ describe('ContextCompactor', () => {
         { role: 'assistant', content: 'hello' },
       ],
       trigger: 'budget',
-      messagesJsonlPath: '/workspace/.agent-slack/sessions/slack/c.C.t/messages.jsonl',
+      messagesJsonlPath,
     })
 
     expect(result.status).toBe('compacted')
@@ -165,7 +176,7 @@ describe('ContextCompactor', () => {
       session: session(),
       messages: [{ role: 'user', content: 'hi' }],
       trigger: 'budget',
-      messagesJsonlPath: '/workspace/.agent-slack/sessions/slack/c.C.t/messages.jsonl',
+      messagesJsonlPath,
     })
 
     expect(result).toEqual({
@@ -184,7 +195,7 @@ describe('ContextCompactor', () => {
         expect(flat).toContain('[image]')
         expect(flat).toContain('[旧工具结果已压缩]')
         expect(flat).toContain('messages.jsonl')
-        return '摘要'
+        return output('摘要')
       }),
     }
     const compactor = createContextCompactor({
@@ -213,10 +224,82 @@ describe('ContextCompactor', () => {
       session: session(),
       messages,
       trigger: 'budget',
-      messagesJsonlPath: '/workspace/.agent-slack/sessions/slack/c.C.t/messages.jsonl',
+      messagesJsonlPath,
     })
 
     expect(result.status).toBe('compacted')
     expect(compactAgent.summarize).toHaveBeenCalledOnce()
+  })
+
+  it('PTL retry：prompt_too_long 时按 API round 砍头重试，第 3 次成功', async () => {
+    let attempts = 0
+    const compactAgent: CompactAgent = {
+      summarize: vi.fn(async () => {
+        attempts += 1
+        if (attempts <= 2) {
+          const err = new Error('prompt is too long')
+          ;(err as { name: string }).name = 'PROMPT_TOO_LONG'
+          throw err
+        }
+        return output('final')
+      }),
+    }
+    const compactor = createContextCompactor({
+      compactAgent,
+      logger: logger(),
+      keepRecentToolResults: 20,
+    })
+
+    // 4 个 user message → 4 组，可砍 3 次
+    const messages: CoreMessage[] = []
+    for (let i = 0; i < 4; i += 1) {
+      messages.push({ role: 'user', content: `q${i}` })
+      messages.push({ role: 'assistant', content: `a${i}` })
+    }
+
+    const result = await compactor.autoCompact({
+      session: session(),
+      messages,
+      trigger: 'budget',
+      messagesJsonlPath,
+    })
+
+    expect(attempts).toBe(3)
+    expect(result.status).toBe('compacted')
+    expect(compactAgent.summarize).toHaveBeenCalledTimes(3)
+  })
+
+  it('PTL retry 超出 MAX_PTL_RETRIES 后抛出 prompt_too_long', async () => {
+    const compactAgent: CompactAgent = {
+      summarize: vi.fn(async () => {
+        const err = new Error('prompt is too long')
+        ;(err as { name: string }).name = 'PROMPT_TOO_LONG'
+        throw err
+      }),
+    }
+    const compactor = createContextCompactor({
+      compactAgent,
+      logger: logger(),
+      keepRecentToolResults: 20,
+    })
+
+    // 6 个 user message → 6 组，足够触发 3 次砍头然后再失败抛出
+    const messages: CoreMessage[] = []
+    for (let i = 0; i < 6; i += 1) {
+      messages.push({ role: 'user', content: `q${i}` })
+      messages.push({ role: 'assistant', content: `a${i}` })
+    }
+
+    await expect(
+      compactor.autoCompact({
+        session: session(),
+        messages,
+        trigger: 'budget',
+        messagesJsonlPath,
+      }),
+    ).rejects.toMatchObject({ name: 'PROMPT_TOO_LONG' })
+
+    // 1 次 + 3 次 retry = 4 次
+    expect(compactAgent.summarize).toHaveBeenCalledTimes(4)
   })
 })

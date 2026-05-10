@@ -11,9 +11,6 @@ export const COMPACT_SYSTEM_PROMPT = `你是 agent-slack 的上下文压缩助�
 - 不输出本地绝对路径、session/jsonl 路径、完整记录路径。
 - 输出 Markdown；不要输出 JSON；不要调用工具；不超过 8 条要点。`
 
-// 过渡缓解：与 maxApproxChars 默认值（1M）同量级，避免"前 N K 静默丢失"。
-// TODO(Chunk 3)：删除该硬截，改用三层处理（tool_result 占位 + 剥图 + PTL retry）。
-const COMPACT_INPUT_MAX_CHARS = 1_000_000
 const COMPACT_SUMMARY_MAX_CHARS = 1_200
 
 function serializeMessages(messages: CoreMessage[]): string {
@@ -21,15 +18,10 @@ function serializeMessages(messages: CoreMessage[]): string {
 }
 
 export function buildCompactPrompt(input: { messages: CoreMessage[] }): string {
-  const serialized = serializeMessages(input.messages)
-  const wasTruncated = serialized.length > COMPACT_INPUT_MAX_CHARS
-  const visibleTranscript = wasTruncated
-    ? serialized.slice(serialized.length - COMPACT_INPUT_MAX_CHARS)
-    : serialized
+  // 不预截输入：超长时由 ContextCompactor 的 PTL retry 按 API round 砍头处理。
+  const visibleTranscript = serializeMessages(input.messages)
 
   return `请压缩下面这段 agent-slack session 历史。
-
-${wasTruncated ? '注意：由于 compact 输入过长，下面只包含历史尾部片段；摘要中必须说明更早历史未进入本次压缩输入。' : ''}
 
 ## 历史消息 JSONL
 ${visibleTranscript}
