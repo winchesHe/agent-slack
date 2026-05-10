@@ -461,6 +461,13 @@ export function createConversationOrchestrator(
                   if (event.usage.totalCostUSD > 0) {
                     await deps.sessionStore.accumulateCost(session.id, event.usage.totalCostUSD)
                   }
+                  // 持久化最后一次 step 的真实 input_tokens——下一轮 autoCompact
+                  // 触发判定用它对比 ctx window，比字符近似准确得多。
+                  if (typeof event.usage.lastApiInputTokens === 'number') {
+                    await deps.sessionStore.setLastUsage(session.id, {
+                      apiInputTokens: event.usage.lastApiInputTokens,
+                    })
+                  }
                 }
 
                 if (event.type === 'lifecycle') {

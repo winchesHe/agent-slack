@@ -51,7 +51,17 @@ export interface SessionMeta {
   }
   context?: {
     autoCompact?: AutoCompactState
+    /**
+     * 上一轮 API 真实 input_tokens 快照（覆盖语义）。供 autoCompact 触发判定
+     * 用真实 token 数对比 ctx window，而不是字符近似估算。首轮缺失时回退字符估算。
+     */
+    lastUsage?: LastUsageSnapshot
   }
+}
+
+export interface LastUsageSnapshot {
+  apiInputTokens: number
+  capturedAt: string
 }
 
 export interface Session {
@@ -93,6 +103,8 @@ export interface SessionStore {
   accumulateCost(id: string, usd: number): Promise<void>
   getAutoCompactState(id: string): Promise<AutoCompactState>
   setAutoCompactState(id: string, state: AutoCompactState): Promise<void>
+  getLastUsage(id: string): Promise<LastUsageSnapshot | undefined>
+  setLastUsage(id: string, snapshot: { apiInputTokens: number }): Promise<void>
   loadCompactRecords(id: string): Promise<CompactRecord[]>
   appendCompactRecord(id: string, record: CompactRecord): Promise<void>
   setStatus(id: string, status: SessionMeta['status']): Promise<void>
@@ -361,6 +373,25 @@ export function createSessionStore(paths: WorkspacePaths): SessionStore {
       meta.context = {
         ...meta.context,
         autoCompact: state,
+      }
+      await writeMeta(dir, meta)
+    },
+
+    async getLastUsage(id) {
+      const dir = resolveDir(id)
+      const meta = await readMeta(dir)
+      return meta.context?.lastUsage
+    },
+
+    async setLastUsage(id, snapshot) {
+      const dir = resolveDir(id)
+      const meta = await readMeta(dir)
+      meta.context = {
+        ...meta.context,
+        lastUsage: {
+          apiInputTokens: snapshot.apiInputTokens,
+          capturedAt: new Date().toISOString(),
+        },
       }
       await writeMeta(dir, meta)
     },

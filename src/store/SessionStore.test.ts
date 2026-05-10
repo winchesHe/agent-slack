@@ -351,6 +351,22 @@ describe('SessionStore', () => {
     expect(raw).toContain('"preCompactApproxChars":800000')
   })
 
+  it('setLastUsage / getLastUsage 持久化与读取真实 input_tokens 快照', async () => {
+    const { store, session } = await createStoreWithSession('t-last-usage')
+    expect(await store.getLastUsage(session.id)).toBeUndefined()
+
+    await store.setLastUsage(session.id, { apiInputTokens: 123_456 })
+    const snapshot = await store.getLastUsage(session.id)
+    expect(snapshot).toBeDefined()
+    expect(snapshot?.apiInputTokens).toBe(123_456)
+    expect(snapshot?.capturedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+
+    // 覆盖语义：第二次写覆盖第一次
+    await store.setLastUsage(session.id, { apiInputTokens: 200_000 })
+    const second = await store.getLastUsage(session.id)
+    expect(second?.apiInputTokens).toBe(200_000)
+  })
+
   it('appendEvent 追加 compact_succeeded / compact_failed / compact_skipped', async () => {
     const { store, session } = await createStoreWithSession('t-event-multi')
     const args = { channelName: 'general', channelId: 'C1', threadTs: 't-event-multi' }

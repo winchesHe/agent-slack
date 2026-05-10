@@ -504,6 +504,69 @@ describe('ConversationOrchestrator 粗事件消费', () => {
     })
   })
 
+  it('usage-info.lastApiInputTokens 写入 meta.context.lastUsage', async () => {
+    const paths = resolveWorkspacePaths(cwd)
+    const store = createSessionStore(paths)
+    const memoryStore = createMemoryStore(paths)
+    const session = await store.getOrCreate({
+      imProvider: 'slack',
+      channelId: 'C',
+      channelName: 'c',
+      threadTs: 't-last-usage',
+      imUserId: 'U',
+    })
+
+    const executor: AgentExecutor = {
+      async *execute() {
+        yield {
+          type: 'usage-info',
+          usage: {
+            durationMs: 100,
+            totalCostUSD: 0,
+            modelUsage: [
+              {
+                model: 'm',
+                inputTokens: 350,
+                outputTokens: 5,
+                cachedInputTokens: 0,
+                cacheHitRate: 0,
+              },
+            ],
+            lastApiInputTokens: 250,
+          },
+        }
+        yield { type: 'lifecycle', phase: 'completed', finalMessages: [] }
+      },
+    }
+    const orch = createConversationOrchestrator({
+      toolsBuilder: () => ({}),
+      executorFactory: () => executor,
+      sessionStore: store,
+      memoryStore,
+      runQueue: new SessionRunQueue(),
+      abortRegistry: new AbortRegistry<string>(),
+      systemPrompt: '',
+      logger: stubLogger(),
+    })
+
+    await orch.handle(
+      {
+        imProvider: 'slack',
+        channelId: 'C',
+        channelName: 'c',
+        threadTs: 't-last-usage',
+        userId: 'U',
+        userName: 'win-test',
+        text: 'hi',
+        messageTs: '1',
+      },
+      mockSink().sink,
+    )
+
+    const snapshot = await store.getLastUsage(session.id)
+    expect(snapshot?.apiInputTokens).toBe(250)
+  })
+
   it('breakerOpen 时跳过 compact 并埋 compact_skipped(breaker_open) 事件', async () => {
     const paths = resolveWorkspacePaths(cwd)
     const store = createSessionStore(paths)
@@ -1313,6 +1376,10 @@ describe('ConversationOrchestrator 粗事件消费', () => {
         return { failureCount: 0, breakerOpen: false }
       },
       async setAutoCompactState() {},
+      async getLastUsage() {
+        return undefined
+      },
+      async setLastUsage() {},
       async loadCompactRecords() {
         return []
       },
