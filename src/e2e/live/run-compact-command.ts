@@ -7,6 +7,7 @@ import { consola } from 'consola'
 import type { LiveE2EScenario } from './scenario.ts'
 import { runDirectly } from './scenario.ts'
 import {
+  cleanupSlackSessionForThread,
   createLiveE2EContext,
   delay,
   findReplyContaining,
@@ -170,6 +171,9 @@ async function main(): Promise<void> {
     })
     await ctx.application.stop().catch((error) => {
       consola.error('Failed to stop application:', error)
+    })
+    await cleanupSlackSessionForThread(result.rootMessageTs).catch((error) => {
+      consola.error('Failed to cleanup session:', error)
     })
   }
 

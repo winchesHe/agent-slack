@@ -154,6 +154,44 @@ export async function findSessionDir(
   return path.join(slackSessionsDir, match.name)
 }
 
+/**
+ * 删除指定 thread 对应的 Slack session 目录。
+ * 用于 e2e scenario 在 finally 中调用，避免 workspace session 膨胀。
+ *
+ * 行为约定：
+ * - threadTs 为 undefined（如早期失败未记录到 rootMessageTs）时直接返回。
+ * - 找不到 session 目录（未生成或已清理）视为成功，不抛错。
+ * - 设置 SLACK_E2E_KEEP_SESSION 为真值（1 / true / yes / on）时跳过清理，便于调试保留现场。
+ */
+export async function cleanupSlackSessionForThread(
+  threadTs: string | undefined,
+  options: { workspaceDir?: string } = {},
+): Promise<void> {
+  if (!threadTs) {
+    return
+  }
+  if (isTruthyEnv(process.env.SLACK_E2E_KEEP_SESSION)) {
+    return
+  }
+
+  let sessionDir: string
+  try {
+    sessionDir = await findSessionDir(threadTs, options)
+  } catch {
+    return
+  }
+
+  await fs.rm(sessionDir, { recursive: true, force: true })
+}
+
+function isTruthyEnv(value: string | undefined): boolean {
+  if (!value) {
+    return false
+  }
+  const normalized = value.trim().toLowerCase()
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on'
+}
+
 export async function writeScenarioResult(scenarioId: string, result: unknown): Promise<void> {
   const resultPath = process.env.SLACK_E2E_RESULT_PATH?.trim() || '.agent-slack/e2e/result.json'
   const absolutePath = path
