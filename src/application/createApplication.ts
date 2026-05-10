@@ -20,6 +20,10 @@ import { createSlackAdapter } from '@/im/slack/SlackAdapter.ts'
 import { createSlackRenderer } from '@/im/slack/SlackRenderer.ts'
 import { createSlackConfirm } from '@/im/slack/SlackConfirm.ts'
 import { createConfirmBridge } from '@/im/slack/ConfirmBridge.ts'
+import { WechatApi } from '@/im/wechat/WechatApi.ts'
+import { createCredentialsStore } from '@/im/wechat/CredentialsStore.ts'
+import { createWechatRenderer } from '@/im/wechat/WechatRenderer.ts'
+import { createWechatAdapter } from '@/im/wechat/WechatAdapter.ts'
 import { createSelfImproveCollector } from '@/agents/selfImprove/collectorAgent.ts'
 import { createSelfImproveGenerator } from '@/agents/selfImprove/generatorAgent.ts'
 import { createSemanticDedup } from '@/agents/selfImprove/semanticDedupAgent.ts'
@@ -188,8 +192,23 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
   }
 
   if (enabled.includes('wechat')) {
-    // TODO(Dispatch 10): 装配 WechatAdapter（依赖 Chunk 2/3 的 WechatApi / WechatAdapter）
-    logger.warn('im.enabled 含 wechat，但 WechatAdapter 尚未实现（计划在 Chunk 3 落地）')
+    const wechatApi = new WechatApi({
+      baseUrl: ctx.config.im.wechat.baseUrl,
+      cdnBaseUrl: ctx.config.im.wechat.cdnBaseUrl,
+    })
+    const wechatRenderer = createWechatRenderer({ logger })
+    const wechat = createWechatAdapter({
+      api: wechatApi,
+      credentialsStore: createCredentialsStore(),
+      credentialsFile: ctx.paths.wechatCredentialsFile,
+      orchestrator,
+      sessionStore,
+      runQueue,
+      abortRegistry,
+      renderer: wechatRenderer,
+      logger,
+    })
+    adapters.push(wechat)
   }
 
   if (adapters.length === 0) {
