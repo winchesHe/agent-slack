@@ -18,6 +18,7 @@ import type { MentionCommandRouter } from './MentionCommandRouter.ts'
 import { classifyCompactError, type ContextCompactor } from './ContextCompactor.ts'
 import type {
   AutoCompactState,
+  LastUsageSnapshot,
   SessionEvent,
   CompactMode,
   CompactTrigger,
@@ -70,14 +71,37 @@ export function createConversationOrchestrator(
 
   const autoCompactConfig = modelMessageBudget.autoCompact
 
-  const shouldTriggerAutoCompact = (candidateMessages: CoreMessage[]): boolean => {
+  // free-code 实测保留量：summary 上限 ~20K tokens；safety buffer 防最后一跳越界
+  const SUMMARY_RESERVE_TOKENS = 20_000
+  const SAFETY_BUFFER_TOKENS = 13_000
+
+  const shouldTriggerAutoCompact = (
+    candidateMessages: CoreMessage[],
+    lastUsage?: LastUsageSnapshot,
+  ): boolean => {
     if (!autoCompactConfig?.enabled || candidateMessages.length < 2) {
       return false
     }
-
-    // 触发只看体积（当前以字符估算近似 token；后续会切到真实 input_tokens）。
-    // 不再用消息条数兜底——条数与 token 没稳定换算关系，会在 token 充足时过早触发。
     const triggerRatio = Math.min(Math.max(autoCompactConfig.triggerRatio, 0.01), 1)
+
+    // 优先：用上一轮 API 真实 input_tokens 对比 ctx window。这是 spec §3.7.2
+    // "数据通路"路径——同 history、cache 已建好时下一轮 input_tokens 大致与
+    // 上一轮 lastApiInputTokens 持平。
+    if (lastUsage && modelMessageBudget.effectiveContextTokens) {
+      const tokenThreshold = Math.max(
+        1,
+        Math.ceil(
+          (modelMessageBudget.effectiveContextTokens -
+            SUMMARY_RESERVE_TOKENS -
+            SAFETY_BUFFER_TOKENS) *
+            triggerRatio,
+        ),
+      )
+      return lastUsage.apiInputTokens >= tokenThreshold
+    }
+
+    // 回退：首轮（lastUsage 缺失）/ 未配置 effectiveContextTokens → 字符估算。
+    // 不再用消息条数兜底——条数与 token 没稳定换算关系，会在 token 充足时过早触发。
     const charThreshold = Math.max(1, Math.ceil(modelMessageBudget.maxApproxChars * triggerRatio))
     return estimateMessagesChars(candidateMessages) >= charThreshold
   }
@@ -339,7 +363,12 @@ export function createConversationOrchestrator(
                   mode: 'auto',
                   reason: 'too_few_messages',
                 })
-              } else if (shouldTriggerAutoCompact(candidateMessages)) {
+              } else if (
+                shouldTriggerAutoCompact(
+                  candidateMessages,
+                  await deps.sessionStore.getLastUsage(session.id),
+                )
+              ) {
                 let autoCompactActivitySent = false
                 await sink.onEvent({
                   type: 'activity-state',

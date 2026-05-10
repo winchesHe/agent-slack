@@ -22,6 +22,15 @@ export const ConfigSchema = z.object({
           // 默认 900_000 字符 ≈ 300k tokens，匹配 400k token 上下文窗口（GPT-5 长窗口 / 部分 LiteLLM 路由）。
           // 200k 窗口模型建议改为 500_000~600_000；1M 窗口可设 2_000_000+。
           maxApproxChars: z.number().int().positive().default(900_000),
+          /**
+           * 模型 context window 总 token 数。设了就让 autoCompact 触发
+           * 优先用真实 input_tokens（spec §3.7.2）：
+           *   threshold = (effectiveContextTokens - 33_000 reserve) * triggerRatio
+           *   33_000 = 20_000 summary 预留 + 13_000 safety buffer（对齐 free-code）
+           * 缺省时回退用 maxApproxChars 字符估算。
+           * 默认 200_000（Sonnet 标准窗口）；GPT-5 系列可设 400_000，1M beta 设 1_000_000。
+           */
+          effectiveContextTokens: z.number().int().positive().default(200_000),
           keepRecentMessages: z.number().int().positive().default(80),
           keepRecentToolResults: z.number().int().positive().default(20),
           autoCompact: z

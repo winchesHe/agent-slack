@@ -567,6 +567,151 @@ describe('ConversationOrchestrator 粗事件消费', () => {
     expect(snapshot?.apiInputTokens).toBe(250)
   })
 
+  it('lastUsage + effectiveContextTokens 都设置时按真实 token 触发，忽略字符大小', async () => {
+    const paths = resolveWorkspacePaths(cwd)
+    const store = createSessionStore(paths)
+    const memoryStore = createMemoryStore(paths)
+    const session = await store.getOrCreate({
+      imProvider: 'slack',
+      channelId: 'C',
+      channelName: 'c',
+      threadTs: 't-token-trigger',
+      imUserId: 'U',
+    })
+    await store.appendMessage(session.id, { role: 'user', content: 'old' })
+    await store.appendMessage(session.id, { role: 'assistant', content: 'answer' })
+    // 预设 lastUsage 超过阈值：(35_000 - 33_000) * 0.5 = 1000 → 设 1500
+    await store.setLastUsage(session.id, { apiInputTokens: 1500 })
+
+    const executor: AgentExecutor = {
+      async *execute() {
+        yield { type: 'lifecycle', phase: 'completed', finalMessages: [] }
+      },
+    }
+    const contextCompactor = makeContextCompactor()
+    const orch = createConversationOrchestrator({
+      toolsBuilder: () => ({}),
+      executorFactory: () => executor,
+      sessionStore: store,
+      memoryStore,
+      runQueue: new SessionRunQueue(),
+      abortRegistry: new AbortRegistry<string>(),
+      systemPrompt: '',
+      modelMessageBudget: {
+        // 字符极小即便 candidate 很短也 ≥ 字符阈值；如果 token 路径正确，
+        // 这里不应回退到字符判断。
+        maxApproxChars: 1_000_000,
+        effectiveContextTokens: 35_000,
+        keepRecentMessages: 80,
+        keepRecentToolResults: 20,
+        autoCompact: { enabled: true, triggerRatio: 0.5, maxFailures: 2 },
+      },
+      contextCompactor,
+      logger: stubLogger(),
+    })
+
+    await orch.handle(makeInput({ text: 'short', threadTs: 't-token-trigger' }), mockSink().sink)
+
+    expect(contextCompactor.autoCompact).toHaveBeenCalledOnce()
+  })
+
+  it('lastUsage 缺失（首轮）时回退字符估算', async () => {
+    const paths = resolveWorkspacePaths(cwd)
+    const store = createSessionStore(paths)
+    const memoryStore = createMemoryStore(paths)
+    const session = await store.getOrCreate({
+      imProvider: 'slack',
+      channelId: 'C',
+      channelName: 'c',
+      threadTs: 't-char-fallback',
+      imUserId: 'U',
+    })
+    // 写两条短消息（candidate 字符达到阈值），不设 lastUsage
+    await store.appendMessage(session.id, { role: 'user', content: 'x'.repeat(40) })
+    await store.appendMessage(session.id, { role: 'assistant', content: 'y'.repeat(40) })
+
+    const executor: AgentExecutor = {
+      async *execute() {
+        yield { type: 'lifecycle', phase: 'completed', finalMessages: [] }
+      },
+    }
+    const contextCompactor = makeContextCompactor()
+    const orch = createConversationOrchestrator({
+      toolsBuilder: () => ({}),
+      executorFactory: () => executor,
+      sessionStore: store,
+      memoryStore,
+      runQueue: new SessionRunQueue(),
+      abortRegistry: new AbortRegistry<string>(),
+      systemPrompt: '',
+      modelMessageBudget: {
+        maxApproxChars: 100,
+        // effectiveContextTokens 故意设了，但 lastUsage 缺失 → 应回退到字符路径
+        effectiveContextTokens: 200_000,
+        keepRecentMessages: 80,
+        keepRecentToolResults: 20,
+        autoCompact: { enabled: true, triggerRatio: 0.5, maxFailures: 2 },
+      },
+      contextCompactor,
+      logger: stubLogger(),
+    })
+
+    await orch.handle(makeInput({ text: 'now', threadTs: 't-char-fallback' }), mockSink().sink)
+
+    // candidate ≈ 100+ chars，maxApproxChars * 0.5 = 50 → 字符路径触发
+    expect(contextCompactor.autoCompact).toHaveBeenCalledOnce()
+    expect(await store.getLastUsage(session.id)).toBeUndefined()
+  })
+
+  it('lastUsage + effectiveContextTokens 都设置但 token 不够时不触发（即便字符够）', async () => {
+    const paths = resolveWorkspacePaths(cwd)
+    const store = createSessionStore(paths)
+    const memoryStore = createMemoryStore(paths)
+    const session = await store.getOrCreate({
+      imProvider: 'slack',
+      channelId: 'C',
+      channelName: 'c',
+      threadTs: 't-token-priority',
+      imUserId: 'U',
+    })
+    // candidate 字符大（达到字符阈值），但 lastUsage 远低于 token 阈值
+    await store.appendMessage(session.id, { role: 'user', content: 'x'.repeat(80) })
+    await store.appendMessage(session.id, { role: 'assistant', content: 'y'.repeat(80) })
+    await store.setLastUsage(session.id, { apiInputTokens: 500 })
+
+    const executor: AgentExecutor = {
+      async *execute() {
+        yield { type: 'lifecycle', phase: 'completed', finalMessages: [] }
+      },
+    }
+    const contextCompactor = makeContextCompactor()
+    const orch = createConversationOrchestrator({
+      toolsBuilder: () => ({}),
+      executorFactory: () => executor,
+      sessionStore: store,
+      memoryStore,
+      runQueue: new SessionRunQueue(),
+      abortRegistry: new AbortRegistry<string>(),
+      systemPrompt: '',
+      modelMessageBudget: {
+        maxApproxChars: 100, // 字符阈值小
+        effectiveContextTokens: 200_000, // (200K-33K)*0.5 = 83.5K，500 << 83.5K
+        keepRecentMessages: 80,
+        keepRecentToolResults: 20,
+        autoCompact: { enabled: true, triggerRatio: 0.5, maxFailures: 2 },
+      },
+      contextCompactor,
+      logger: stubLogger(),
+    })
+
+    await orch.handle(
+      makeInput({ text: 'short', threadTs: 't-token-priority' }),
+      mockSink().sink,
+    )
+
+    expect(contextCompactor.autoCompact).not.toHaveBeenCalled()
+  })
+
   it('breakerOpen 时跳过 compact 并埋 compact_skipped(breaker_open) 事件', async () => {
     const paths = resolveWorkspacePaths(cwd)
     const store = createSessionStore(paths)
