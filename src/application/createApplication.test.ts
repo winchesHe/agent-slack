@@ -69,6 +69,7 @@ const mocks = vi.hoisted(() => {
           },
           context: { keepRecentToolResults: 20 } as { keepRecentToolResults: number },
         },
+        im: { enabled: ['slack'] as Array<'slack' | 'wechat'> },
       },
       systemPrompt: 'system prompt',
       skills: [],
@@ -243,6 +244,7 @@ describe('createApplication', () => {
           responses: { reasoningEffort: 'medium', reasoningSummary: 'auto' } as const,
           context: { keepRecentToolResults: 20 } as { keepRecentToolResults: number },
         },
+        im: { enabled: ['slack'] as Array<'slack' | 'wechat'> },
       },
       systemPrompt: 'system prompt',
       skills: [],
@@ -285,6 +287,7 @@ describe('createApplication', () => {
           responses: { reasoningEffort: 'medium', reasoningSummary: 'auto' } as const,
           context: { keepRecentToolResults: 20 } as { keepRecentToolResults: number },
         },
+        im: { enabled: ['slack'] as Array<'slack' | 'wechat'> },
       },
       systemPrompt: 'system prompt',
       skills: [],
@@ -308,6 +311,7 @@ describe('createApplication', () => {
           responses: { reasoningEffort: 'medium', reasoningSummary: 'auto' } as const,
           context: { keepRecentToolResults: 20 } as { keepRecentToolResults: number },
         },
+        im: { enabled: ['slack'] as Array<'slack' | 'wechat'> },
       },
       systemPrompt: 'system prompt',
       skills: [],
@@ -331,6 +335,7 @@ describe('createApplication', () => {
           responses: { reasoningEffort: 'medium', reasoningSummary: 'auto' } as const,
           context: { keepRecentToolResults: 20 } as { keepRecentToolResults: number },
         },
+        im: { enabled: ['slack'] as Array<'slack' | 'wechat'> },
       },
       systemPrompt: 'system prompt',
       skills: [],
@@ -369,6 +374,7 @@ describe('createApplication', () => {
           responses: { reasoningEffort: 'low', reasoningSummary: 'detailed' },
           context: { keepRecentToolResults: 20 } as { keepRecentToolResults: number },
         },
+        im: { enabled: ['slack'] as Array<'slack' | 'wechat'> },
       },
       systemPrompt: 'system prompt',
       skills: [],
@@ -416,5 +422,73 @@ describe('createApplication', () => {
     process.env.AGENT_PROVIDER = 'anthropic'
     await createApplication({ workspaceDir: '/workspace' })
     expect(mocks.createOpenAICompatible).toHaveBeenCalled()
+  })
+
+  it('仅 slack 启用：adapters 长度 1，且 id=slack', async () => {
+    const app = await createApplication({ workspaceDir: '/workspace' })
+    expect(app.adapters).toHaveLength(1)
+    expect(app.adapters[0]?.id).toBe('slack')
+  })
+
+  it('仅 wechat 启用：不要求 SLACK_* env，adapters 为空（adapter 暂未实现）', async () => {
+    delete process.env.SLACK_BOT_TOKEN
+    delete process.env.SLACK_APP_TOKEN
+    delete process.env.SLACK_SIGNING_SECRET
+    mocks.loadWorkspaceContext.mockResolvedValueOnce({
+      cwd: '/mock-workspace',
+      paths: mocks.paths,
+      config: {
+        agent: {
+          model: 'test-model',
+          maxSteps: 8,
+          provider: 'litellm' as const,
+          responses: { reasoningEffort: 'medium', reasoningSummary: 'auto' } as const,
+          context: { keepRecentToolResults: 20 } as { keepRecentToolResults: number },
+        },
+        im: { enabled: ['wechat'] as Array<'slack' | 'wechat'> },
+      },
+      systemPrompt: 'system prompt',
+      skills: [],
+    })
+
+    const app = await createApplication({ workspaceDir: '/workspace' })
+    expect(app.adapters).toHaveLength(0)
+    // SlackAdapter 不应被构造
+    expect(mocks.createSlackAdapter).not.toHaveBeenCalled()
+    // 双重 warn：wechat 未实现 + adapters 为空
+    const warnMessages = mocks.logger.warn.mock.calls.map((c) => c[0])
+    expect(warnMessages.some((m) => /wechat/i.test(String(m)) && /未实现/.test(String(m)))).toBe(
+      true,
+    )
+    expect(warnMessages.some((m) => /adapters\s*为空/.test(String(m)))).toBe(true)
+  })
+
+  it('双开 [slack, wechat]：仍要求 SLACK env，adapters 仅含 slack（wechat 未实现）', async () => {
+    mocks.loadWorkspaceContext.mockResolvedValueOnce({
+      cwd: '/mock-workspace',
+      paths: mocks.paths,
+      config: {
+        agent: {
+          model: 'test-model',
+          maxSteps: 8,
+          provider: 'litellm' as const,
+          responses: { reasoningEffort: 'medium', reasoningSummary: 'auto' } as const,
+          context: { keepRecentToolResults: 20 } as { keepRecentToolResults: number },
+        },
+        im: { enabled: ['slack', 'wechat'] as Array<'slack' | 'wechat'> },
+      },
+      systemPrompt: 'system prompt',
+      skills: [],
+    })
+
+    const app = await createApplication({ workspaceDir: '/workspace' })
+    expect(app.adapters).toHaveLength(1)
+    expect(app.adapters[0]?.id).toBe('slack')
+    expect(mocks.createSlackAdapter).toHaveBeenCalledTimes(1)
+    // wechat 部分仅 warn，不抛
+    const warnMessages = mocks.logger.warn.mock.calls.map((c) => c[0])
+    expect(warnMessages.some((m) => /wechat/i.test(String(m)) && /未实现/.test(String(m)))).toBe(
+      true,
+    )
   })
 })
