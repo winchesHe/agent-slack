@@ -27,6 +27,8 @@ interface AutoCompactResult {
     autoCompactNotVisibleAsReply: boolean
     autoCompactActivityObserved: boolean
     autoCompactStateReset: boolean
+    /** events.jsonl 出现 compact_attempt + compact_succeeded */
+    compactEventsEmitted: boolean
     mainReplyContinued: boolean
     persistedAutoCompactSummary: boolean
     persistedStructuredCompactMarker: boolean
@@ -34,6 +36,9 @@ interface AutoCompactResult {
     seedReplyObserved: boolean
   }
   passed: boolean
+  preCompactApproxChars?: number
+  postCompactApproxChars?: number
+  willRetriggerNextTurn?: boolean
   rootMessageTs?: string
   runId: string
   secondMessageTs?: string
@@ -47,6 +52,7 @@ async function main(): Promise<void> {
       autoCompactNotVisibleAsReply: false,
       autoCompactActivityObserved: false,
       autoCompactStateReset: false,
+      compactEventsEmitted: false,
       mainReplyContinued: false,
       persistedAutoCompactSummary: false,
       persistedStructuredCompactMarker: false,
@@ -91,6 +97,9 @@ async function main(): Promise<void> {
       return result.matched.seedReplyObserved
     })
 
+    // filler ≤ 4K：Slack chat.postMessage > 4K 会被服务端切多条消息，bot 只见第一段
+    // → user 消息中的"Reply exactly: AUTO_COMPACT_OK"会被切到后续 non-mention 消息里
+    // → bot 不会按预期回复。1.2K 既够触发 trigger（threshold=500），又确保单消息送达。
     const secondMessage = await ctx.triggerClient.postMessage({
       channel: ctx.channelId,
       thread_ts: rootMessage.ts,
@@ -135,6 +144,31 @@ async function main(): Promise<void> {
           meta.context?.autoCompact?.failureCount === 0 &&
           meta.context?.autoCompact?.breakerOpen === false
         result.matched.sessionIdle = meta.status === 'idle'
+
+        // events.jsonl: 必须有 compact_attempt + compact_succeeded（按时序）。
+        // willRetriggerNextTurn=false 是"压缩到位"的硬证据。
+        const events = await readEventsJsonl(rootMessage.ts, workspaceDir)
+        const attempts = events.filter((e) => e.type === 'compact_attempt')
+        const succeeded = events.filter((e) => e.type === 'compact_succeeded')
+        result.matched.compactEventsEmitted = attempts.length >= 1 && succeeded.length >= 1
+        const succeededEv = succeeded[0] as
+          | {
+              preCompactApproxChars?: number
+              postCompactApproxChars?: number
+              willRetriggerNextTurn?: boolean
+            }
+          | undefined
+        if (succeededEv) {
+          if (typeof succeededEv.preCompactApproxChars === 'number') {
+            result.preCompactApproxChars = succeededEv.preCompactApproxChars
+          }
+          if (typeof succeededEv.postCompactApproxChars === 'number') {
+            result.postCompactApproxChars = succeededEv.postCompactApproxChars
+          }
+          if (typeof succeededEv.willRetriggerNextTurn === 'boolean') {
+            result.willRetriggerNextTurn = succeededEv.willRetriggerNextTurn
+          }
+        }
       }
 
       return (
@@ -144,7 +178,8 @@ async function main(): Promise<void> {
         result.matched.persistedAutoCompactSummary &&
         result.matched.persistedStructuredCompactMarker &&
         result.matched.autoCompactStateReset &&
-        result.matched.sessionIdle
+        result.matched.sessionIdle &&
+        result.matched.compactEventsEmitted
       )
     })
 
@@ -165,9 +200,14 @@ async function main(): Promise<void> {
       })
     }
     if (!result.passed) {
-      await preserveWorkspaceLogsForDebug('auto-compact', runId, workspaceDir).catch((error) =>
-        consola.error('Failed to preserve workspace logs:', error),
-      )
+      await preserveWorkspaceLogsForDebug(
+        'auto-compact',
+        runId,
+        workspaceDir,
+        ctx && result.rootMessageTs
+          ? { ctx, rootMessageTs: result.rootMessageTs }
+          : undefined,
+      ).catch((error) => consola.error('Failed to preserve workspace logs:', error))
     }
     await fs.rm(workspaceDir, { recursive: true, force: true }).catch((error) => {
       consola.error('Failed to remove temporary auto compact workspace:', error)
@@ -191,6 +231,12 @@ async function createAutoCompactWorkspace(): Promise<string> {
   const config = isRecord(sourceConfig) ? sourceConfig : {}
   const agent = isRecord(config.agent) ? config.agent : {}
   const context = isRecord(agent.context) ? agent.context : {}
+  // 阈值设计：
+  //   maxApproxChars=1_000, triggerRatio=0.5 → 阈值 500
+  //   candidate（~1.3K：seed+assistant+1.2K filler）> 500 → trigger 触发
+  // 注意：新 9 章节 prompt 摘要 3-5K chars ≫ 阈值 500，所以本场景的 willRetrigger=true
+  // 是预期；"压缩到位"（willRetrigger=false）由 compact-effectiveness e2e 用 1M
+  // fixture + 大阈值场景验证。本 e2e 只确认埋点 + 主流程跑通。
   config.agent = {
     ...agent,
     context: {
@@ -246,6 +292,20 @@ async function readCompactRecords(
     .map((line) => JSON.parse(line) as { messageId?: string; mode?: string })
 }
 
+async function readEventsJsonl(
+  threadTs: string,
+  workspaceDir: string,
+): Promise<Array<{ type: string; [k: string]: unknown }>> {
+  const sessionDir = await findSessionDir(threadTs, { workspaceDir })
+  const file = path.join(sessionDir, 'events.jsonl')
+  if (!existsSync(file)) return []
+  const raw = await fs.readFile(file, 'utf8')
+  return raw
+    .split('\n')
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as { type: string; [k: string]: unknown })
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
@@ -268,6 +328,9 @@ function assertResult(result: AutoCompactResult): void {
   }
   if (!result.matched.autoCompactStateReset) failures.push('auto compact state not reset')
   if (!result.matched.sessionIdle) failures.push('session did not become idle before cleanup')
+  if (!result.matched.compactEventsEmitted) {
+    failures.push('events.jsonl missing compact_attempt + compact_succeeded')
+  }
 
   if (failures.length > 0) {
     throw new Error(`Live auto compact E2E failed: ${failures.join('; ')}`)
@@ -277,7 +340,8 @@ function assertResult(result: AutoCompactResult): void {
 export const scenario: LiveE2EScenario = {
   id: 'auto-compact',
   title: 'Auto Compact',
-  description: 'Force auto compact by message-count budget and verify the main reply continues.',
+  description:
+    'Force auto compact by approximate character budget; verify main reply continues, summary persisted, events.jsonl emits compact_attempt + compact_succeeded.',
   keywords: ['compact', 'auto', 'context'],
   run: main,
 }
