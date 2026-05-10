@@ -165,6 +165,56 @@ describe('AiSdkExecutor 粗事件映射', () => {
     ).toEqual(expect.any(String))
   })
 
+  it('usage-info.lastApiInputTokens 是最后一次 step 的 inputTokens（覆盖语义）', async () => {
+    const executor = createExecutor(
+      createMockModel([
+        [
+          { type: 'response-metadata', id: 'resp_1', modelId: 'mock-model' },
+          { type: 'text-delta', textDelta: 'A' },
+          {
+            type: 'tool-call',
+            toolCallType: 'function',
+            toolCallId: 'call_1',
+            toolName: 'read_file',
+            args: '{"path":"a.ts"}',
+          },
+          {
+            type: 'finish',
+            finishReason: 'tool-calls',
+            usage: { promptTokens: 100, completionTokens: 5 },
+            providerMetadata: {},
+          },
+        ],
+        [
+          { type: 'response-metadata', id: 'resp_2', modelId: 'mock-model' },
+          { type: 'text-delta', textDelta: 'B' },
+          {
+            type: 'finish',
+            finishReason: 'stop',
+            usage: { promptTokens: 250, completionTokens: 7 },
+            providerMetadata: {},
+          },
+        ],
+      ]),
+      createToolSet(),
+    )
+
+    const events = await collect(
+      executor.execute({
+        systemPrompt: '',
+        messages: [{ role: 'user', content: 'hi' }],
+        abortSignal: new AbortController().signal,
+      }),
+    )
+
+    const usageInfo = events.find(
+      (e): e is Extract<AgentExecutionEvent, { type: 'usage-info' }> => e.type === 'usage-info',
+    )
+    // 累加 inputTokens = 100 + 250 = 350，但 lastApiInputTokens = 250（覆盖）
+    expect(usageInfo?.usage.modelUsage[0]?.inputTokens).toBe(350)
+    expect(usageInfo?.usage.lastApiInputTokens).toBe(250)
+  })
+
   it('assistant-message 按 step 边界切分，每个非空 step 只产出一条消息', async () => {
     const executor = createExecutor(
       createMockModel([

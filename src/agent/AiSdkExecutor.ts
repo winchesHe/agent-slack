@@ -55,6 +55,12 @@ interface AggregatorState {
   currentReasoning: string
   lastReasoningEmitAt: number
   lastReasoningEmitChars: number
+
+  /**
+   * 本轮最后一次 step 的 inputTokens（覆盖语义）。每次 step-finish 用最新值
+   * 覆盖；对应 SessionUsageInfo.lastApiInputTokens。
+   */
+  lastStepInputTokens: number
 }
 
 type ExecutorStreamPart =
@@ -123,6 +129,7 @@ function createAggregator(): AggregatorState {
     currentReasoning: '',
     lastReasoningEmitAt: 0,
     lastReasoningEmitChars: 0,
+    lastStepInputTokens: 0,
   }
 }
 
@@ -224,6 +231,11 @@ function updateUsage(
     reasoningTokens: current.reasoningTokens + extractReasoningTokens(providerMetadata),
     costUSD: current.costUSD + (extractCostFromMetadata(providerMetadata) ?? 0),
   })
+
+  // 覆盖语义：每次 step-finish 用最新一次 step 的 inputTokens 覆盖。
+  // 这是下一轮 candidate 真实 input_tokens 的最佳估计——同一 history、
+  // 上一轮已经累积过 cache，下一轮模型看到的 input 大致与此相当。
+  agg.lastStepInputTokens = toSafeInt(usage.promptTokens ?? usage.inputTokens)
 }
 
 function buildUsageInfo(agg: AggregatorState): SessionUsageInfo {
@@ -244,6 +256,7 @@ function buildUsageInfo(agg: AggregatorState): SessionUsageInfo {
       0,
     ),
     modelUsage,
+    ...(agg.lastStepInputTokens > 0 ? { lastApiInputTokens: agg.lastStepInputTokens } : {}),
   }
 }
 

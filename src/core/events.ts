@@ -40,6 +40,13 @@ export interface SessionUsageInfo {
     // reasoning_tokens 是 output_tokens 的子集，括号注法明示"x tokens 中有 y 是思考"。
     reasoningTokens?: number
   }>
+  /**
+   * 本轮最后一次 step 的 inputTokens（覆盖语义，非累加）。
+   * 用于 autoCompact 触发判定：下一轮 input_tokens 大致等于本轮最后一次
+   * step 的 inputTokens（同一 history + 用户新消息），与 ctx window 对比可
+   * 决定是否需要先压缩。
+   */
+  lastApiInputTokens?: number
 }
 
 type LifecycleFinalMessage = (CoreAssistantMessage | CoreToolMessage) & {
