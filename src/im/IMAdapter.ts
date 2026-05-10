@@ -1,5 +1,7 @@
+export type ImProvider = 'slack' | 'wechat'
+
 export interface IMAdapter {
-  readonly id: 'slack' | 'telegram'
+  readonly id: ImProvider
   start(): Promise<void>
   stop(): Promise<void>
 }

@@ -22,6 +22,8 @@ export interface WorkspacePaths {
   globalRoot: string
   globalEnv: string
   globalConfig: string
+  wechatDir: string
+  wechatCredentialsFile: string
 }
 
 export function resolveWorkspacePaths(cwd: string): WorkspacePaths {
@@ -49,6 +51,8 @@ export function resolveWorkspacePaths(cwd: string): WorkspacePaths {
     globalRoot,
     globalEnv: path.join(globalRoot, '.env'),
     globalConfig: path.join(globalRoot, 'global.yaml'),
+    wechatDir: path.join(root, 'wechat'),
+    wechatCredentialsFile: path.join(root, 'wechat', 'credentials.json'),
   }
 }
 
@@ -69,4 +73,17 @@ export function slackSessionDir(
 ): string {
   const safe = sanitizeFsSegment(channelName)
   return path.join(paths.sessionsDir, 'slack', `${safe}.${channelId}.${threadTs}`)
+}
+
+/**
+ * 微信单聊会话目录。微信单聊语义下 channelId/threadTs 都等同 from_user_id，
+ * 这里取 userName / userId 即可（CowAgent 同设计）。
+ */
+export function wechatSessionDir(
+  paths: WorkspacePaths,
+  userName: string,
+  userId: string,
+): string {
+  const safe = sanitizeFsSegment(userName)
+  return path.join(paths.sessionsDir, 'wechat', `${safe}.${userId}`)
 }
