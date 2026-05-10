@@ -63,6 +63,7 @@ async function main(): Promise<void> {
 
   try {
     ctx = await createLiveE2EContext(runId, { workspaceDir })
+    const botUserId = ctx.botUserId
     await ctx.application.start()
     await delay(3_000)
 
@@ -79,7 +80,12 @@ async function main(): Promise<void> {
     result.rootMessageTs = rootMessage.ts
 
     await waitForThread(ctx, rootMessage.ts, (messages) => {
-      const reply = findReplyContaining(messages, rootMessage.ts, `AUTO_COMPACT_READY ${runId}`)
+      const reply = findReplyContaining(
+        messages,
+        rootMessage.ts,
+        `AUTO_COMPACT_READY ${runId}`,
+        botUserId,
+      )
       result.matched.seedReplyObserved = Boolean(reply)
       return result.matched.seedReplyObserved
     })
@@ -99,11 +105,16 @@ async function main(): Promise<void> {
     result.secondMessageTs = secondMessage.ts
 
     await waitForThread(ctx, rootMessage.ts, async (messages) => {
-      result.matched.autoCompactActivityObserved ||= messages.some((message) =>
-        message.text?.includes('正在整理上下文'),
+      result.matched.autoCompactActivityObserved ||= messages.some(
+        (message) => message.user === botUserId && message.text?.includes('正在整理上下文'),
       )
 
-      const reply = findReplyContaining(messages, rootMessage.ts, `AUTO_COMPACT_OK ${runId}`)
+      const reply = findReplyContaining(
+        messages,
+        rootMessage.ts,
+        `AUTO_COMPACT_OK ${runId}`,
+        botUserId,
+      )
       result.matched.mainReplyContinued = Boolean(reply)
       result.matched.autoCompactNotVisibleAsReply = !messages.some((message) =>
         message.text?.includes('[compact: auto]'),

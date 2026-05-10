@@ -62,7 +62,12 @@ async function main(): Promise<void> {
     result.rootMessageTs = rootMessage.ts
 
     await waitForThread(ctx, rootMessage.ts, (messages) => {
-      const reply = findReplyContaining(messages, rootMessage.ts, `THREAD_FIRST_OK ${runId}`)
+      const reply = findReplyContaining(
+        messages,
+        rootMessage.ts,
+        `THREAD_FIRST_OK ${runId}`,
+        ctx.botUserId,
+      )
       if (reply) {
         result.firstReplyTs = reply.ts ?? ''
         result.matched.firstReplyObserved = true
@@ -85,7 +90,12 @@ async function main(): Promise<void> {
     result.secondMessageTs = secondMessage.ts
 
     await waitForThread(ctx, rootMessage.ts, async (messages) => {
-      const reply = findReplyContaining(messages, rootMessage.ts, `THREAD_RESUME_OK ${runId}`)
+      const reply = findReplyContaining(
+        messages,
+        rootMessage.ts,
+        `THREAD_RESUME_OK ${runId}`,
+        ctx.botUserId,
+      )
       if (reply?.text?.includes(marker)) {
         result.secondReplyText = reply.text
         result.secondReplyTs = reply.ts ?? ''

@@ -61,6 +61,7 @@ async function main(): Promise<void> {
 
   try {
     ctx = await createLiveE2EContext(runId)
+    const botUserId = ctx.botUserId
     await ctx.application.start()
     await delay(3_000)
 
@@ -79,15 +80,20 @@ async function main(): Promise<void> {
     result.rootMessageTs = rootMessage.ts
 
     await waitForThread(ctx, rootMessage.ts, async (messages) => {
-      const reply = findReplyContaining(messages, rootMessage.ts, `TOOL_PROGRESS_OK ${runId}`)
+      const reply = findReplyContaining(
+        messages,
+        rootMessage.ts,
+        `TOOL_PROGRESS_OK ${runId}`,
+        botUserId,
+      )
       if (reply) {
         result.assistantReplyText = reply.text ?? ''
         result.assistantReplyTs = reply.ts ?? ''
         result.matched.assistantReplied = true
       }
 
-      result.matched.usageObserved = hasUsageMessage(messages, rootMessage.ts)
-      const usage = findUsageMessage(messages, rootMessage.ts)
+      result.matched.usageObserved = hasUsageMessage(messages, rootMessage.ts, botUserId)
+      const usage = findUsageMessage(messages, rootMessage.ts, botUserId)
       if (typeof usage?.text === 'string') {
         result.usageText = usage.text
       }

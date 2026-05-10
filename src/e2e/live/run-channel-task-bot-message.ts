@@ -94,9 +94,14 @@ async function main(): Promise<void> {
     result.rootMessageTs = rootMessage.ts
 
     await waitForThread(activeCtx, rootMessage.ts, async (messages) => {
-      const reply = findReplyContaining(messages, rootMessage.ts, `CHANNEL_TASK_BOT_OK ${runId}`)
+      const reply = findReplyContaining(
+        messages,
+        rootMessage.ts,
+        `CHANNEL_TASK_BOT_OK ${runId}`,
+        activeCtx.botUserId,
+      )
       result.matched.assistantReplied = Boolean(reply)
-      result.matched.usageObserved = hasUsageMessage(messages, rootMessage.ts)
+      result.matched.usageObserved = hasUsageMessage(messages, rootMessage.ts, activeCtx.botUserId)
       result.matched.doneReactionObserved = await hasReaction(
         activeCtx.botClient,
         activeCtx.channelId,
