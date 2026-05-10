@@ -73,7 +73,12 @@ async function main(): Promise<void> {
     result.rootMessageTs = rootMessage.ts
 
     await waitForThread(ctx, rootMessage.ts, (messages) => {
-      const reply = findReplyContaining(messages, rootMessage.ts, `COMPACT_COMMAND_READY ${runId}`)
+      const reply = findReplyContaining(
+        messages,
+        rootMessage.ts,
+        `COMPACT_COMMAND_READY ${runId}`,
+        ctx.botUserId,
+      )
       result.matched.firstReplyObserved = Boolean(reply)
       return result.matched.firstReplyObserved
     })
@@ -88,7 +93,12 @@ async function main(): Promise<void> {
     result.commandMessageTs = commandMessage.ts
 
     await waitForThread(ctx, rootMessage.ts, async (messages) => {
-      const reply = findReplyContaining(messages, rootMessage.ts, '[compact: manual]')
+      const reply = findReplyContaining(
+        messages,
+        rootMessage.ts,
+        '[compact: manual]',
+        ctx.botUserId,
+      )
       result.matched.compactReplyObserved = Boolean(reply?.text?.includes('[compact: manual]'))
 
       if (result.matched.compactReplyObserved) {
@@ -97,6 +107,9 @@ async function main(): Promise<void> {
         }
         const staleUsage = messages.find((message) => {
           if (!message.ts || !reply?.ts || !commandMessage.ts) {
+            return false
+          }
+          if (message.user !== ctx.botUserId) {
             return false
           }
           const messageTs = Number(message.ts)

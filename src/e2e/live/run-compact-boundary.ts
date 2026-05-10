@@ -61,6 +61,7 @@ async function main(): Promise<void> {
 
   try {
     ctx = await createLiveE2EContext(runId, { workspaceDir })
+    const botUserId = ctx.botUserId
     await ctx.application.start()
     await delay(3_000)
 
@@ -78,7 +79,12 @@ async function main(): Promise<void> {
     result.rootMessageTs = rootMessage.ts
 
     await waitForThread(ctx, rootMessage.ts, (messages) => {
-      const reply = findReplyContaining(messages, rootMessage.ts, `COMPACT_BOUNDARY_READY ${runId}`)
+      const reply = findReplyContaining(
+        messages,
+        rootMessage.ts,
+        `COMPACT_BOUNDARY_READY ${runId}`,
+        botUserId,
+      )
       result.matched.seedReplyObserved = Boolean(reply)
       return result.matched.seedReplyObserved
     })
@@ -92,7 +98,12 @@ async function main(): Promise<void> {
     })
 
     await waitForThread(ctx, rootMessage.ts, async (messages) => {
-      const reply = findReplyContaining(messages, rootMessage.ts, '[compact: manual]')
+      const reply = findReplyContaining(
+        messages,
+        rootMessage.ts,
+        '[compact: manual]',
+        botUserId,
+      )
       result.matched.compactSummaryObserved = Boolean(reply?.text?.includes('[compact: manual]'))
       if (!reply?.text) {
         return false
@@ -128,7 +139,12 @@ async function main(): Promise<void> {
     result.probeMessageTs = probeMessage.ts
 
     await waitForThread(ctx, rootMessage.ts, (messages) => {
-      const reply = findReplyContaining(messages, rootMessage.ts, `COMPACT_BOUNDARY_OK ${runId}`)
+      const reply = findReplyContaining(
+        messages,
+        rootMessage.ts,
+        `COMPACT_BOUNDARY_OK ${runId}`,
+        botUserId,
+      )
       if (!reply?.text) {
         return false
       }

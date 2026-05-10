@@ -66,6 +66,7 @@ async function main(): Promise<void> {
         messages,
         rootMessage.ts,
         `SELF_IMPROVE_COLLECT_OK ${runId}`,
+        ctx.botUserId,
       )
       if (reply) {
         result.assistantReplyText = reply.text ?? ''
@@ -73,7 +74,7 @@ async function main(): Promise<void> {
         result.matched.assistantReplied = true
       }
 
-      const usage = findUsageMessage(messages, rootMessage.ts)
+      const usage = findUsageMessage(messages, rootMessage.ts, ctx.botUserId)
       result.matched.usageObserved = usage !== undefined
 
       try {

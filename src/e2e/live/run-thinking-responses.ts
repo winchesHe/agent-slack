@@ -105,13 +105,18 @@ async function runOneAttempt(
   result.rootMessageTs = rootMessage.ts
 
   await waitForThread(ctx, rootMessage.ts, async (messages) => {
-    const reply = findReplyContaining(messages, rootMessage.ts, `THINKING_OK ${runId}`)
+    const reply = findReplyContaining(
+      messages,
+      rootMessage.ts,
+      `THINKING_OK ${runId}`,
+      ctx.botUserId,
+    )
     if (reply) {
       result.assistantReplyText = reply.text ?? ''
       result.matched.assistantReplied = true
     }
-    result.matched.usageObserved = hasUsageMessage(messages, rootMessage.ts)
-    const usage = findUsageMessage(messages, rootMessage.ts)
+    result.matched.usageObserved = hasUsageMessage(messages, rootMessage.ts, ctx.botUserId)
+    const usage = findUsageMessage(messages, rootMessage.ts, ctx.botUserId)
     if (typeof usage?.text === 'string') {
       result.usageText = usage.text
     }

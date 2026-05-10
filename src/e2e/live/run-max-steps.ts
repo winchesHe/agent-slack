@@ -79,13 +79,18 @@ async function main(): Promise<void> {
     result.rootMessageTs = rootMessage.ts
 
     await waitForThread(ctx, rootMessage.ts, async (messages) => {
-      const summary = findReplyContaining(messages, rootMessage.ts, 'maxSteps 上限')
+      const summary = findReplyContaining(
+        messages,
+        rootMessage.ts,
+        'maxSteps 上限',
+        activeCtx.botUserId,
+      )
       if (summary?.text) {
         result.summaryText = summary.text
         result.matched.maxStepsSummaryObserved = summary.text.includes('当前已知上下文总结')
       }
 
-      const usage = findUsageMessage(messages, rootMessage.ts)
+      const usage = findUsageMessage(messages, rootMessage.ts, activeCtx.botUserId)
       if (usage?.text) {
         result.usageText = usage.text
         result.matched.usageObserved = true

@@ -88,14 +88,14 @@ async function waitForBasicAssertions(
   const marker = `BASIC_OK ${ctx.runId}`
 
   await waitForThread(ctx, rootMessageTs, async (messages) => {
-    const reply = findReplyContaining(messages, rootMessageTs, marker)
+    const reply = findReplyContaining(messages, rootMessageTs, marker, ctx.botUserId)
     if (reply) {
       result.assistantReplyText = reply.text ?? ''
       result.assistantReplyTs = reply.ts ?? ''
       result.matched.assistantReplied = true
     }
 
-    result.matched.usageObserved = hasUsageMessage(messages, rootMessageTs)
+    result.matched.usageObserved = hasUsageMessage(messages, rootMessageTs, ctx.botUserId)
     result.matched.doneReactionObserved = await hasReaction(
       ctx.botClient,
       ctx.channelId,

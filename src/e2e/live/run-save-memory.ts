@@ -69,7 +69,12 @@ async function main(): Promise<void> {
     result.rootMessageTs = rootMessage.ts
 
     await waitForThread(ctx, rootMessage.ts, async (messages) => {
-      const reply = findReplyContaining(messages, rootMessage.ts, `SAVE_MEMORY_OK ${runId}`)
+      const reply = findReplyContaining(
+        messages,
+        rootMessage.ts,
+        `SAVE_MEMORY_OK ${runId}`,
+        ctx.botUserId,
+      )
       if (reply) {
         result.assistantReplyText = reply.text ?? ''
         result.assistantReplyTs = reply.ts ?? ''
@@ -77,7 +82,7 @@ async function main(): Promise<void> {
       }
 
       result.matched.memoryMarkerPersisted = await memoryContains(marker)
-      const usage = findUsageMessage(messages, rootMessage.ts)
+      const usage = findUsageMessage(messages, rootMessage.ts, ctx.botUserId)
       if (typeof usage?.text === 'string') {
         result.usageText = usage.text
       }

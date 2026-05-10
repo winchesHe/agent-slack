@@ -66,9 +66,13 @@ export function findReplyContaining(
   messages: SlackThreadMessage[],
   rootMessageTs: string,
   text: string,
+  botUserId: string,
 ): SlackThreadMessage | undefined {
   return messages.find((message) => {
     if (!message.ts || message.ts === rootMessageTs || typeof message.text !== 'string') {
+      return false
+    }
+    if (message.user !== botUserId) {
       return false
     }
     return message.text.includes(text)
@@ -78,9 +82,13 @@ export function findReplyContaining(
 export function findUsageMessage(
   messages: SlackThreadMessage[],
   rootMessageTs: string,
+  botUserId: string,
 ): SlackThreadMessage | undefined {
   const candidates = messages.filter((message) => {
     if (!message.ts || message.ts === rootMessageTs || typeof message.text !== 'string') {
+      return false
+    }
+    if (message.user !== botUserId) {
       return false
     }
     return isUsageMessage(message)
@@ -92,8 +100,12 @@ export function findUsageMessage(
   )
 }
 
-export function hasUsageMessage(messages: SlackThreadMessage[], rootMessageTs: string): boolean {
-  return findUsageMessage(messages, rootMessageTs) !== undefined
+export function hasUsageMessage(
+  messages: SlackThreadMessage[],
+  rootMessageTs: string,
+  botUserId: string,
+): boolean {
+  return findUsageMessage(messages, rootMessageTs, botUserId) !== undefined
 }
 
 export function isUsageMessage(message: SlackThreadMessage): boolean {
