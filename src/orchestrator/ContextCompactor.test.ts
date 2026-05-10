@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import type { CoreMessage } from 'ai'
 import type { CompactAgent } from '@/agents/compact/index.ts'
 import type { Logger } from '@/logger/logger.ts'
 import type { Session } from '@/store/SessionStore.ts'
@@ -46,13 +47,14 @@ describe('ContextCompactor', () => {
     const compactAgent: CompactAgent = {
       summarize: vi.fn(),
     }
-    const compactor = createContextCompactor({ compactAgent, logger: logger() })
+    const compactor = createContextCompactor({ compactAgent, logger: logger(), keepRecentToolResults: 20 })
 
     const result = await compactor.manualCompact({
       session: session(),
       history: [{ role: 'user', content: 'hi' }],
       trigger: 'mention_command',
       userId: 'U',
+      messagesJsonlPath: '/workspace/.agent-slack/sessions/slack/c.C.t/messages.jsonl',
     })
 
     expect(result.status).toBe('skipped')
@@ -68,7 +70,7 @@ describe('ContextCompactor', () => {
           '摘要内容\n完整会话记录：/workspace/.agent-slack/sessions/slack/c.C.t/messages.jsonl',
       ),
     }
-    const compactor = createContextCompactor({ compactAgent, logger: logger() })
+    const compactor = createContextCompactor({ compactAgent, logger: logger(), keepRecentToolResults: 20 })
 
     const result = await compactor.manualCompact({
       session: session(),
@@ -78,6 +80,7 @@ describe('ContextCompactor', () => {
       ],
       trigger: 'mention_command',
       userId: 'U',
+      messagesJsonlPath: '/workspace/.agent-slack/sessions/slack/c.C.t/messages.jsonl',
     })
 
     expect(result.status).toBe('compacted')
@@ -103,7 +106,7 @@ describe('ContextCompactor', () => {
         ].join('\n'),
       ),
     }
-    const compactor = createContextCompactor({ compactAgent, logger: logger() })
+    const compactor = createContextCompactor({ compactAgent, logger: logger(), keepRecentToolResults: 20 })
 
     const result = await compactor.manualCompact({
       session: session(),
@@ -113,6 +116,7 @@ describe('ContextCompactor', () => {
       ],
       trigger: 'mention_command',
       userId: 'U',
+      messagesJsonlPath: '/workspace/.agent-slack/sessions/slack/c.C.t/messages.jsonl',
     })
 
     expect(result.responseText).toContain('用户正在排查 compact 显示顺序。')
@@ -125,7 +129,7 @@ describe('ContextCompactor', () => {
     const compactAgent: CompactAgent = {
       summarize: vi.fn(async () => '自动摘要'),
     }
-    const compactor = createContextCompactor({ compactAgent, logger: logger() })
+    const compactor = createContextCompactor({ compactAgent, logger: logger(), keepRecentToolResults: 20 })
 
     const result = await compactor.autoCompact({
       session: session(),
@@ -134,6 +138,7 @@ describe('ContextCompactor', () => {
         { role: 'assistant', content: 'hello' },
       ],
       trigger: 'budget',
+      messagesJsonlPath: '/workspace/.agent-slack/sessions/slack/c.C.t/messages.jsonl',
     })
 
     expect(result.status).toBe('compacted')
@@ -154,12 +159,13 @@ describe('ContextCompactor', () => {
     const compactAgent: CompactAgent = {
       summarize: vi.fn(),
     }
-    const compactor = createContextCompactor({ compactAgent, logger: logger() })
+    const compactor = createContextCompactor({ compactAgent, logger: logger(), keepRecentToolResults: 20 })
 
     const result = await compactor.autoCompact({
       session: session(),
       messages: [{ role: 'user', content: 'hi' }],
       trigger: 'budget',
+      messagesJsonlPath: '/workspace/.agent-slack/sessions/slack/c.C.t/messages.jsonl',
     })
 
     expect(result).toEqual({
@@ -168,5 +174,49 @@ describe('ContextCompactor', () => {
       finalMessages: [],
     })
     expect(compactAgent.summarize).not.toHaveBeenCalled()
+  })
+
+  it('入口预处理：剥图 + 旧 tool_result 占位（autoCompact）', async () => {
+    const compactAgent: CompactAgent = {
+      summarize: vi.fn(async ({ messages }) => {
+        const flat = JSON.stringify(messages)
+        expect(flat).not.toContain('base64data')
+        expect(flat).toContain('[image]')
+        expect(flat).toContain('[旧工具结果已压缩]')
+        expect(flat).toContain('messages.jsonl')
+        return '摘要'
+      }),
+    }
+    const compactor = createContextCompactor({
+      compactAgent,
+      logger: logger(),
+      keepRecentToolResults: 2,
+    })
+
+    const messages: CoreMessage[] = [
+      { role: 'user', content: [{ type: 'image', image: 'base64data' }] },
+    ]
+    for (let i = 0; i < 5; i += 1) {
+      messages.push({
+        role: 'assistant',
+        content: [{ type: 'tool-call', toolCallId: `t${i}`, toolName: 'bash', args: {} }],
+      })
+      messages.push({
+        role: 'tool',
+        content: [
+          { type: 'tool-result', toolCallId: `t${i}`, toolName: 'bash', result: `output ${i}` },
+        ],
+      })
+    }
+
+    const result = await compactor.autoCompact({
+      session: session(),
+      messages,
+      trigger: 'budget',
+      messagesJsonlPath: '/workspace/.agent-slack/sessions/slack/c.C.t/messages.jsonl',
+    })
+
+    expect(result.status).toBe('compacted')
+    expect(compactAgent.summarize).toHaveBeenCalledOnce()
   })
 })

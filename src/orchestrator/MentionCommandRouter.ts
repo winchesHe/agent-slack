@@ -10,6 +10,7 @@ export interface MentionCommandExecutionArgs {
   input: InboundMessage
   session: Session
   history: CoreMessage[]
+  messagesJsonlPath: string
 }
 
 export type MentionCommandExecutionResult = ManualCompactResult
@@ -52,6 +53,7 @@ export function createMentionCommandRouter(deps: MentionCommandRouterDeps): Ment
           history: args.history,
           trigger: 'mention_command',
           userId: args.input.userId,
+          messagesJsonlPath: args.messagesJsonlPath,
         })
       }
 

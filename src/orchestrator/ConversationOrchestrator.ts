@@ -183,6 +183,7 @@ export function createConversationOrchestrator(
                 input,
                 session,
                 history,
+                messagesJsonlPath: path.join(session.dir, 'messages.jsonl'),
               })
               await sink.onEvent({ type: 'assistant-message', text: commandResult.responseText })
               for (const message of commandResult.finalMessages) {
@@ -229,6 +230,7 @@ export function createConversationOrchestrator(
                     session,
                     messages: candidateMessages,
                     trigger: 'budget',
+                    messagesJsonlPath: path.join(session.dir, 'messages.jsonl'),
                   })
 
                   if (compactResult.status === 'compacted') {

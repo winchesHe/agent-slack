@@ -90,7 +90,11 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
   const runtime = buildProviderRuntime(provider, providerEnv, modelName)
   const selfImproveSemanticDedup = createSemanticDedup({ model: runtime.model, logger })
   const compactAgent = createCompactAgent({ model: runtime.model, logger })
-  const contextCompactor = createContextCompactor({ compactAgent, logger })
+  const contextCompactor = createContextCompactor({
+    compactAgent,
+    logger,
+    keepRecentToolResults: ctx.config.agent.context.keepRecentToolResults,
+  })
   const mentionCommandRouter = createMentionCommandRouter({ compactor: contextCompactor })
   const channelTaskLedger = channelTasksConfig
     ? createChannelTaskTriggerLedger(ctx.paths.channelTaskTriggersFile)

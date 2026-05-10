@@ -160,7 +160,7 @@ function toolResultPositionKey(messageIndex: number, partIndex: number): string 
   return `${messageIndex}:${partIndex}`
 }
 
-function compactOldToolResults(
+export function compactOldToolResults(
   messages: CoreMessage[],
   keepRecentToolResults: number,
   messagesJsonlPath: string,

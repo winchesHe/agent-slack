@@ -23,10 +23,10 @@ describe('groupMessagesByApiRound', () => {
         role: 'assistant',
         content: [
           { type: 'text', text: 'thinking' },
-          { type: 'tool-call', toolCallId: 't1', toolName: 'bash', input: {} },
+          { type: 'tool-call', toolCallId: 't1', toolName: 'bash', args: {} },
         ],
       },
-      { role: 'tool', content: [{ type: 'tool-result', toolCallId: 't1', output: { type: 'text', value: 'ok' } }] },
+      { role: 'tool', content: [{ type: 'tool-result', toolCallId: 't1', toolName: 'bash', result: 'ok' }] },
       { role: 'assistant', content: 'final' },
       { role: 'user', content: 'q2' },
     ]

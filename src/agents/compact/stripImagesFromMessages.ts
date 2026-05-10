@@ -64,7 +64,7 @@ function stripToolMessage(msg: CoreMessage & { role: 'tool' }): CoreMessage {
 
     if (partChanged) {
       changed = true
-      return nextPart as typeof part
+      return nextPart as unknown as typeof part
     }
     return part
   })
