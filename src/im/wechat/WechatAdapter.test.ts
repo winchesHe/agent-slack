@@ -1,0 +1,368 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { createCredentialsStore } from './CredentialsStore.ts'
+import {
+  qrLogin,
+  createWechatAdapter,
+  processMessage as _processMessage,
+} from './WechatAdapter.ts'
+import type { Logger } from '@/logger/logger.ts'
+
+const stubLogger = (): Logger => {
+  const make = (): Logger => ({
+    trace: () => {},
+    debug: () => {},
+    info: () => {},
+    warn: () => {},
+    error: () => {},
+    withTag: () => make(),
+  })
+  return make()
+}
+
+describe('qrLogin', () => {
+  it('confirmed 状态返回完整凭证', async () => {
+    const api = {
+      baseUrl: 'https://ilink.example/',
+      cdnBaseUrl: '',
+      fetchQrCode: vi.fn().mockResolvedValue({ qrcode: 'qr1', qrcode_img_content: 'https://qr/1' }),
+      pollQrStatus: vi.fn().mockResolvedValue({
+        status: 'confirmed',
+        bot_token: 'tok',
+        ilink_bot_id: 'b1',
+        ilink_user_id: 'u1',
+        baseurl: 'https://ilink.cn/',
+      }),
+      setToken: vi.fn(),
+    } as never
+    const creds = await qrLogin(
+      {
+        api,
+        credentialsStore: createCredentialsStore(),
+        credentialsFile: '/tmp/x',
+        logger: stubLogger(),
+      } as never,
+      () => false,
+    )
+    expect(creds).toEqual({
+      token: 'tok',
+      baseUrl: 'https://ilink.cn/',
+      botId: 'b1',
+      userId: 'u1',
+    })
+  })
+
+  it('expired 自动刷新；超过 10 次放弃', async () => {
+    const api = {
+      baseUrl: '',
+      cdnBaseUrl: '',
+      fetchQrCode: vi.fn().mockResolvedValue({ qrcode: 'qr', qrcode_img_content: '' }),
+      pollQrStatus: vi.fn().mockResolvedValue({ status: 'expired' }),
+      setToken: vi.fn(),
+    }
+    const creds = await qrLogin(
+      {
+        api,
+        credentialsStore: createCredentialsStore(),
+        credentialsFile: '/tmp/x',
+        logger: stubLogger(),
+      } as never,
+      () => false,
+    )
+    expect(creds).toBeUndefined()
+    // 初始 fetchQrCode 1 次；之后每次 expired 增 refreshCount，刷新调用 fetchQrCode；
+    // 当 refreshCount 自增到 10 时直接 return undefined（不再 fetch）。
+    // 即刷新调用 = 9 次（refreshCount 1..9）→ fetchQrCode 总调用 = 1 + 9 = 10
+    expect(api.fetchQrCode.mock.calls.length).toBe(10)
+  }, 30000)
+
+  it('isStopped() 返回 true 时立即退出', async () => {
+    let stopped = false
+    const api = {
+      baseUrl: '',
+      cdnBaseUrl: '',
+      fetchQrCode: vi.fn().mockResolvedValue({ qrcode: 'qr', qrcode_img_content: '' }),
+      pollQrStatus: vi.fn().mockImplementation(async () => {
+        stopped = true
+        return { status: 'wait' }
+      }),
+      setToken: vi.fn(),
+    } as never
+    const creds = await qrLogin(
+      {
+        api,
+        credentialsStore: createCredentialsStore(),
+        credentialsFile: '/tmp/x',
+        logger: stubLogger(),
+      } as never,
+      () => stopped,
+    )
+    expect(creds).toBeUndefined()
+  })
+
+  it('confirmed 但缺 token / bot_id → 返回 undefined', async () => {
+    const api = {
+      baseUrl: '',
+      cdnBaseUrl: '',
+      fetchQrCode: vi.fn().mockResolvedValue({ qrcode: 'qr', qrcode_img_content: '' }),
+      pollQrStatus: vi.fn().mockResolvedValue({ status: 'confirmed' }),
+      setToken: vi.fn(),
+    } as never
+    const creds = await qrLogin(
+      {
+        api,
+        credentialsStore: createCredentialsStore(),
+        credentialsFile: '/tmp/x',
+        logger: stubLogger(),
+      } as never,
+      () => false,
+    )
+    expect(creds).toBeUndefined()
+  })
+})
+
+describe('createWechatAdapter.start', () => {
+  let dir: string
+  beforeEach(() => {
+    dir = mkdtempSync(path.join(tmpdir(), 'wechat-adapter-'))
+  })
+
+  it('凭证存在 → 跳过扫码，直接 setToken', async () => {
+    const credsFile = path.join(dir, 'credentials.json')
+    const store = createCredentialsStore()
+    await store.save(credsFile, {
+      token: 'tok-saved',
+      baseUrl: 'https://x.example/',
+      botId: '',
+      userId: '',
+    })
+
+    const api = {
+      baseUrl: '',
+      cdnBaseUrl: '',
+      setToken: vi.fn(),
+      fetchQrCode: vi.fn(),
+      getUpdates: vi.fn().mockResolvedValue({ ret: 0, msgs: [] }),
+    }
+    const adapter = createWechatAdapter({
+      api: api as never,
+      credentialsStore: store,
+      credentialsFile: credsFile,
+      orchestrator: {} as never,
+      sessionStore: {} as never,
+      runQueue: {} as never,
+      abortRegistry: {} as never,
+      renderer: {} as never,
+      logger: stubLogger(),
+    })
+    await adapter.start()
+    expect(api.setToken).toHaveBeenCalledWith('tok-saved')
+    expect(api.fetchQrCode).not.toHaveBeenCalled()
+    await adapter.stop()
+  })
+
+  it('凭证不存在 + expired 模式 → 抛错', async () => {
+    const credsFile = path.join(dir, 'credentials.json')
+    const api = {
+      baseUrl: '',
+      cdnBaseUrl: '',
+      fetchQrCode: vi.fn().mockResolvedValue({ qrcode: 'qr', qrcode_img_content: '' }),
+      pollQrStatus: vi.fn().mockResolvedValue({ status: 'expired' }),
+      setToken: vi.fn(),
+    } as never
+    const adapter = createWechatAdapter({
+      api,
+      credentialsStore: createCredentialsStore(),
+      credentialsFile: credsFile,
+      orchestrator: {} as never,
+      sessionStore: {} as never,
+      runQueue: {} as never,
+      abortRegistry: {} as never,
+      renderer: {} as never,
+      logger: stubLogger(),
+    })
+    await expect(adapter.start()).rejects.toThrow(/扫码登录/)
+  }, 30000)
+})
+
+describe('processMessage', () => {
+  const stubOrchestrator = () => ({ handle: vi.fn().mockResolvedValue(undefined) })
+  const stubApi = () => ({
+    baseUrl: '',
+    cdnBaseUrl: '',
+    setToken: vi.fn(),
+    sendText: vi.fn().mockResolvedValue(undefined),
+    fetchQrCode: vi.fn(),
+    pollQrStatus: vi.fn(),
+    getUpdates: vi.fn(),
+    getConfig: vi.fn(),
+  })
+
+  const baseDeps = (
+    api = stubApi(),
+    orch = stubOrchestrator(),
+  ): never =>
+    ({
+      api,
+      credentialsStore: createCredentialsStore(),
+      credentialsFile: '/tmp/x',
+      orchestrator: orch,
+      sessionStore: {},
+      runQueue: {},
+      abortRegistry: {},
+      renderer: { onEvent: () => {}, flush: () => [], STARTING_MESSAGE: '...' },
+      logger: stubLogger(),
+    }) as never
+
+  it('文本消息 → 调 orchestrator.handle，sendText 不被调（除非 sink finalize）', async () => {
+    const api = stubApi()
+    const orch = stubOrchestrator()
+    const deps = baseDeps(api, orch)
+    await _processMessage(
+      deps,
+      {
+        message_type: 1,
+        message_id: 'm1',
+        from_user_id: 'uA',
+        to_user_id: 'bot',
+        context_token: 'ctx',
+        item_list: [{ type: 1, text_item: { text: 'hi' } }],
+      } as never,
+      new Map(),
+      new Map(),
+    )
+    await new Promise((r) => setTimeout(r, 10))
+    expect(orch.handle).toHaveBeenCalledOnce()
+    const inbound = orch.handle.mock.calls[0]![0]
+    expect(inbound.imProvider).toBe('wechat')
+    expect(inbound.text).toBe('hi')
+    expect(inbound.confirmSender).toBeUndefined()
+  })
+
+  it('media 消息 → 不调 orchestrator，立即 sendText 提示', async () => {
+    const api = stubApi()
+    const orch = stubOrchestrator()
+    const deps = baseDeps(api, orch)
+    await _processMessage(
+      deps,
+      {
+        message_type: 1,
+        message_id: 'm2',
+        from_user_id: 'uA',
+        to_user_id: 'bot',
+        context_token: 'ctx',
+        item_list: [{ type: 2, image_item: {} }],
+      } as never,
+      new Map(),
+      new Map(),
+    )
+    expect(api.sendText).toHaveBeenCalledOnce()
+    expect(api.sendText.mock.calls[0]![1]).toMatch(/暂不支持/)
+    expect(orch.handle).not.toHaveBeenCalled()
+  })
+
+  it('文本+媒体混合 → 提示 + 文本进 orchestrator', async () => {
+    const api = stubApi()
+    const orch = stubOrchestrator()
+    const deps = baseDeps(api, orch)
+    await _processMessage(
+      deps,
+      {
+        message_type: 1,
+        message_id: 'm3',
+        from_user_id: 'uA',
+        to_user_id: 'bot',
+        context_token: 'ctx',
+        item_list: [
+          { type: 1, text_item: { text: 'check this' } },
+          { type: 2, image_item: {} },
+        ],
+      } as never,
+      new Map(),
+      new Map(),
+    )
+    await new Promise((r) => setTimeout(r, 10))
+    expect(api.sendText).toHaveBeenCalledOnce()
+    expect(orch.handle).toHaveBeenCalledOnce()
+  })
+
+  it('重复 msgId 被去重', async () => {
+    const api = stubApi()
+    const orch = stubOrchestrator()
+    const deps = baseDeps(api, orch)
+    const dedup = new Map<string, number>()
+    const ctxs = new Map<string, string>()
+    await _processMessage(
+      deps,
+      {
+        message_type: 1,
+        message_id: 'm4',
+        from_user_id: 'uA',
+        to_user_id: 'b',
+        context_token: 'ctx',
+        item_list: [{ type: 1, text_item: { text: 'hi' } }],
+      } as never,
+      dedup,
+      ctxs,
+    )
+    await _processMessage(
+      deps,
+      {
+        message_type: 1,
+        message_id: 'm4',
+        from_user_id: 'uA',
+        to_user_id: 'b',
+        context_token: 'ctx',
+        item_list: [{ type: 1, text_item: { text: 'hi' } }],
+      } as never,
+      dedup,
+      ctxs,
+    )
+    await new Promise((r) => setTimeout(r, 10))
+    expect(orch.handle.mock.calls.length).toBe(1)
+  })
+
+  it('contextToken 在解析前更新（媒体消息也能拿到 token 发提示）', async () => {
+    const api = stubApi()
+    const deps = baseDeps(api)
+    const ctxs = new Map<string, string>()
+    await _processMessage(
+      deps,
+      {
+        message_type: 1,
+        message_id: 'm5',
+        from_user_id: 'uB',
+        to_user_id: 'b',
+        context_token: 'fresh-token',
+        item_list: [{ type: 2 }],
+      } as never,
+      new Map(),
+      ctxs,
+    )
+    expect(ctxs.get('uB')).toBe('fresh-token')
+    expect(api.sendText.mock.calls[0]![2]).toBe('fresh-token')
+  })
+
+  it('message_type !== 1（非用户消息）跳过', async () => {
+    const api = stubApi()
+    const orch = stubOrchestrator()
+    const deps = baseDeps(api, orch)
+    await _processMessage(
+      deps,
+      {
+        message_type: 2,
+        message_id: 'mX',
+        from_user_id: 'b',
+        to_user_id: 'uA',
+        context_token: '',
+        item_list: [],
+      } as never,
+      new Map(),
+      new Map(),
+    )
+    expect(orch.handle).not.toHaveBeenCalled()
+    expect(api.sendText).not.toHaveBeenCalled()
+  })
+})
