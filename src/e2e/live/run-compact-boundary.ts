@@ -25,7 +25,6 @@ interface CompactBoundaryResult {
   failureMessage?: string
   matched: {
     boundaryReplyObserved: boolean
-    compactSummaryOmitsOldMarker: boolean
     compactSummaryObserved: boolean
     oldMarkerNotLeakedAfterCompact: boolean
     persistedCompactSummary: boolean
@@ -44,7 +43,6 @@ async function main(): Promise<void> {
   const result: CompactBoundaryResult = {
     matched: {
       boundaryReplyObserved: false,
-      compactSummaryOmitsOldMarker: false,
       compactSummaryObserved: false,
       oldMarkerNotLeakedAfterCompact: false,
       persistedCompactSummary: false,
@@ -101,16 +99,14 @@ async function main(): Promise<void> {
       if (reply.ts) {
         result.compactReplyTs = reply.ts
       }
-      result.matched.compactSummaryOmitsOldMarker = !reply.text.includes(oldMarker)
+      // 9 章节 prompt §6 要求 verbatim 列出全部用户消息——seed 中的 oldMarker 自然
+      // 出现在 summary 内属于设计范围，不再断言"summary omits oldMarker"。
+      // boundary 语义改由后续 probe 验证：bot 在 compact 后下一轮能否复现 oldMarker。
       const jsonl = await readSessionMessages(rootMessage.ts, { workspaceDir })
       result.matched.persistedCompactSummary =
         jsonl.includes('[compact: manual]') && jsonl.includes(oldMarker)
 
-      return (
-        result.matched.compactSummaryObserved &&
-        result.matched.compactSummaryOmitsOldMarker &&
-        result.matched.persistedCompactSummary
-      )
+      return result.matched.compactSummaryObserved && result.matched.persistedCompactSummary
     })
 
     const probeMessage = await ctx.triggerClient.postMessage({
@@ -204,9 +200,6 @@ function assertResult(result: CompactBoundaryResult): void {
   const failures: string[] = []
   if (!result.matched.seedReplyObserved) failures.push('seed reply not observed')
   if (!result.matched.compactSummaryObserved) failures.push('compact summary not observed')
-  if (!result.matched.compactSummaryOmitsOldMarker) {
-    failures.push('compact summary should omit old marker')
-  }
   if (!result.matched.persistedCompactSummary) failures.push('compact summary not persisted')
   if (!result.matched.boundaryReplyObserved)
     failures.push('post-compact boundary reply not observed')

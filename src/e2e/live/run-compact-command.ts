@@ -21,9 +21,9 @@ interface CompactCommandResult {
   failureMessage?: string
   matched: {
     compactReplyObserved: boolean
-    compactReplyConcise: boolean
+    compactReplyWithinNewBudget: boolean
     compactReplyHasNoPath: boolean
-    compactReplyOmitsSeedNoise: boolean
+    compactReplyHasUserMessageVerbatim: boolean
     firstReplyObserved: boolean
     noStaleUsageBeforeCompactReply: boolean
     persistedCompactSummary: boolean
@@ -42,9 +42,9 @@ async function main(): Promise<void> {
   const result: CompactCommandResult = {
     matched: {
       compactReplyObserved: false,
-      compactReplyConcise: false,
+      compactReplyWithinNewBudget: false,
       compactReplyHasNoPath: false,
-      compactReplyOmitsSeedNoise: false,
+      compactReplyHasUserMessageVerbatim: false,
       firstReplyObserved: false,
       noStaleUsageBeforeCompactReply: false,
       persistedCompactSummary: false,
@@ -111,16 +111,18 @@ async function main(): Promise<void> {
           result.staleUsageMessageTs = staleUsage.ts
         }
         result.matched.noStaleUsageBeforeCompactReply = !staleUsage
-        result.matched.compactReplyConcise = (reply?.text?.length ?? Infinity) <= 1_600
+        // 9 章节 prompt 产出的 summary 显著长于老版（plan §3.7.6.3 预期 5K-30K chars）；
+        // 给一点 buffer 取 32K 上限，超过基本是模型异常。
+        result.matched.compactReplyWithinNewBudget = (reply?.text?.length ?? Infinity) <= 32_000
         result.matched.compactReplyHasNoPath =
           !reply?.text?.includes('messages.jsonl') &&
           !reply?.text?.includes('.agent-slack/sessions') &&
           !reply?.text?.includes('/Users/')
-        result.matched.compactReplyOmitsSeedNoise =
-          !reply?.text?.includes('COMPACT_COMMAND_SEED') &&
-          !reply?.text?.includes('COMPACT_COMMAND_READY') &&
-          !reply?.text?.includes('Reply exactly') &&
-          !reply?.text?.includes('Do not use tools')
+        // 9 章节 prompt 第 6 节要求"全部用户消息 verbatim 不省略"——seed/握手文本本就该出现。
+        // 该断言取代 compactReplyOmitsSeedNoise：现在反过来要求 seed 文本作为 verbatim 证据。
+        result.matched.compactReplyHasUserMessageVerbatim =
+          (reply?.text?.includes('COMPACT_COMMAND_SEED') ?? false) ||
+          (reply?.text?.includes('COMPACT_COMMAND_READY') ?? false)
 
         const jsonl = await readSessionMessages(rootMessage.ts)
         result.matched.persistedCompactSummary =
@@ -133,9 +135,9 @@ async function main(): Promise<void> {
 
       return (
         result.matched.compactReplyObserved &&
-        result.matched.compactReplyConcise &&
+        result.matched.compactReplyWithinNewBudget &&
         result.matched.compactReplyHasNoPath &&
-        result.matched.compactReplyOmitsSeedNoise &&
+        result.matched.compactReplyHasUserMessageVerbatim &&
         result.matched.noStaleUsageBeforeCompactReply &&
         result.matched.persistedCompactSummary &&
         result.matched.persistedStructuredCompactMarker
@@ -167,10 +169,12 @@ function assertResult(result: CompactCommandResult): void {
   const failures: string[] = []
   if (!result.matched.firstReplyObserved) failures.push('seed reply not observed')
   if (!result.matched.compactReplyObserved) failures.push('compact reply not observed')
-  if (!result.matched.compactReplyConcise) failures.push('compact reply is too long')
+  if (!result.matched.compactReplyWithinNewBudget) {
+    failures.push('compact reply exceeds 32K-char budget (likely model anomaly)')
+  }
   if (!result.matched.compactReplyHasNoPath) failures.push('compact reply contains path noise')
-  if (!result.matched.compactReplyOmitsSeedNoise) {
-    failures.push('compact reply contains low-value seed noise')
+  if (!result.matched.compactReplyHasUserMessageVerbatim) {
+    failures.push('compact reply missing verbatim user-message evidence (§3.7.6.3 §6)')
   }
   if (!result.matched.noStaleUsageBeforeCompactReply) {
     failures.push('stale usage/ending appeared between compact command and compact reply')
