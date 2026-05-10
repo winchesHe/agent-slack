@@ -82,7 +82,8 @@ function assistantWithToolCallMsg(rng: () => number, toolCallId: string): CoreMs
         type: 'tool-call',
         toolCallId,
         toolName: 'bash',
-        input: { command: `echo ${paragraph(rng, 5)}` },
+        // ai-sdk v4 CoreMessage schema 要求 tool-call 用 `args`（不是 `input`）。
+        args: { command: `echo ${paragraph(rng, 5)}` },
       },
     ],
   }
@@ -95,7 +96,8 @@ function toolResultMsg(rng: () => number, toolCallId: string, largeOutput = fals
   return {
     id: uuid(rng),
     role: 'tool',
-    content: [{ type: 'tool-result', toolCallId, result }],
+    // ai-sdk v4 toolResultPartSchema 要求 `toolName` 必填。
+    content: [{ type: 'tool-result', toolCallId, toolName: 'bash', result }],
   }
 }
 

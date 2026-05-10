@@ -25,6 +25,7 @@ interface BreakerOpenResult {
   matched: {
     seedReplyObserved: boolean
     breakerStatePrepared: boolean
+    fixtureInjected: boolean
     triggerReplyObserved: boolean
     compactSkippedEventFound: boolean
     /** 主流程仍能完成回复——熔断不应阻断 user-facing turn */
@@ -39,12 +40,21 @@ interface BreakerOpenResult {
   workspaceDir?: string
 }
 
+const FIXTURE_PATH = path.join(
+  process.cwd(),
+  'tests',
+  'fixtures',
+  'compact',
+  'large-history-1m.jsonl',
+)
+
 async function main(): Promise<void> {
   const runId = randomUUID()
   const result: BreakerOpenResult = {
     matched: {
       seedReplyObserved: false,
       breakerStatePrepared: false,
+      fixtureInjected: false,
       triggerReplyObserved: false,
       compactSkippedEventFound: false,
       mainFlowContinuedDespiteBreaker: false,
@@ -115,13 +125,26 @@ async function main(): Promise<void> {
     await fs.writeFile(metaFile, JSON.stringify(meta, null, 2), 'utf8')
     result.matched.breakerStatePrepared = true
 
-    // 注：本测试不再注入 1M fixture——熔断 short-circuit 路径 emit
-    // skipped(breaker_open) 不依赖 candidate 是否超阈值（orchestrator 在所有
-    // breaker_open 时都会发该事件）。少注入也避免后续主流程因为 ai-sdk 不接受
-    // SessionStore 写入的 id 字段而失败（独立 bug，超出本测试范围）。
+    // Step 2.5：注入 1M fixture——确保熔断路径走的是真实大历史。
+    // 之前因 fixture 字段名不符 ai-sdk schema（input vs args、tool-result 缺
+    // toolName）会 standardizePrompt 失败；fixture 已修，主流程能正常完成回复。
+    const messagesFile = path.join(sessionDir, 'messages.jsonl')
+    const existing = await fs.readFile(messagesFile, 'utf8')
+    const fixtureContent = await fs.readFile(FIXTURE_PATH, 'utf8')
+    const existingLines = existing.split('\n').filter((l) => l.length > 0)
+    const seedUser = existingLines[0] ?? ''
+    const seedAssistant = existingLines.slice(1).join('\n')
+    const fixtureBody = fixtureContent.endsWith('\n') ? fixtureContent : `${fixtureContent}\n`
+    await fs.writeFile(
+      messagesFile,
+      `${seedUser}\n${fixtureBody}${seedAssistant}\n`,
+      'utf8',
+    )
+    result.matched.fixtureInjected = true
 
     // Step 3：trigger 一条短消息——bot 处理时会读取 meta，发现 breakerOpen=true，
-    // 直接 emit skipped(breaker_open)，不进 compactor，主流程继续走 executor 回复。
+    // 直接 emit skipped(breaker_open)，不进 compactor，主流程继续走 executor 回复
+    // （此时 history 含 1M fixture，验证大历史不会因 schema 不符而炸）。
     const triggerMessage = await ctx.triggerClient.postMessage({
       channel: ctx.channelId,
       thread_ts: rootMessage.ts,
@@ -249,6 +272,7 @@ function assertResult(result: BreakerOpenResult): void {
   const failures: string[] = []
   if (!result.matched.seedReplyObserved) failures.push('seed reply not observed')
   if (!result.matched.breakerStatePrepared) failures.push('breaker state not prepared')
+  if (!result.matched.fixtureInjected) failures.push('1M fixture not injected')
   if (!result.matched.triggerReplyObserved) failures.push('trigger reply not observed')
   if (!result.matched.mainFlowContinuedDespiteBreaker) {
     failures.push('main flow did not continue despite breaker (regression: breaker should be soft)')
