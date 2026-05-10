@@ -165,10 +165,26 @@ export async function runScheduledWechatSession(args: RunScheduledWechatArgs): P
 
 - `src/im/slack/scheduled.ts`（新）：`runScheduledSlackSession()` 纯函数。
 - `src/im/wechat/scheduled.ts`（新）：`runScheduledWechatSession()` 纯函数。
-- `src/im/slack/SlackAdapter.ts`：`app_mention` 闭包里"建 sink + orchestrator.handle"那段抽出 → 调用 `runInboundSlackSession` 内部 helper（与 `runScheduledSlackSession` 共享底层 implementation；区别仅在 inbound 携带 `confirmSender`、scheduled 不带）。`createSlackAdapter` 返回值在 IMAdapter 之外**额外**对外暴露一个 `slackScheduledHook = { run: (args) => runScheduledSlackSession({...args, web: app.client, deps: ...}) }`，由 `createApplication` 取用。
-- `src/im/wechat/WechatAdapter.ts`：同上抽 `runInboundWechatSession`；暴露 `wechatScheduledHook = { run: (args) => runScheduledWechatSession({...args, api: deps.api, deps: ...}) }`。同时新增 `loadCredentialsOnly(credentialsFile)` 工具（CLI 用，不触发 QR 登录）。
+- `src/im/slack/SlackAdapter.ts`：`app_mention` 闭包里"建 sink + orchestrator.handle"那段抽出 → 调用 `runInboundSlackSession` 内部 helper（与 `runScheduledSlackSession` 共享底层 implementation；区别仅在 inbound 携带 `confirmSender`、scheduled 不带）。`createSlackAdapter` 返回类型从单一 `IMAdapter` 改为：
+  ```ts
+  export interface SlackAdapterHandle {
+    adapter: IMAdapter
+    scheduledHook: { run: (args: { taskId; channelId; prompt }) => Promise<void> }
+  }
+  export function createSlackAdapter(deps): SlackAdapterHandle
+  ```
+  `scheduledHook.run` 闭包捕获 `app.client` + 当前装配 deps，调 `runScheduledSlackSession`。
+- `src/im/wechat/WechatAdapter.ts`：同上抽 `runInboundWechatSession`；返回类型：
+  ```ts
+  export interface WechatAdapterHandle {
+    adapter: IMAdapter
+    scheduledHook: { run: (args: { taskId; to; prompt }) => Promise<void> }
+    loadCredentialsOnly: (file: string) => Promise<WechatCredentials>   // CLI 用
+  }
+  ```
+  `loadCredentialsOnly` 不触发 QR 登录，缺失则抛 `MissingWechatCredentialsError`。
 
-`SlackAdapter` / `WechatAdapter` 的 `IMAdapter` 实例与 `*ScheduledHook` 一起由 `createApplication` 返回（结构性扩展，非接口变更）。
+`createApplication` 内部把两个 handle 解构使用：`adapters = [slackHandle.adapter, wechatHandle.adapter]` 进现有数组，`hooks` 转给 runner。`Application` 顶层多一个 `scheduledTasks?: { runner; scheduler? }`。`IMAdapter` 公共接口完全不动。
 
 ### `createApplication` 改动
 
@@ -269,7 +285,7 @@ type ScheduledTaskTarget =
   | { im: 'wechat'; to: string }
 
 export interface ScheduledTaskRunRecord {
-  runId: string                        // `${taskId}:${startedAt ISO}` 或 uuid
+  runId: string                        // `${taskId}:${startedAt ISO}:${trigger}` 唯一串联 started 与终态
   taskId: string
   trigger: 'cron' | 'manual'
   status: 'started' | 'success' | 'failed' | 'skipped'
@@ -346,7 +362,13 @@ croner job 按 task.cron + tz 触发
          │   │     text: rule.prompt
          │   │     // confirmSender 不携带（字段 optional，已确认）
          │   │   }
+         │   ├─ sessionId = `slack:${channelId}:${rootTs}`（与 inbound 同构）
+         │   │   不调 runQueue.enqueue（定时任务是孤立 turn，不参与多轮排队；
+         │   │   shouldSuppressUsage 的 queueDepth=0 行为正确）
          │   └─ build SlackEventSink → orchestrator.handle(inbound, sink)
+         │      派生效果：root 消息成为该 channel 的 thread 起点；
+         │      用户在该 thread 里回复会被 app_mention/inbound 路径恢复为同一 sessionId 的会话——
+         │      这是有意行为：定时播报变成可被人接力对话的入口
          ├─ Wechat 路径（hook.run 内部）：
          │   ├─ inbound = {
          │   │     imProvider:'wechat', channelId: target.to, channelName: target.to,
@@ -373,14 +395,27 @@ agent-slack scheduled-tasks run <id>
    ├─ 依据 rule.target.im 准备依赖：
    │   slack: 用 SLACK_BOT_TOKEN 直接 new WebClient(token)，**不启动 Bolt App**
    │           （避免与 daemon 抢 SocketMode 同 app token；也省去 Bolt 启动延迟）
-   │   wechat: 调 wechatAdapter.loadCredentialsOnly(credentialsFile) 拿 creds
+   │   wechat: 调 wechatHandle.loadCredentialsOnly(credentialsFile) 拿 creds
    │           creds 不存在 → exit code 3，提示用户先 daemon 跑一次完成扫码
-   │           调 deps.api.setToken(creds.token)
+   │           **若 creds.baseUrl 与配置 baseUrl 不同，须先 api.baseUrl = creds.baseUrl**
+   │           （扫码时服务端可能返回主域切换，见 WechatApi.ts:115）
+   │           然后 api.setToken(creds.token)
    └─ 直接调 runScheduled{Slack|Wechat}Session（纯函数，不经 daemon hook）
       runner 共用一份；trigger 标 'manual'
       复用同一份 history jsonl
    exit
 ```
+
+**CLI exit code 表**（用户可见契约，不要随便加新值）：
+
+| code | 触发 |
+|---|---|
+| 0 | 成功（含 agent 跑出 final 的失败也算 0，因为已落 history failed） |
+| 1 | 一般运行时错误（未捕获异常） |
+| 2 | rule 不存在（拼错 id） |
+| 3 | wechat 凭证缺失（且 target.im=wechat） |
+| 4 | target.im 对应 IM 在 config.im.enabled 中未启用 |
+| 5 | yaml schema 错（顶层 enabled 但加载失败） |
 
 CLI 与 daemon 互不感知；同一时刻撞上偶发会发两条，按已确认接受。Slack 这边 CLI 不起 Bolt App 因此无 socket 冲突；只是消息渲染时无"沙漏 reaction"等 Bolt 派生交互（无影响，因为定时任务本就不参与多轮排队）。
 
@@ -399,9 +434,9 @@ CLI 与 daemon 互不感知；同一时刻撞上偶发会发两条，按已确�
 | `target.im` 对应 adapter 未启用 | yaml 加载阶段拦下（§4.3） |
 | 同任务正在跑，cron 又到点 | skip + 写 jsonl |
 | 纯函数 `runScheduled<IM>Session` 抛错 | runner catch；EventSink 已渲染失败到会话；写 failed |
-| Slack 根消息 postMessage 失败 | 不进入 orchestrator；写 `error:'root-post-failed'` |
+| Slack 根消息 postMessage 失败（仅 Slack 路径） | 不进入 orchestrator；写 `error:'root-post-failed'`。Wechat 路径无对应"前置发根消息"步骤，首次失败直接落在 sink 内 |
 | Wechat 凭证失效 | sendText 失败由 EventSink 处理（如能渲染）；history failed |
-| daemon 收到 SIGTERM | scheduler.stop() 取消所有 cron；in-flight 的 run **会被进程退出中断**，不写 success/failed（日志里只有 `started`，便于后续排查"为什么半截"）。**不做 graceful drain**——LLM 调用可能很长，强制等待会阻塞 daemon 退出 |
+| daemon 收到 SIGTERM | scheduler.stop() 取消所有 cron；in-flight 的 run **会被进程退出中断**，不写 success/failed（日志里只有 `started`，便于后续排查"为什么半截"）。**不做 graceful drain**——LLM 调用可能很长，强制等待会阻塞 daemon 退出。**用户可见副作用**：目标会话里可能残留半截渲染消息，README 须提醒 |
 | ask-confirm 工具 | confirmSender=undefined → toolsBuilder 不挂载 confirm tool → agent 看不到这个工具 |
 | cron 跨夏令时跳过 | 由 croner 处理；不专门补救 |
 
@@ -467,6 +502,7 @@ CLI 与 daemon 互不感知；同一时刻撞上偶发会发两条，按已确�
 ### 7.4 已有 adapter 测试守护重构
 
 - `src/im/slack/SlackAdapter.test.ts` / `src/im/wechat/WechatAdapter.test.ts`：抽 `runInbound<IM>Session` 是无行为变更重构，现有测试不应改断言。这是回归保险。
+- 注：`git status` 当前显示这两份测试有未提交修改，那是 wechat MVP 落地阶段的改动（与本 spec 无关）。本 spec 实施时基线以那次合并后版本为准；plan 阶段须先确认基线干净再开始 refactor。
 
 ### 7.5 CLI 测
 
