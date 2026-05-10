@@ -7,7 +7,10 @@ import { formatCompactSummary, type CompactAgent } from '@/agents/compact/index.
 import type { CompactAgentOutput } from '@/agents/compact/types.ts'
 import { groupMessagesByApiRound } from '@/agents/compact/groupMessagesByApiRound.ts'
 import { stripImagesFromMessages } from '@/agents/compact/stripImagesFromMessages.ts'
-import { compactOldToolResults } from '@/orchestrator/modelMessages.ts'
+import {
+  compactOldToolResults,
+  estimateMessagesChars,
+} from '@/orchestrator/modelMessages.ts'
 
 export type ManualCompactTrigger = 'mention_command'
 export type AutoCompactTrigger = 'budget'
@@ -16,11 +19,29 @@ type CompletedFinalMessages = Extract<
   { phase: 'completed' }
 >['finalMessages']
 
+/**
+ * 公共的 compact 成功侧度量数据，供 orchestrator 写 compact_succeeded 事件。
+ * 这些字段不会进 jsonl，仅由 ContextCompactor 计算后回传。
+ */
+export interface CompactSuccessMetrics {
+  preCompactApproxChars: number
+  postCompactApproxChars: number
+  compactionDurationMs: number
+  compactionUsage: {
+    inputTokens: number
+    outputTokens: number
+    cachedInputTokens: number
+  }
+  ptlRetryCount: number
+  ptlDroppedMessages: number
+}
+
 export type ManualCompactResult =
   | {
       status: 'compacted'
       responseText: string
       finalMessages: CompletedFinalMessages
+      metrics: CompactSuccessMetrics
     }
   | {
       status: 'skipped'
@@ -47,6 +68,7 @@ export type AutoCompactResult =
   | {
       status: 'compacted'
       finalMessages: CompletedFinalMessages
+      metrics: CompactSuccessMetrics
     }
   | {
       status: 'skipped'
@@ -87,6 +109,31 @@ function preprocessForCompact(
 ): CoreMessage[] {
   const placeheld = compactOldToolResults(messages, keepRecentToolResults, messagesJsonlPath)
   return stripImagesFromMessages(placeheld)
+}
+
+/**
+ * 把 compact 调用抛出的错误归类为 events.jsonl 的 reason 字段值。
+ * - prompt_too_long：所有 PTL retry 砍头后仍 PTL；不计入熔断
+ * - network/api_error：可重试类，计入熔断
+ * - no_summary：模型返回空文本；计入熔断
+ * - unknown：兜底
+ */
+export function classifyCompactError(
+  error: unknown,
+): 'prompt_too_long' | 'network' | 'api_error' | 'no_summary' | 'unknown' {
+  if (isPromptTooLongError(error)) return 'prompt_too_long'
+  if (!(error instanceof Error)) return 'unknown'
+  const name = (error as { name?: string }).name ?? ''
+  if (name === 'AI_NoTextGeneratedError' || /no.*summary|empty.*completion/i.test(error.message)) {
+    return 'no_summary'
+  }
+  if (/timeout|fetch.*failed|ECONN|ENOTFOUND|EAI_AGAIN/i.test(error.message)) {
+    return 'network'
+  }
+  if (name === 'AI_APICallError' || name === 'APICallError' || /\b\d{3}\b/.test(error.message)) {
+    return 'api_error'
+  }
+  return 'unknown'
 }
 
 export function isPromptTooLongError(error: unknown): boolean {
@@ -169,6 +216,9 @@ export function createContextCompactor(deps: ContextCompactorDeps): ContextCompa
         }
       }
 
+      const preCompactApproxChars = estimateMessagesChars(compactableMessages)
+      const startedAt = Date.now()
+
       const preprocessed = preprocessForCompact(
         compactableMessages,
         deps.keepRecentToolResults,
@@ -181,10 +231,18 @@ export function createContextCompactor(deps: ContextCompactorDeps): ContextCompa
         log,
       )
       const compactMessage = formatCompactSummary({ summary: output.summary })
+      const compactionDurationMs = Date.now() - startedAt
+      const finalMessages: CompletedFinalMessages = [assistantMessage(compactMessage)]
+      const postCompactApproxChars = estimateMessagesChars(
+        finalMessages.map((m) => ({ role: m.role, content: m.content })) as CoreMessage[],
+      )
 
       log.info('manual compact completed', {
         historyMessages: args.history.length,
         preprocessedMessages: preprocessed.length,
+        preCompactApproxChars,
+        postCompactApproxChars,
+        compactionDurationMs,
         ptlRetryCount,
         ptlDroppedMessages,
         inputTokens: output.usage.inputTokens,
@@ -196,7 +254,15 @@ export function createContextCompactor(deps: ContextCompactorDeps): ContextCompa
       return {
         status: 'compacted',
         responseText: compactMessage,
-        finalMessages: [assistantMessage(compactMessage)],
+        finalMessages,
+        metrics: {
+          preCompactApproxChars,
+          postCompactApproxChars,
+          compactionDurationMs,
+          compactionUsage: output.usage,
+          ptlRetryCount,
+          ptlDroppedMessages,
+        },
       }
     },
 
@@ -208,6 +274,9 @@ export function createContextCompactor(deps: ContextCompactorDeps): ContextCompa
           finalMessages: [],
         }
       }
+
+      const preCompactApproxChars = estimateMessagesChars(args.messages)
+      const startedAt = Date.now()
 
       const preprocessed = preprocessForCompact(
         args.messages,
@@ -221,10 +290,18 @@ export function createContextCompactor(deps: ContextCompactorDeps): ContextCompa
         log,
       )
       const compactMessage = formatCompactSummary({ mode: 'auto', summary: output.summary })
+      const compactionDurationMs = Date.now() - startedAt
+      const finalMessages: CompletedFinalMessages = [assistantMessage(compactMessage)]
+      const postCompactApproxChars = estimateMessagesChars(
+        finalMessages.map((m) => ({ role: m.role, content: m.content })) as CoreMessage[],
+      )
 
       log.info('auto compact completed', {
         historyMessages: args.messages.length,
         preprocessedMessages: preprocessed.length,
+        preCompactApproxChars,
+        postCompactApproxChars,
+        compactionDurationMs,
         ptlRetryCount,
         ptlDroppedMessages,
         inputTokens: output.usage.inputTokens,
@@ -235,7 +312,15 @@ export function createContextCompactor(deps: ContextCompactorDeps): ContextCompa
 
       return {
         status: 'compacted',
-        finalMessages: [assistantMessage(compactMessage)],
+        finalMessages,
+        metrics: {
+          preCompactApproxChars,
+          postCompactApproxChars,
+          compactionDurationMs,
+          compactionUsage: output.usage,
+          ptlRetryCount,
+          ptlDroppedMessages,
+        },
       }
     },
   }

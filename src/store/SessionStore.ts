@@ -99,7 +99,12 @@ export interface SessionStore {
 }
 
 // ── 运行事件（非 CoreMessage）────────────────────────────
-export type SessionEvent = ConfirmActionEvent
+export type SessionEvent =
+  | ConfirmActionEvent
+  | CompactAttemptEvent
+  | CompactSucceededEvent
+  | CompactFailedEvent
+  | CompactSkippedEvent
 
 export interface ConfirmActionEvent {
   type: 'confirm_action'
@@ -111,6 +116,81 @@ export interface ConfirmActionEvent {
   channelId: string
   messageTs: string
   callbackError?: string
+}
+
+export type CompactMode = 'auto' | 'manual'
+export type CompactTrigger = 'budget' | 'mention_command'
+
+/**
+ * 进入 compact 调用前打——失败也会留痕，供"失败前最后状态"分析。
+ */
+export interface CompactAttemptEvent {
+  type: 'compact_attempt'
+  timestamp: string
+  mode: CompactMode
+  trigger: CompactTrigger
+  preCompactApproxChars: number
+  preCompactMessageCount: number
+}
+
+/**
+ * compact 成功（含写 jsonl + 写 compact.jsonl 后）打。
+ * willRetriggerNextTurn=false 是"压缩到位"的硬证据；为 true 说明
+ * summary 太长或 history 太大，下一轮还会再次进入 compact。
+ */
+export interface CompactSucceededEvent {
+  type: 'compact_succeeded'
+  timestamp: string
+  mode: CompactMode
+  preCompactApproxChars: number
+  postCompactApproxChars: number
+  willRetriggerNextTurn: boolean
+  compactionDurationMs: number
+  compactionUsage: {
+    inputTokens: number
+    outputTokens: number
+    cachedInputTokens: number
+  }
+  ptlRetryCount?: number
+  ptlDroppedMessages?: number
+}
+
+export type CompactFailedReason =
+  | 'prompt_too_long'
+  | 'network'
+  | 'api_error'
+  | 'no_summary'
+  | 'unknown'
+
+/**
+ * compact 抛错时打。countedAsFailure=false 表示该错误不计入熔断
+ * （prompt_too_long 已经走 PTL retry，最终抛出意味着无法砍头）。
+ */
+export interface CompactFailedEvent {
+  type: 'compact_failed'
+  timestamp: string
+  mode: CompactMode
+  reason: CompactFailedReason
+  countedAsFailure: boolean
+  failureCount: number
+  breakerOpened: boolean
+  errorMessage: string
+}
+
+export type CompactSkippedReason =
+  | 'enabled_false'
+  | 'too_few_messages'
+  | 'breaker_open'
+
+/**
+ * 主路径决定不走 compact 时打——例如熔断打开、消息太少。
+ * 不打 below_threshold（每轮都不达标会噪音爆炸）。
+ */
+export interface CompactSkippedEvent {
+  type: 'compact_skipped'
+  timestamp: string
+  mode: CompactMode
+  reason: CompactSkippedReason
 }
 
 export function defaultAutoCompactState(): AutoCompactState {

@@ -91,6 +91,14 @@ function makeContextCompactor(overrides: Partial<ContextCompactor> = {}): Contex
       finalMessages: [
         { id: 'msg-auto-compact', role: 'assistant' as const, content: '[compact: auto]\n摘要' },
       ],
+      metrics: {
+        preCompactApproxChars: 1000,
+        postCompactApproxChars: 100,
+        compactionDurationMs: 200,
+        compactionUsage: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 },
+        ptlRetryCount: 0,
+        ptlDroppedMessages: 0,
+      },
     })),
     ...overrides,
   }
@@ -409,6 +417,20 @@ describe('ConversationOrchestrator 粗事件消费', () => {
         mode: 'auto',
       },
     ])
+
+    // events.jsonl 应有 attempt + succeeded（按时间顺序）。
+    const eventsRaw = await readFile(path.join(session.dir, 'events.jsonl'), 'utf8')
+    const eventLines = eventsRaw
+      .split('\n')
+      .filter((l) => l.length > 0)
+      .map((l) => JSON.parse(l) as { type: string; [k: string]: unknown })
+    expect(eventLines.map((e) => e.type)).toEqual(['compact_attempt', 'compact_succeeded'])
+    expect(eventLines[1]).toMatchObject({
+      type: 'compact_succeeded',
+      mode: 'auto',
+      compactionUsage: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 },
+    })
+    expect(typeof eventLines[1]?.willRetriggerNextTurn).toBe('boolean')
   })
 
   it('自动 compact 失败时记录失败计数并继续主流程', async () => {
@@ -463,6 +485,92 @@ describe('ConversationOrchestrator 粗事件消费', () => {
       failureCount: 1,
       breakerOpen: false,
       lastFailureMessage: 'compact failed',
+    })
+
+    // events.jsonl 应有 attempt + failed
+    const eventsRaw = await readFile(path.join(session.dir, 'events.jsonl'), 'utf8')
+    const eventLines = eventsRaw
+      .split('\n')
+      .filter((l) => l.length > 0)
+      .map((l) => JSON.parse(l) as { type: string; [k: string]: unknown })
+    expect(eventLines.map((e) => e.type)).toEqual(['compact_attempt', 'compact_failed'])
+    expect(eventLines[1]).toMatchObject({
+      type: 'compact_failed',
+      mode: 'auto',
+      countedAsFailure: true,
+      failureCount: 1,
+      breakerOpened: false,
+      errorMessage: 'compact failed',
+    })
+  })
+
+  it('breakerOpen 时跳过 compact 并埋 compact_skipped(breaker_open) 事件', async () => {
+    const paths = resolveWorkspacePaths(cwd)
+    const store = createSessionStore(paths)
+    const memoryStore = createMemoryStore(paths)
+    const session = await store.getOrCreate({
+      imProvider: 'slack',
+      channelId: 'C',
+      channelName: 'c',
+      threadTs: 't-breaker',
+      imUserId: 'U',
+    })
+    await store.appendMessage(session.id, { role: 'user', content: 'old' })
+    await store.appendMessage(session.id, { role: 'assistant', content: 'answer' })
+    await store.setAutoCompactState(session.id, {
+      failureCount: 2,
+      breakerOpen: true,
+    })
+
+    const executor: AgentExecutor = {
+      async *execute() {
+        yield { type: 'lifecycle', phase: 'completed', finalMessages: [] }
+      },
+    }
+    const contextCompactor = makeContextCompactor()
+    const orch = createConversationOrchestrator({
+      toolsBuilder: () => ({}),
+      executorFactory: () => executor,
+      sessionStore: store,
+      memoryStore,
+      runQueue: new SessionRunQueue(),
+      abortRegistry: new AbortRegistry<string>(),
+      systemPrompt: '',
+      modelMessageBudget: {
+        maxApproxChars: 50,
+        keepRecentMessages: 3,
+        keepRecentToolResults: 20,
+        autoCompact: { enabled: true, triggerRatio: 0.8, maxFailures: 2 },
+      },
+      contextCompactor,
+      logger: stubLogger(),
+    })
+
+    await orch.handle(
+      {
+        imProvider: 'slack',
+        channelId: 'C',
+        channelName: 'c',
+        threadTs: 't-breaker',
+        userId: 'U',
+        userName: 'win-test',
+        text: 'current',
+        messageTs: '1',
+      },
+      mockSink().sink,
+    )
+
+    expect(contextCompactor.autoCompact).not.toHaveBeenCalled()
+    const eventsRaw = await readFile(path.join(session.dir, 'events.jsonl'), 'utf8')
+    const eventLines = eventsRaw
+      .split('\n')
+      .filter((l) => l.length > 0)
+      .map((l) => JSON.parse(l) as { type: string; reason?: string })
+    expect(eventLines).toHaveLength(1)
+    expect(eventLines[0]).toMatchObject({
+      type: 'compact_skipped',
+      mode: 'auto',
+      reason: 'breaker_open',
     })
   })
 
@@ -525,6 +633,14 @@ describe('ConversationOrchestrator 粗事件消费', () => {
         status: 'compacted' as const,
         responseText: '[compact: manual]\n摘要',
         finalMessages,
+        metrics: {
+          preCompactApproxChars: 500,
+          postCompactApproxChars: 50,
+          compactionDurationMs: 100,
+          compactionUsage: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 },
+          ptlRetryCount: 0,
+          ptlDroppedMessages: 0,
+        },
       })),
     }
     const executor: AgentExecutor = {

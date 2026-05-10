@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach } from 'vitest'
 import { mkdtempSync } from 'node:fs'
+import fs from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { CoreMessage } from 'ai'
@@ -330,5 +331,67 @@ describe('SessionStore', () => {
     expect(reloaded.meta.usage.cachedInputTokens).toBe(3)
     expect(reloaded.meta.usage.stepCount).toBe(3)
     expect(reloaded.meta.usage.totalCostUSD).toBeCloseTo(0.02)
+  })
+
+  it('appendEvent 追加 compact_attempt 到 events.jsonl', async () => {
+    const { store, session } = await createStoreWithSession('t-event-attempt')
+    await store.appendEvent(
+      { channelName: 'general', channelId: 'C1', threadTs: 't-event-attempt' },
+      {
+        type: 'compact_attempt',
+        timestamp: '2026-05-10T00:00:00.000Z',
+        mode: 'auto',
+        trigger: 'budget',
+        preCompactApproxChars: 800_000,
+        preCompactMessageCount: 50,
+      },
+    )
+    const raw = await fs.readFile(path.join(session.dir, 'events.jsonl'), 'utf8')
+    expect(raw).toContain('"type":"compact_attempt"')
+    expect(raw).toContain('"preCompactApproxChars":800000')
+  })
+
+  it('appendEvent 追加 compact_succeeded / compact_failed / compact_skipped', async () => {
+    const { store, session } = await createStoreWithSession('t-event-multi')
+    const args = { channelName: 'general', channelId: 'C1', threadTs: 't-event-multi' }
+    await store.appendEvent(args, {
+      type: 'compact_succeeded',
+      timestamp: '2026-05-10T00:00:01.000Z',
+      mode: 'auto',
+      preCompactApproxChars: 1_500_000,
+      postCompactApproxChars: 150_000,
+      willRetriggerNextTurn: false,
+      compactionDurationMs: 35_000,
+      compactionUsage: { inputTokens: 400_000, outputTokens: 20_000, cachedInputTokens: 0 },
+      ptlRetryCount: 1,
+      ptlDroppedMessages: 12,
+    })
+    await store.appendEvent(args, {
+      type: 'compact_failed',
+      timestamp: '2026-05-10T00:00:02.000Z',
+      mode: 'auto',
+      reason: 'api_error',
+      countedAsFailure: true,
+      failureCount: 1,
+      breakerOpened: false,
+      errorMessage: 'mock api 502',
+    })
+    await store.appendEvent(args, {
+      type: 'compact_skipped',
+      timestamp: '2026-05-10T00:00:03.000Z',
+      mode: 'auto',
+      reason: 'breaker_open',
+    })
+    const lines = (await fs.readFile(path.join(session.dir, 'events.jsonl'), 'utf8'))
+      .split('\n')
+      .filter((l) => l.length > 0)
+    expect(lines).toHaveLength(3)
+    expect(JSON.parse(lines[0]!).type).toBe('compact_succeeded')
+    expect(JSON.parse(lines[0]!).willRetriggerNextTurn).toBe(false)
+    expect(JSON.parse(lines[0]!).ptlRetryCount).toBe(1)
+    expect(JSON.parse(lines[1]!).type).toBe('compact_failed')
+    expect(JSON.parse(lines[1]!).countedAsFailure).toBe(true)
+    expect(JSON.parse(lines[2]!).type).toBe('compact_skipped')
+    expect(JSON.parse(lines[2]!).reason).toBe('breaker_open')
   })
 })

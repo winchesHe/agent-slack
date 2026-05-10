@@ -15,8 +15,13 @@ import {
   type ModelMessageBudget,
 } from './modelMessages.ts'
 import type { MentionCommandRouter } from './MentionCommandRouter.ts'
-import type { ContextCompactor } from './ContextCompactor.ts'
-import type { AutoCompactState } from '@/store/SessionStore.ts'
+import { classifyCompactError, type ContextCompactor } from './ContextCompactor.ts'
+import type {
+  AutoCompactState,
+  SessionEvent,
+  CompactMode,
+  CompactTrigger,
+} from '@/store/SessionStore.ts'
 
 export interface CurrentUser {
   userName: string
@@ -81,20 +86,108 @@ export function createConversationOrchestrator(
     session: Session,
     previousState: AutoCompactState,
     error: unknown,
-  ): Promise<void> => {
-    const failureCount = previousState.failureCount + 1
+  ): Promise<{ failureCount: number; breakerOpen: boolean }> => {
+    const reason = classifyCompactError(error)
+    // PTL 已经在 ContextCompactor 内 retry 过；最终抛出时不应再计入熔断——
+    // 否则用户偶发超长上下文会把 session 一路推熔断。
+    const counted = reason !== 'prompt_too_long'
+    const failureCount = counted ? previousState.failureCount + 1 : previousState.failureCount
     const maxFailures = autoCompactConfig?.maxFailures ?? 2
+    const breakerOpen = failureCount >= maxFailures
     const now = new Date().toISOString()
     const message = error instanceof Error ? error.message : String(error)
 
     await deps.sessionStore.setAutoCompactState(session.id, {
       ...previousState,
       failureCount,
-      breakerOpen: failureCount >= maxFailures,
+      breakerOpen,
       lastAttemptAt: now,
       lastFailureAt: now,
       lastFailureMessage: message,
     })
+    return { failureCount, breakerOpen }
+  }
+
+  const buildSucceededEvent = (
+    mode: CompactMode,
+    metrics: {
+      preCompactApproxChars: number
+      postCompactApproxChars: number
+      compactionDurationMs: number
+      compactionUsage: { inputTokens: number; outputTokens: number; cachedInputTokens: number }
+      ptlRetryCount: number
+      ptlDroppedMessages: number
+    },
+  ): SessionEvent => ({
+    type: 'compact_succeeded',
+    timestamp: new Date().toISOString(),
+    mode,
+    preCompactApproxChars: metrics.preCompactApproxChars,
+    postCompactApproxChars: metrics.postCompactApproxChars,
+    // 估算下一轮是否会立即再触发：仅看 boundary 自身（postCompact）是否已 ≥ 阈值。
+    // 真实 candidate 会再加上一条 user message，无法预知大小；保守的"最低限"判断。
+    willRetriggerNextTurn: metrics.postCompactApproxChars >= charThreshold,
+    compactionDurationMs: metrics.compactionDurationMs,
+    compactionUsage: metrics.compactionUsage,
+    ...(metrics.ptlRetryCount > 0
+      ? { ptlRetryCount: metrics.ptlRetryCount, ptlDroppedMessages: metrics.ptlDroppedMessages }
+      : {}),
+  })
+
+  const buildFailedEvent = (
+    mode: CompactMode,
+    error: unknown,
+    state: { failureCount: number; breakerOpen: boolean },
+  ): SessionEvent => {
+    const reason = classifyCompactError(error)
+    return {
+      type: 'compact_failed',
+      timestamp: new Date().toISOString(),
+      mode,
+      reason,
+      countedAsFailure: reason !== 'prompt_too_long',
+      failureCount: state.failureCount,
+      breakerOpened: state.breakerOpen,
+      errorMessage: error instanceof Error ? error.message : String(error),
+    }
+  }
+
+  const buildAttemptEvent = (
+    mode: CompactMode,
+    trigger: CompactTrigger,
+    candidateMessages: CoreMessage[],
+  ): SessionEvent => ({
+    type: 'compact_attempt',
+    timestamp: new Date().toISOString(),
+    mode,
+    trigger,
+    preCompactApproxChars: estimateMessagesChars(candidateMessages),
+    preCompactMessageCount: candidateMessages.length,
+  })
+
+  const charThreshold = autoCompactConfig
+    ? Math.max(
+        1,
+        Math.ceil(
+          modelMessageBudget.maxApproxChars *
+            Math.min(Math.max(autoCompactConfig.triggerRatio, 0.01), 1),
+        ),
+      )
+    : Number.POSITIVE_INFINITY
+
+  const emitCompactEvent = async (session: Session, event: SessionEvent): Promise<void> => {
+    try {
+      await deps.sessionStore.appendEvent(
+        {
+          channelName: session.meta.channelName,
+          channelId: session.meta.channelId,
+          threadTs: session.meta.threadTs,
+        },
+        event,
+      )
+    } catch (err) {
+      log.warn('appendEvent failed', err)
+    }
   }
 
   const appendCompactRecords = async (
@@ -178,6 +271,12 @@ export function createConversationOrchestrator(
             const mentionCommand = deps.mentionCommandRouter?.match(input.text)
             if (mentionCommand && deps.mentionCommandRouter) {
               await deps.sessionStore.appendMessage(session.id, userMsg)
+              if (mentionCommand === 'compact') {
+                await emitCompactEvent(
+                  session,
+                  buildAttemptEvent('manual', 'mention_command', [...history, userMsg]),
+                )
+              }
               const commandResult = await deps.mentionCommandRouter.execute({
                 command: mentionCommand,
                 input,
@@ -191,6 +290,20 @@ export function createConversationOrchestrator(
               }
               if (commandResult.status === 'compacted') {
                 await appendCompactRecords(session.id, commandResult.finalMessages, 'manual')
+                if (mentionCommand === 'compact' && 'metrics' in commandResult) {
+                  await emitCompactEvent(
+                    session,
+                    buildSucceededEvent('manual', commandResult.metrics),
+                  )
+                }
+              } else if (mentionCommand === 'compact') {
+                // manualCompact 只有"历史不足"一种 skipped 情况
+                await emitCompactEvent(session, {
+                  type: 'compact_skipped',
+                  timestamp: new Date().toISOString(),
+                  mode: 'manual',
+                  reason: 'too_few_messages',
+                })
               }
               await sink.onEvent({
                 type: 'lifecycle',
@@ -210,7 +323,23 @@ export function createConversationOrchestrator(
               // 不再需要 buildCompactCandidateMessages——切片由 SessionStore 完成。
               const candidateMessages: CoreMessage[] = [...history, userMsg]
 
-              if (!autoCompactState.breakerOpen && shouldTriggerAutoCompact(candidateMessages)) {
+              if (autoCompactState.breakerOpen) {
+                // 熔断打开：明确埋点跳过，dashboard 能看出"该 session 处于熔断状态"。
+                await emitCompactEvent(session, {
+                  type: 'compact_skipped',
+                  timestamp: new Date().toISOString(),
+                  mode: 'auto',
+                  reason: 'breaker_open',
+                })
+              } else if (candidateMessages.length < 2) {
+                // 历史 + 当前消息太少不足以压缩；同样埋点便于调试 trigger 行为。
+                await emitCompactEvent(session, {
+                  type: 'compact_skipped',
+                  timestamp: new Date().toISOString(),
+                  mode: 'auto',
+                  reason: 'too_few_messages',
+                })
+              } else if (shouldTriggerAutoCompact(candidateMessages)) {
                 let autoCompactActivitySent = false
                 await sink.onEvent({
                   type: 'activity-state',
@@ -220,6 +349,16 @@ export function createConversationOrchestrator(
                   },
                 })
                 autoCompactActivitySent = true
+
+                const preCompactApproxChars = estimateMessagesChars(candidateMessages)
+                await emitCompactEvent(session, {
+                  type: 'compact_attempt',
+                  timestamp: new Date().toISOString(),
+                  mode: 'auto',
+                  trigger: 'budget',
+                  preCompactApproxChars,
+                  preCompactMessageCount: candidateMessages.length,
+                })
 
                 try {
                   await deps.sessionStore.setAutoCompactState(session.id, {
@@ -244,12 +383,24 @@ export function createConversationOrchestrator(
                       lastAttemptAt: new Date().toISOString(),
                       lastSuccessAt: new Date().toISOString(),
                     })
+                    await emitCompactEvent(
+                      session,
+                      buildSucceededEvent('auto', compactResult.metrics),
+                    )
                     // 重新 loadMessages：自动从新 boundary 之后切片（boundary 自身在内）
                     modelHistory = await deps.sessionStore.loadMessages(session.id)
                   }
                 } catch (error) {
                   log.warn('auto compact 失败，回退到模型视图裁剪', error)
-                  await recordAutoCompactFailure(session, autoCompactState, error)
+                  const failureState = await recordAutoCompactFailure(
+                    session,
+                    autoCompactState,
+                    error,
+                  )
+                  await emitCompactEvent(
+                    session,
+                    buildFailedEvent('auto', error, failureState),
+                  )
                 } finally {
                   if (autoCompactActivitySent) {
                     await sink.onEvent({ type: 'activity-state', state: { clear: true } })

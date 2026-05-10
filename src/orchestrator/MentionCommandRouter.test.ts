@@ -8,6 +8,14 @@ function routerWithMockCompactor() {
       status: 'compacted' as const,
       responseText: 'ok',
       finalMessages: [{ id: 'msg-compact', role: 'assistant' as const, content: 'ok' }],
+      metrics: {
+        preCompactApproxChars: 100,
+        postCompactApproxChars: 10,
+        compactionDurationMs: 50,
+        compactionUsage: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 },
+        ptlRetryCount: 0,
+        ptlDroppedMessages: 0,
+      },
     })),
     autoCompact: vi.fn(async () => ({
       status: 'skipped' as const,
