@@ -203,9 +203,11 @@ export function createConversationOrchestrator(
     try {
       await deps.sessionStore.appendEvent(
         {
+          imProvider: session.meta.imProvider,
           channelName: session.meta.channelName,
           channelId: session.meta.channelId,
           threadTs: session.meta.threadTs,
+          imUserId: session.meta.imUserId,
         },
         event,
       )
