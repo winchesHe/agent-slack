@@ -104,8 +104,6 @@ const NO_TOOLS_TRAILER = `
 
 export const COMPACT_SYSTEM_PROMPT = NO_TOOLS_PREAMBLE + COMPACT_BODY + NO_TOOLS_TRAILER
 
-const COMPACT_SUMMARY_MAX_CHARS = 1_200
-
 function serializeMessages(messages: CoreMessage[]): string {
   return messages.map((message) => JSON.stringify(message)).join('\n')
 }
@@ -122,40 +120,24 @@ ${visibleTranscript}
 }
 
 export function formatCompactSummary(input: { mode?: 'auto' | 'manual'; summary: string }): string {
-  const summary = compactSummaryText(input.summary)
-  return `[compact: ${input.mode ?? 'manual'}]
-${summary}`
+  const extracted = stripAnalysisAndExtractSummary(input.summary)
+  const cleaned = extracted.trim() || '当前历史中没有需要保留的有效上下文。'
+  return `[compact: ${input.mode ?? 'manual'}]\n${cleaned}`
 }
 
-function compactSummaryText(summary: string): string {
-  const withoutPathLines = summary
-    .split('\n')
-    .filter((line) => !isPathNoiseLine(line) && !isLowValueNoiseLine(line))
-    .join('\n')
-    .trim()
-
-  if (withoutPathLines.length <= COMPACT_SUMMARY_MAX_CHARS) {
-    return withoutPathLines || '当前历史中没有需要保留的有效上下文。'
-  }
-
-  return `${withoutPathLines.slice(0, COMPACT_SUMMARY_MAX_CHARS).trimEnd()}\n…`
-}
-
-function isPathNoiseLine(line: string): boolean {
-  return (
-    line.includes('messages.jsonl') ||
-    line.includes('.agent-slack/sessions') ||
-    line.includes('完整会话记录') ||
-    line.includes('JSONL 记录路径') ||
-    line.includes('/Users/')
-  )
-}
-
-function isLowValueNoiseLine(line: string): boolean {
-  return (
-    line.includes('COMPACT_COMMAND_') ||
-    line.includes('Reply exactly:') ||
-    line.includes('Do not use tools.') ||
-    line.includes('已进入 compact 模式')
-  )
+/**
+ * 从 model 输出中剥掉 <analysis> 块、提取 <summary> 块内容。
+ * - <analysis> 是模型思考过程，不进 jsonl
+ * - <summary> 是 9 章节正文，jsonl 持久化的就是它
+ * - 缺标签时整段返回（兼容老格式 / 模型偶发不带标签）
+ *
+ * 不再做 noise 过滤（路径名 / 握手关键字）——9 章节 prompt 已不会产出这种
+ * 内容，留着会误删合法引用。也不再按字符数截断——max_output_tokens=20K
+ * 已是上限。
+ */
+function stripAnalysisAndExtractSummary(raw: string): string {
+  const withoutAnalysis = raw.replace(/<analysis>[\s\S]*?<\/analysis>/g, '')
+  const summaryMatch = withoutAnalysis.match(/<summary>([\s\S]*?)<\/summary>/)
+  const body = summaryMatch ? (summaryMatch[1] ?? '') : withoutAnalysis
+  return body.replace(/\n{3,}/g, '\n\n').trim()
 }

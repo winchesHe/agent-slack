@@ -73,11 +73,9 @@ describe('ContextCompactor', () => {
     expect(compactAgent.summarize).not.toHaveBeenCalled()
   })
 
-  it('调用 compact agent 生成摘要并返回 compact message', async () => {
+  it('调用 compact agent 生成摘要并返回 compact message（含 [compact: manual] 头）', async () => {
     const compactAgent: CompactAgent = {
-      summarize: vi.fn(async () =>
-        output('摘要内容\n完整会话记录：/workspace/.agent-slack/sessions/slack/c.C.t/messages.jsonl'),
-      ),
+      summarize: vi.fn(async () => output('<summary>摘要正文</summary>')),
     }
     const compactor = createContextCompactor({ compactAgent, logger: logger(), keepRecentToolResults: 20 })
 
@@ -93,47 +91,13 @@ describe('ContextCompactor', () => {
     })
 
     expect(result.status).toBe('compacted')
-    expect(result.responseText).toContain('摘要内容')
-    expect(result.responseText).not.toContain('messages.jsonl')
-    expect(result.responseText).not.toContain('/workspace/')
+    expect(result.responseText).toContain('摘要正文')
     expect(result.finalMessages).toHaveLength(1)
     expect(result.finalMessages[0]).toMatchObject({
       role: 'assistant',
-      content: '[compact: manual]\n摘要内容',
+      content: '[compact: manual]\n摘要正文',
     })
     expect(result.finalMessages[0]?.id).toEqual(expect.any(String))
-  })
-
-  it('compact message 会过滤低价值握手内容', async () => {
-    const compactAgent: CompactAgent = {
-      summarize: vi.fn(async () =>
-        output(
-          [
-            '用户正在排查 compact 显示顺序。',
-            '- COMPACT_COMMAND_READY abc',
-            '- Reply exactly: COMPACT_COMMAND_READY abc',
-            '- Do not use tools.',
-          ].join('\n'),
-        ),
-      ),
-    }
-    const compactor = createContextCompactor({ compactAgent, logger: logger(), keepRecentToolResults: 20 })
-
-    const result = await compactor.manualCompact({
-      session: session(),
-      history: [
-        { role: 'user', content: 'hi' },
-        { role: 'assistant', content: 'hello' },
-      ],
-      trigger: 'mention_command',
-      userId: 'U',
-      messagesJsonlPath,
-    })
-
-    expect(result.responseText).toContain('用户正在排查 compact 显示顺序。')
-    expect(result.responseText).not.toContain('COMPACT_COMMAND_READY')
-    expect(result.responseText).not.toContain('Reply exactly')
-    expect(result.responseText).not.toContain('Do not use tools')
   })
 
   it('autoCompact 生成不可直接展示的 auto summary finalMessage', async () => {
