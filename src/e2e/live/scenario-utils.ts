@@ -163,6 +163,56 @@ export async function writeScenarioResult(scenarioId: string, result: unknown): 
   await fs.writeFile(absolutePath, `${JSON.stringify(result, null, 2)}\n`, 'utf8')
 }
 
+/**
+ * 把 workspace 的 logs/ 目录复制到 .agent-slack/e2e/logs/<scenarioId>-<runId>/，
+ * 用于失败诊断。在 temp workspace 被 fs.rm 之前调用。同时会把当前 Slack thread
+ * 全量 dump 成 thread-<rootMessageTs>.json，便于看 bot 实际回复了什么。
+ *
+ * 设计：仅复制 logs（含 agent-YYYY-MM-DD.log），不复制 sessions/jsonl 等大文件，
+ * 避免 .agent-slack/e2e/ 体积失控。多次跑同一 scenario 会覆盖（按 runId 区分目录）。
+ */
+export async function preserveWorkspaceLogsForDebug(
+  scenarioId: string,
+  runId: string,
+  workspaceDir: string,
+  threadDump?: { ctx: LiveE2EContext; rootMessageTs: string },
+): Promise<void> {
+  const sourcePaths = resolveWorkspacePaths(workspaceDir)
+  const sourceLogsDir = sourcePaths.logsDir
+  const targetDir = path.resolve(
+    process.cwd(),
+    `.agent-slack/e2e/logs/${scenarioId}-${runId}`,
+  )
+  try {
+    await fs.cp(sourceLogsDir, targetDir, { recursive: true })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error
+    }
+    // logs dir 还没生成（例如 application.start 失败前）——继续 dump thread
+    await fs.mkdir(targetDir, { recursive: true })
+  }
+
+  if (threadDump) {
+    try {
+      const replies = await threadDump.ctx.botClient.conversationReplies({
+        channel: threadDump.ctx.channelId,
+        inclusive: true,
+        limit: 100,
+        ts: threadDump.rootMessageTs,
+      })
+      const dumpPath = path.join(targetDir, `thread-${threadDump.rootMessageTs}.json`)
+      await fs.writeFile(
+        dumpPath,
+        `${JSON.stringify(replies.messages ?? [], null, 2)}\n`,
+        'utf8',
+      )
+    } catch {
+      // dump 失败不影响主流程
+    }
+  }
+}
+
 export function requireEnv(key: string): string {
   const value = process.env[key]?.trim()
   if (!value) {

@@ -15,6 +15,7 @@ import {
   delay,
   findReplyContaining,
   findSessionDir,
+  preserveWorkspaceLogsForDebug,
   readSessionMessages,
   waitForThread,
   writeScenarioResult,
@@ -147,6 +148,11 @@ async function main(): Promise<void> {
       await ctx.application.stop().catch((error) => {
         consola.error('Failed to stop application:', error)
       })
+    }
+    if (!result.passed) {
+      await preserveWorkspaceLogsForDebug('context-pruning-no-llm', runId, workspaceDir).catch(
+        (error) => consola.error('Failed to preserve workspace logs:', error),
+      )
     }
     await fs.rm(workspaceDir, { recursive: true, force: true }).catch((error) => {
       consola.error('Failed to remove temporary no-LLM pruning workspace:', error)

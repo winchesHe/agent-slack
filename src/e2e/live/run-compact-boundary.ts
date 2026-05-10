@@ -14,6 +14,7 @@ import {
   createLiveE2EContext,
   delay,
   findReplyContaining,
+  preserveWorkspaceLogsForDebug,
   readSessionMessages,
   waitForThread,
   writeScenarioResult,
@@ -26,7 +27,8 @@ interface CompactBoundaryResult {
   matched: {
     boundaryReplyObserved: boolean
     compactSummaryObserved: boolean
-    oldMarkerNotLeakedAfterCompact: boolean
+    /** §6 verbatim 必然包含 user 消息中的 oldMarker；这里反过来要求它出现。 */
+    summaryPreservesUserMessageVerbatim: boolean
     persistedCompactSummary: boolean
     seedReplyObserved: boolean
   }
@@ -44,7 +46,7 @@ async function main(): Promise<void> {
     matched: {
       boundaryReplyObserved: false,
       compactSummaryObserved: false,
-      oldMarkerNotLeakedAfterCompact: false,
+      summaryPreservesUserMessageVerbatim: false,
       persistedCompactSummary: false,
       seedReplyObserved: false,
     },
@@ -110,23 +112,29 @@ async function main(): Promise<void> {
       if (reply.ts) {
         result.compactReplyTs = reply.ts
       }
-      // 9 章节 prompt §6 要求 verbatim 列出全部用户消息——seed 中的 oldMarker 自然
-      // 出现在 summary 内属于设计范围，不再断言"summary omits oldMarker"。
-      // boundary 语义改由后续 probe 验证：bot 在 compact 后下一轮能否复现 oldMarker。
+      // 新 boundary 语义（§3.7.6.3 + memory feedback_compact_verbatim_user_content）：
+      // §6 verbatim 必然保留 seed 中的 oldMarker。这里反过来作为"verbatim 保真"证据。
+      result.matched.summaryPreservesUserMessageVerbatim = reply.text.includes(oldMarker)
       const jsonl = await readSessionMessages(rootMessage.ts, { workspaceDir })
       result.matched.persistedCompactSummary =
         jsonl.includes('[compact: manual]') && jsonl.includes(oldMarker)
 
-      return result.matched.compactSummaryObserved && result.matched.persistedCompactSummary
+      return (
+        result.matched.compactSummaryObserved &&
+        result.matched.summaryPreservesUserMessageVerbatim &&
+        result.matched.persistedCompactSummary
+      )
     })
 
+    // 新 boundary 语义（§3.7.6.3 + memory feedback_compact_verbatim_user_content）：
+    // compact 不再"遮蔽"用户消息内容（§6 verbatim 保留），probe 改成"bot compact 后
+    // 仍能响应新 turn"——这是 boundary 真正要保的：会话能 idle→active 续接，不卡死。
     const probeMessage = await ctx.triggerClient.postMessage({
       channel: ctx.channelId,
       thread_ts: rootMessage.ts,
       text: [
         `<@${ctx.botUserId}> COMPACT_BOUNDARY_PROBE ${runId}`,
-        '如果你能在更早的对话或 compact 摘要中看到以 COMPACT_COMMAND_PRE_BOUNDARY_ 开头的完整旧 token，请原样输出那个完整 token。',
-        `如果看不到完整旧 token，请只回复：COMPACT_BOUNDARY_OK ${runId}`,
+        `Reply exactly: COMPACT_BOUNDARY_OK ${runId}`,
         '不要调用工具。',
       ].join('\n'),
       unfurl_links: false,
@@ -144,11 +152,9 @@ async function main(): Promise<void> {
       if (!reply?.text) {
         return false
       }
-
       result.boundaryReplyText = reply.text
       result.matched.boundaryReplyObserved = true
-      result.matched.oldMarkerNotLeakedAfterCompact = !reply.text.includes(oldMarker)
-      return result.matched.oldMarkerNotLeakedAfterCompact
+      return true
     })
 
     assertResult(result)
@@ -166,6 +172,16 @@ async function main(): Promise<void> {
       await ctx.application.stop().catch((error) => {
         consola.error('Failed to stop application:', error)
       })
+    }
+    if (!result.passed) {
+      await preserveWorkspaceLogsForDebug(
+        'compact-boundary',
+        runId,
+        workspaceDir,
+        ctx && result.rootMessageTs
+          ? { ctx, rootMessageTs: result.rootMessageTs }
+          : undefined,
+      ).catch((error) => consola.error('Failed to preserve workspace logs:', error))
     }
     await fs.rm(workspaceDir, { recursive: true, force: true }).catch((error) => {
       consola.error('Failed to remove temporary compact boundary workspace:', error)
@@ -216,11 +232,12 @@ function assertResult(result: CompactBoundaryResult): void {
   const failures: string[] = []
   if (!result.matched.seedReplyObserved) failures.push('seed reply not observed')
   if (!result.matched.compactSummaryObserved) failures.push('compact summary not observed')
+  if (!result.matched.summaryPreservesUserMessageVerbatim) {
+    failures.push('compact summary missing §6 verbatim user-message evidence (oldMarker)')
+  }
   if (!result.matched.persistedCompactSummary) failures.push('compact summary not persisted')
-  if (!result.matched.boundaryReplyObserved)
-    failures.push('post-compact boundary reply not observed')
-  if (!result.matched.oldMarkerNotLeakedAfterCompact) {
-    failures.push('old pre-compact marker leaked after compact boundary')
+  if (!result.matched.boundaryReplyObserved) {
+    failures.push('post-compact bot remained unresponsive (probe reply not observed)')
   }
 
   if (failures.length > 0) {
