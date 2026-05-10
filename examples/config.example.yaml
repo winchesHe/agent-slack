@@ -67,12 +67,20 @@ skills:
   enabled: ['*']
 
 im:
+  # 启用的 IM 列表（可多选）：'slack' | 'wechat'。
+  # 启用 wechat 后首次启动会在终端打印二维码，扫码后凭证写入
+  # .agent-slack/wechat/credentials.json，重启免登。
   enabled:
     - slack
+    # - wechat
+
   slack:
     # true 时会通过 Slack API 解析 channel name；失败时回退 unknown。
     resolveChannelName: true
-  # wechat:                        # 启用微信通道时取消注释
+
+  # wechat 子对象不写时使用 schema 默认值（腾讯 ilink 主域 + 默认 CDN）。
+  # 仅在需要自定义 baseUrl / CDN 地址时取消注释：
+  # wechat:
   #   baseUrl: https://ilinkai.weixin.qq.com
   #   cdnBaseUrl: https://novac2c.cdn.weixin.qq.com/c2c
 
