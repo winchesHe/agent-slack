@@ -62,8 +62,8 @@ describe('templates: config workspace mode', () => {
     expect(out.startsWith('agent:\n')).toBe(true)
     expect(out).toMatch(/^\s*provider: anthropic$/m)
     expect(out).toMatch(/^\s*model: claude-sonnet-4-5$/m)
-    // im.provider: slack 不被影响
-    expect(out).toContain('provider: slack')
+    // im.enabled: [slack] 不被影响（im 块内的 provider 替换不涉及 im 配置）
+    expect(out).toMatch(/^\s*-\s+slack\s*$/m)
   })
 
   it('未指定参数时使用默认值 litellm / gpt-5.5', () => {

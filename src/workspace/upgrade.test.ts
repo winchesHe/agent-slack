@@ -62,7 +62,8 @@ describe('planUpgradeYaml — 嵌套缺失', () => {
 skills:
   enabled: ['*']
 im:
-  provider: slack
+  enabled:
+    - slack
   slack:
     resolveChannelName: true
 daemon:

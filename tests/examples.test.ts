@@ -13,7 +13,7 @@ describe('agent-slack 配置示例', () => {
     const parsed = parseConfig(YAML.parse(raw))
 
     expect(parsed.agent.maxSteps).toBe(50)
-    expect(parsed.im.provider).toBe('slack')
+    expect(parsed.im.enabled).toEqual(['slack'])
   })
 
   it('channel-tasks.example.yaml 能被 channel task schema 解析', async () => {

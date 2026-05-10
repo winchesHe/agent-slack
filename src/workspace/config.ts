@@ -47,8 +47,14 @@ export const ConfigSchema = z.object({
   skills: z.object({ enabled: z.array(z.string()).default(['*']) }).default({}),
   im: z
     .object({
-      provider: z.literal('slack').default('slack'),
+      enabled: z.array(z.enum(['slack', 'wechat'])).min(1).default(['slack']),
       slack: z.object({ resolveChannelName: z.boolean().default(true) }).default({}),
+      wechat: z
+        .object({
+          baseUrl: z.string().default('https://ilinkai.weixin.qq.com'),
+          cdnBaseUrl: z.string().default('https://novac2c.cdn.weixin.qq.com/c2c'),
+        })
+        .default({}),
     })
     .default({}),
   daemon: z
