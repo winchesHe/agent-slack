@@ -46,6 +46,19 @@ export class WechatApi {
     this.token = token
   }
 
+  /**
+   * 长轮询入站消息。
+   *
+   * **重要**：caller 通过 AbortSignal 主动 abort（如 adapter stop）后，函数仍会
+   * 返回 `{ ret: 0, msgs: [] }` 空响应而非抛错（与 CowAgent 行为一致）。
+   * 调用方**不能**靠返回值区分"超时无消息"与"被显式停止"，必须独立维护 stop flag
+   * 在 long-poll loop 外层判退出。
+   *
+   * 默认 40s timeout = 35s long-poll + 5s buffer。
+   *
+   * @param buf 同步游标，由前一次 getUpdates 返回的 get_updates_buf 透传
+   * @param signal 可选 abort signal，用于让 adapter stop 时中断当前请求
+   */
   async getUpdates(buf: string, signal?: AbortSignal): Promise<GetUpdatesResp> {
     try {
       return await this._post<GetUpdatesResp>(
@@ -79,6 +92,11 @@ export class WechatApi {
     })
   }
 
+  /**
+   * 取账号配置。MVP 阶段仅作存活/探活探测用，调用方不消费具体字段，
+   * 返回类型保持 unknown；如果未来需要解析具体字段（如 baseurl 切换），
+   * 在 protocol.ts 加 schema 后收紧类型。
+   */
   async getConfig(userId: string, contextToken: string = ''): Promise<unknown> {
     return await this._post<unknown>(
       'ilink/bot/getconfig',
@@ -124,7 +142,7 @@ export class WechatApi {
     // 注入 base_info.channel_version
     const wrappedBody = {
       ...body,
-      base_info: { channel_version: CHANNEL_VERSION, ...((body['base_info'] as object) ?? {}) },
+      base_info: { channel_version: CHANNEL_VERSION },
     }
 
     // 组合 timeout signal 与外部传入的 abort signal

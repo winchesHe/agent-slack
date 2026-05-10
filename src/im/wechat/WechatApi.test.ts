@@ -159,3 +159,43 @@ describe('WechatApi.fetchQrCode / pollQrStatus', () => {
     expect(resp).toEqual({ status: 'wait' })
   })
 })
+
+describe('WechatApi.setToken / getConfig', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  let api: WechatApi
+
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) })
+    vi.stubGlobal('fetch', fetchMock)
+    api = new WechatApi({ baseUrl: 'https://ilink.example/', cdnBaseUrl: 'x' })
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('setToken 之后下次调用使用新 token', async () => {
+    api.setToken('new-tok')
+    await api.getUpdates('')
+    const init = fetchMock.mock.calls[0]![1]
+    expect(init.headers['Authorization']).toBe('Bearer new-tok')
+  })
+
+  it('getConfig: POST /ilink/bot/getconfig，body 含 ilink_user_id 与 context_token', async () => {
+    await api.getConfig('uA', 'ctx-1')
+    const [url, init] = fetchMock.mock.calls[0]!
+    expect(url).toBe('https://ilink.example/ilink/bot/getconfig')
+    expect(init.method).toBe('POST')
+    const body = JSON.parse(init.body)
+    expect(body.ilink_user_id).toBe('uA')
+    expect(body.context_token).toBe('ctx-1')
+    expect(body.base_info).toEqual({ channel_version: '2.0.0' })
+  })
+
+  it('getConfig 第二参数省略时 context_token 为空字符串', async () => {
+    await api.getConfig('uA')
+    const init = fetchMock.mock.calls[0]![1]
+    const body = JSON.parse(init.body)
+    expect(body.context_token).toBe('')
+  })
+})
