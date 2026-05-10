@@ -51,11 +51,13 @@
     "dotenv": "^16.4.0",
     "gray-matter": "^4.0.3",
     "markdown-to-slack-blocks": "^1.0.0",
+    "qrcode-terminal": "^0.12.0",
     "yaml": "^2.5.0",
     "zod": "^3.23.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/qrcode-terminal": "^0.12.2",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
     "bumpp": "^9.11.1",
