@@ -220,15 +220,19 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
       )
 
       if (deps.runQueue.queueDepth(sessionId) > 0) {
-        try {
-          await client.reactions.add({
+        // fire-and-forget：hourglass 仅做视觉提示，不能阻塞 enqueue。
+        // 若 await 这条 reactions.add，turn N+1 的 runQueue.enqueue 会被推迟 ~200-500ms，
+        // 期间 turn N 的 finalize 可能正好跑到 shouldSuppressUsage 决策——此时 queueDepth 仍 =1，
+        // 错判为"无下一轮"，把 stale usage row 发出去。失败侧仍 warn，与原行为一致。
+        void client.reactions
+          .add({
             channel: channelId,
             timestamp: messageTs,
             name: 'hourglass_flowing_sand',
           })
-        } catch (err) {
-          log.warn('queued mention hourglass reaction failed', err)
-        }
+          .catch((err: unknown) => {
+            log.warn('queued mention hourglass reaction failed', err)
+          })
       }
 
       await deps.orchestrator.handle(
@@ -383,15 +387,17 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
     }
 
     if (deps.runQueue.queueDepth(sessionId) > 0) {
-      try {
-        await args.client.reactions.add({
+      // 同 app_mention 路径：reactions.add 不能阻塞 orchestrator.handle 的 enqueue，
+      // 否则 turn N 的 shouldSuppressUsage 会在 turn N+1 进队前决策，错发 stale usage。
+      void args.client.reactions
+        .add({
           channel: args.match.channelId,
           timestamp: args.match.messageTs,
           name: 'hourglass_flowing_sand',
         })
-      } catch (err) {
-        log.warn('queued channel task hourglass reaction failed', err)
-      }
+        .catch((err: unknown) => {
+          log.warn('queued channel task hourglass reaction failed', err)
+        })
     }
 
     const permalink = args.match.rule.task.includePermalink

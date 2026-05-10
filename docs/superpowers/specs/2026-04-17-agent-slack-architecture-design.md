@@ -1,7 +1,7 @@
 # agent-slack 架构设计文档
 
 **日期**：2026-04-17
-**状态**：已确认，待 spec review
+**状态**：§3.7 已 review（2026-05-09），部分子系统待重构实施——见 §3.7.1.1"实施现状"
 **局部替换**：§2.2 `AgentExecutionEvent` / `EventSink` 定义、§2.3 节流策略、§4 数据流 SlackEventSink → SlackRenderer 段、§4.1 Cost 路径、§4.2 Abort 路径、§6.2 Agent Errors 行、§7.1 M2 里程碑描述 均被 [`2026-04-19-slack-render-flow-redesign.md`](./2026-04-19-slack-render-flow-redesign.md) 覆盖；本文件保留为**历史基线**，以新 spec 为准
 **增量设计**：Slack 频道普通消息 / bot 消息自动触发任务见 [`2026-04-26-slack-channel-task-listener-design.md`](./2026-04-26-slack-channel-task-listener-design.md)
 
@@ -200,7 +200,7 @@ agent:
   provider: litellm
   maxSteps: 50
   context:
-    maxApproxChars: 900000      # 传给模型的历史上下文近似字符预算；只影响模型视图，不裁剪 messages.jsonl
+    maxApproxChars: 1000000     # 传给模型的历史上下文近似字符预算；只影响模型视图，不裁剪 messages.jsonl
     keepRecentMessages: 80      # 传给模型的最近消息数上限；用于限制大量短消息导致的上下文膨胀
     keepRecentToolResults: 20   # 保留最近 N 个完整工具结果；更旧结果仅在模型视图中压缩
 
@@ -256,6 +256,30 @@ im:
 - 裁剪必须保护 AI SDK tool-call / tool-result 配对，避免产生 orphan tool result 或悬空 tool call。
 - 一期先做 deterministic pruning；LLM summary compact、tool result microcompact 作为渐进增强。
 
+#### 3.7.1.1 实施现状（2026-05-09 review 后）
+
+§3.7 的 Phase 1-4 在代码层面已**整体交付**并随主流程运行；2026-05-09 spec review 后部分子系统重写为目标设计，需要按本 spec 重构。下面是状态地图，方便读者直接定位"已运行"vs"待重构"的边界：
+
+**已运行（与本 spec 一致）**：
+
+- Phase 1 模型视图裁剪 + tool-call/result 不变量保护（§3.7.3 / §3.7.4）
+- Phase 2 模型视图层 tool_result 占位（§3.7.5）
+- Phase 3 基础 LLM compact + `compact.jsonl` 边界 + `[compact: auto/manual]` 前缀（§3.7.6 主体）
+- Phase 4 自动触发 + 熔断 + `autoCompactState` 持久化（§3.7.7 主体）
+- 触发条件去消息条数兜底（§3.7.7"触发条件"AND 列表）
+- `maxApproxChars` 默认 1M（§3.7.2）
+
+**待重构（spec 已定目标，代码未跟上）**：
+
+| 子系统 | 当前实现 | 目标设计 |
+|---|---|---|
+| §3.7.2 触发指标 | 字符近似 | 真实 `input_tokens` + `meta.context.lastUsage` 快照 |
+| §3.7.6.1 compact 输入处理 | `COMPACT_INPUT_MAX_CHARS = 120K` 硬截，静默丢失 | 三层处理（tool_result 占位 / 媒体剥离 / PTL retry） |
+| §3.7.6.2 持久化层切断 | 全量 `loadMessages` + 运行时 `splitHistoryAtLastCompact` | `loadMessages` 默认切片 + `loadFullTranscript` |
+| §3.7.6.3 容量与 prompt | `COMPACT_SUMMARY_MAX_CHARS = 1200` + 8 要点限制 | `max_output_tokens = 20K`、删除 cap、9 章节双 block prompt |
+| §3.7.7 可观测性 | 仅日志 tag | `events.jsonl` 4 类 compact 事件埋点 |
+| §3.7.6 边界识别 fallback | `startsWith('[compact:')` 宽松匹配 | 严格正则 `/^\[compact: (manual\|auto)\]\n/` |
+
 #### 3.7.2 配置
 
 上下文预算属于行为配置，只放在 `config.yaml`，不使用 env：
@@ -263,8 +287,8 @@ im:
 ```yaml
 agent:
   context:
-    maxApproxChars: 900000      # 传给模型的历史上下文近似字符预算；只影响模型视图，不裁剪 messages.jsonl
-    keepRecentMessages: 80      # 传给模型的最近消息数上限；用于限制大量短消息导致的上下文膨胀
+    maxApproxChars: 1000000     # 传给模型的历史上下文近似字符预算；只影响模型视图，不裁剪 messages.jsonl
+    keepRecentMessages: 80      # 模型视图末尾保留的最近消息数；仅 buildModelMessages 用，不参与 autoCompact 触发
     keepRecentToolResults: 20   # 保留最近 N 个完整工具结果；更旧结果仅在模型视图中压缩
     autoCompact:
       enabled: true             # 自动 compact 开关；只影响主流程前置维护，不影响手动 /compact
@@ -272,14 +296,30 @@ agent:
       maxFailures: 2            # 同 session 连续失败 2 次后熔断自动 compact
 ```
 
-- `maxApproxChars`：模型视图的近似字符预算。默认 `900000`，作为跨 provider 的保守上限，避免把文件型 transcript 无限制塞入 prompt。
+- `maxApproxChars`：模型视图的近似字符预算。默认 `1_000_000`（约 250K-330K tokens，覆盖 Sonnet 1M context beta），作为跨 provider 的保守上限，避免把文件型 transcript 无限制塞入 prompt。
 - `keepRecentMessages`：模型视图末尾保留的最近消息数上限。默认 `80`，**仅用于 `buildModelMessages` 的尾部窗口裁剪**；不参与 autoCompact 触发判定。
 - `keepRecentToolResults`：最多保留的最近完整 tool-result 数。默认 `20`，更旧 tool-result 只在模型视图中替换为占位提示。
 - `autoCompact.enabled`：自动 compact 默认开启。它只在主流程前置阶段运行；手动 `/compact` 不受该开关影响。
-- `autoCompact.triggerRatio`：自动触发阈值，默认 `0.8`。当最后 compact boundary 之后的候选模型视图字符体积达到 `maxApproxChars` 的 80% 时触发；**消息条数不再作为触发条件**（条数与 token 没有稳定换算关系，会在 token 充足时过早触发并导致摘要叠摘要的信息衰减）。
+- `autoCompact.triggerRatio`：自动触发阈值，默认 `0.8`。完整触发判定见 §3.7.7"触发条件（必须全部满足）" AND 列表；消息条数不参与触发。
 - `autoCompact.maxFailures`：同 session 自动 compact 连续失败上限，默认 `2`。达到上限后本 session 自动 compact 熔断，主流程继续使用 Phase 1/2。
 
 预算是 best-effort：为保护 tool-call/tool-result 配对，实际输出可能略超预算；正确性优先于硬截断。
+
+> **过渡设计说明（autoCompact 触发指标）**
+>
+> 当前以 `maxApproxChars` 字符近似为体积代理。这是过渡方案——字符估算对 dense JSON / tool_result / base64 误差可达 2–4 倍。
+>
+> **目标设计**：触发判定改用**最近一次 API 响应的真实 input_tokens（含 `cache_creation_input_tokens` + `cache_read_input_tokens`），与 `effectiveContextWindow - 摘要预留 - 安全 buffer` 比较**（参考 free-code [`autoCompact.ts:225-238`](../../../../../general-agent/free-code/src/services/compact/autoCompact.ts:225)）。
+>
+> 数据通路（**已具备 80%**）：
+> - AI SDK `streamText` 的 `step-finish.usage` 已携带 `promptTokens / cachedInputTokens` 真值，[`AiSdkExecutor`](../../../src/agent/AiSdkExecutor.ts:461) 现已读取并通过 `usage-info` 事件向上游暴露
+> - 待补 ①：executor 在 `usage-info` 事件中**额外**暴露"最后一次 step-finish 的 input_tokens 快照"（覆盖语义，与现有跨 step 累加值并存），用于反映"下一轮再发给模型的 ctx 实际大小"
+> - 待补 ②：`SessionMeta.context.lastUsage.apiInputTokens` 字段，覆盖写。下一次 handle 进入时直接读出作为触发判定输入；持久化避免冷启动 / 跨进程退化
+> - 首轮（`lastUsage` 缺失，例如新建 session 后第一次 handle）回退到字符估算，不阻塞触发判定
+>
+> 切换路径：
+> - `maxApproxChars` 在 token-based 触发上线后退役为"compact 服务自身输入容量上限"，或彻底删除（破坏 `config.yaml` 兼容时配合 `schemaVersion` 升迁）
+> - `triggerRatio` 语义保留，分母从 `maxApproxChars` 改为 `effectiveContextWindow - reservedForSummary - safetyBuffer`
 
 #### 3.7.3 Phase 1：确定性模型视图裁剪
 
@@ -300,7 +340,9 @@ function buildModelMessages(args: {
 }): CoreMessage[]
 ```
 
-`SessionStore.loadMessages()` 仍完整返回历史；`ConversationOrchestrator` 在 append 当前 user message 后，调用 `buildModelMessages()`，再把结果传给 executor。裁剪提示里必须使用当前 session 的真实 `messages.jsonl` 路径（例如 `path.join(session.dir, 'messages.jsonl')`），禁止写死泛化文案：
+`ConversationOrchestrator` 在 append 当前 user message 后，调用 `buildModelMessages()`，再把结果传给 executor。裁剪提示里必须使用当前 session 的真实 `messages.jsonl` 路径（例如 `path.join(session.dir, 'messages.jsonl')`），禁止写死泛化文案。
+
+> **§3.7.6.2 重构后语义变更**：`SessionStore.loadMessages()` 默认行为变成"返回最后一个 compact boundary 之后（含 boundary）的消息"，而非完整历史；下面示例中的 `history` 在重构后即等同于"切片后的视图"，`buildModelMessages` 不再需要内部做 `splitHistoryAtLastCompact`。完整历史用 `loadFullTranscript` 显式获取。
 
 ```ts
 const history = await deps.sessionStore.loadMessages(session.id)
@@ -367,8 +409,8 @@ Phase 1 稳定后，再在模型视图层加入旧 tool-result 轻量压缩：
 当 deterministic pruning 仍不足以保留高质量上下文时，引入 compact summary：
 
 - 用单独的无工具模型调用生成历史摘要。
-- 在文件存储中追加 compact marker / summary，而不是覆盖旧消息。
-- 后续构造模型视图时，从最后一个 compact boundary 开始加载：`summary + boundary 后 tail + 当前 userMessage`。
+- 在文件存储中追加 compact marker / summary，而不是覆盖旧消息（jsonl 保持 append-only，满足审计要求）。
+- 后续 handle 进入时，`SessionStore.loadMessages` **默认只返回**"最后一个 compact boundary 之后（含 boundary）"的消息——**切断语义放在持久化加载层**，详见 §3.7.6.2。
 - compact 失败时回退 Phase 1，不阻塞用户请求。
 - 手动 compact 的 Slack 输出必须短，只保留后续有用上下文；过滤握手/测试/原样回复等低价值内容，不展示本地绝对路径、session/jsonl 路径或完整记录路径。
 
@@ -383,11 +425,96 @@ interface CompactRecord {
 }
 ```
 
-模型视图构造时优先使用 `compact.jsonl` 中的 `messageId` 识别最后 compact boundary；该 summary 必须保留，预算裁剪只作用于 boundary 之后的 tail。为了兼容旧 session，若没有匹配的结构化记录，可 fallback 识别 assistant 文本前缀 `[compact:`（例如 `[compact: manual]`），但新写入不再依赖自然语言前缀作为权威 marker。
+边界识别（按权威性排序）：
+
+1. **权威源**：`compact.jsonl` 中的 `messageId` 与 jsonl 中 message 的 `id` 字段比对。该 summary 必须保留，预算裁剪只作用于 boundary 之后的 tail。
+2. **兼容回退**（仅当 `compact.jsonl` 缺失对应 messageId 时）：assistant content 必须**严格匹配**正则 `/^\[compact: (manual|auto)\]\n/`——首字符开始、`manual` 或 `auto` 二选一、后跟换行。任意其他 `[compact:` 字符串（如 agent 在散文中比喻性使用）一律不识别为边界，避免假阳性。
+3. **新写入路径不依赖前缀**——必须同时写 `compact.jsonl` 与带 `id` 字段的 assistant message；前缀仅用于读旧 session 兜底。
 
 LLM compact 不作为普通 AI SDK built-in tool 注入主 agent toolset。原因是 compact 属于运行时上下文管理，不应该由模型自主决定或消耗主任务 `maxSteps`；自动触发由 Orchestrator / ContextCompactor 服务在调用 executor 前处理。本期新增 @mention command router 作为手动 compact 控制入口，首个支持的 command 为 `compact`，它复用同一个 compact service，而不是暴露成主 agent 可调用工具。
 
-compact marker 必须是稳定可识别的数据，而不是只能靠自然语言匹配。优先方案是单独 `compact.jsonl` 或消息 metadata；若使用 `CoreMessage` metadata，需先验证 AI SDK 会安全透传/忽略该字段，不影响 provider 请求。
+##### 3.7.6.1 压缩服务输入容量与失败重试
+
+compact agent 调用必须在**不预截输入**的前提下进行。当前实现 [`prompts.ts:14`](../../../src/agents/compact/prompts.ts:14) 的 `COMPACT_INPUT_MAX_CHARS = 120_000` 把超长输入直接 `slice(末尾 120K)`——典型触发点（约 800K chars）上**静默丢失前 680K 历史**；同时压缩 prompt 又要求"不要编造未出现的信息"，结果摘要只描述最后一段。这是反模式，必须废弃。
+
+**目标设计**——三层处理，由轻到重：
+
+1. **tool_result 占位**（送入 compact agent 前必做）：在 `ContextCompactor` 入口对候选消息调用现有 [`compactOldToolResults`](../../../src/orchestrator/modelMessages.ts:197)，复用配置 `keepRecentToolResults`（默认 20）。超过该数的老 tool_result content 替换为 `[旧工具结果已压缩]`。
+   - 这步原本只在 `buildModelMessages` 内生效，目标设计要求**也在 compact 输入路径生效**——这是当前 120K 硬截的真实动机（怕单条大 tool_result 撑爆），层级化处理后无需再硬截。
+2. **媒体剥离**（同入口）：把 user message 与 tool_result 内的 `image` / `document` block 替换为 `[image]` / `[document]` 占位文字（参考 free-code [`stripImagesFromMessages`](../../../../../general-agent/free-code/src/services/compact/compact.ts:145)）。图片对生成摘要无价值，却容易让 compact 调用本身炸窗口。
+3. **PTL retry 兜底**（compact API 仍返回 `prompt_too_long` 时，参考 free-code [`compact.ts:450-491`](../../../../../general-agent/free-code/src/services/compact/compact.ts:450)）：
+   - 调用 `groupMessagesByApiRound(messagesToSummarize)` 把 transcript 切成 API round（一次完整 user → assistant → tool 往返为一组）
+   - 砍最旧的若干组，重试，上限 `MAX_PTL_RETRIES = 3`
+   - 上限内仍失败抛 `prompt_too_long`，作为**输入溢出**类失败单独归类：**不计入** `autoCompact.failureCount`（避免输入过大反复打开熔断）；其他错误（network / timeout / API 5xx / 模型拒答）才计入熔断
+   - 不变量：tool_use 与对应 tool_result **同进同出**；剩余首条仍为 `user`；埋点写入 `droppedMessages` / `remainingMessages`，用于观察是否需要调大 `safetyBuffer`
+
+**过渡缓解**（PTL retry 上线前的临时止血）：把 `COMPACT_INPUT_MAX_CHARS` 直接提到与 `maxApproxChars` 同量级（1M），先消除"前 680K 静默丢失"。**仅作过渡，不是终态**——终态是上述三层处理。
+
+##### 3.7.6.2 持久化层切断语义
+
+compact 成功后必须**真正切断**历史而非仅追加摘要。当前实现把 summary append 到 jsonl 后，下一次 handle 仍 `loadMessages` 全量 parse、再在 `buildModelMessages` 内做 `splitHistoryAtLastCompact`——磁盘单调增长 + 每轮 IO/CPU 浪费，"压缩"在加载层并未生效。
+
+**目标设计**——把"切断"从运行时 split 提升为**持久化加载语义**：
+
+1. `SessionStore.loadMessages(id)` 默认行为变更为：**只返回**最后一个 compact boundary 之后（含 boundary）的消息。boundary 由 `compact.jsonl.messageId` 权威识别，找不到匹配 messageId 时回退到 assistant content 前缀 `[compact:`（兼容旧 session），仍找不到则返回全量（兼容无 compact 历史的会话）。
+2. 新增 `SessionStore.loadFullTranscript(id)`：返回完整 jsonl，供审计 / dashboard / 数据导出使用。
+3. **不引入"内存替换"路径**——agent-slack 是单进程多 session、每次 handle 独立 `loadMessages` 的模型，加载层切片即足以达到切断效果，无需照搬 free-code [`query.ts:535`](../../../../../general-agent/free-code/src/query.ts:535) 的 `messagesForQuery = postCompactMessages` 内存替换。
+
+**消息 id 持久化保证**：边界识别依赖 jsonl 中每条 message 的 `id` 字段稳定存在，因此：
+
+- `SessionStore.appendMessage` 在写盘前必须保证 message 有 `id`（缺失则 `randomUUID()` 补齐）
+- jsonl 由 SessionStore 自己写出，不经过 AI SDK normalize，磁盘版本的 `id` 安全
+- AI SDK 在送入 `streamText` 时是否透传 `id` 字段不影响边界识别（识别只读 jsonl）
+
+**对其他模块的连带改动**：
+
+- `buildModelMessages` 中的 `splitHistoryAtLastCompact` 变冗余，删除；该函数只保留"预算裁剪 + tool-call/result 配对保护 + tool_result 占位化"。
+- `buildCompactCandidateMessages` 简化——`loadMessages` 输出已经是"boundary + tail"，candidate 直接拼 `[...loadMessages 输出, userMessage]`。
+- `ContextCompactor.manualCompact` 的输入也改为 `loadMessages`（切片版）的输出，不再压缩完整历史；这避免上一次 boundary 的 summary 被反复重压（即诊断中的"摘要叠摘要"问题）。需要"完整 transcript"的极少数场景（dashboard / 调试导出）显式调 `loadFullTranscript`。
+
+> **术语退役**：先前 spec 中提及的 "candidate"（`buildCompactCandidateMessages` 的产物）在持久化层切断语义生效后等同于 `loadMessages` 输出 + 当前 user message，不再作为独立中间概念出现。`buildCompactCandidateMessages` 函数将被删除，触发判定与 compact 输入路径直接消费 `loadMessages` 输出。
+
+##### 3.7.6.3 Summary 输出容量与 prompt 重写
+
+Summary 必须留出足够空间保存"工作记忆"——agent 在压缩后第一轮要能直接续上工作而不需要重新探索。摘要过短或要点化会让 agent "失忆"，迫使它重新探索仓库，又把 ctx 撑回去（即诊断中"压缩看起来无效"的根因之一）。
+
+**容量配置**：
+
+| 配置 | 当前 | 目标 | 备注 |
+|---|---|---|---|
+| Compact API `max_output_tokens` | 未显式设 | `20_000` | 与 free-code [`COMPACT_MAX_OUTPUT_TOKENS`](../../../../../general-agent/free-code/src/utils/context.ts:12) 完全对齐；free-code p99.99 真实输出 17K tokens |
+| `COMPACT_SUMMARY_MAX_CHARS` post-process trim | `1_200` chars hard cap | **完全删除** | free-code 无此 cap；模型 `max_output_tokens` 已是天然上限，无需 post-process 二次截断 |
+| Prompt "不超过 8 条要点"等文字限制 | 存在 | **删除** | free-code prompt 反而要求 verbatim quote / full code snippet |
+
+**Prompt 重写**（参考 free-code [`prompt.ts:61-143`](../../../../../general-agent/free-code/src/services/compact/prompt.ts:61) 的 `BASE_COMPACT_PROMPT`）：
+
+1. **双 block 结构**：`<analysis>` + `<summary>`。analysis 是 LLM 的思考草稿纸（详细分析每条消息、用户意图、技术决策），post-process 时由 [`formatCompactSummary`](../../../../../general-agent/free-code/src/services/compact/prompt.ts:311) 等价函数 strip 掉；只有 `<summary>` 内容写入 jsonl。free-code 实测此结构显著提升 summary 完整度。
+2. **9 个固定章节**（对齐 free-code，按 agent-slack Slack thread 场景中文化）：
+   1. 用户主诉与意图
+   2. 关键技术概念
+   3. 涉及文件与代码段（要求 verbatim 重要 snippet）
+   4. 错误与修复
+   5. 问题解决记录
+   6. 全部用户消息（thread 内不省略，便于回看用户反馈）
+   7. 待办事项
+   8. 当前进展
+   9. 下一步建议（包含 verbatim 引用最近对话）
+3. **NO_TOOLS 双重保护**（preamble + trailer）：compact agent 共享主 agent 的 toolset 以保 cache prefix；显式禁止工具调用，前后双重提醒（free-code 经验：Sonnet 4.6 偶尔无视单边提示）。
+4. **不限制章节长度 / 要点数**——按需展开。
+
+**输出大小预期**（基于 free-code 实测 + 用户在本仓库的实测）：
+
+| 输入规模 | 典型输出（chars） | 压缩比（剩余/原始） |
+|---|---|---|
+| 100K chars | ~10K chars | ~10% |
+| 500K chars | ~50K chars | ~10% |
+| 1.5M chars | ~150K chars | ~10% |
+
+实测口径：用户在本仓库观察到约 50% 上下文（~1.5M chars）压缩后剩 ~5%（~150K chars），即约 90% 缩减、10% 残留。原因有二：(1) `max_output_tokens=20_000` 硬封顶 ≈ 80K chars 输出；(2) prompt 明确要求"verbatim 仅保留最近用户对话+关键事实"，模型自然进一步压缩。
+
+输出仍远低于 `maxApproxChars * triggerRatio`（默认 2.4M），下一轮不会立刻再触发，且与 PTL retry 配合时 ≤ 1 次砍头即可安全续接。
+
+**成本影响**：单次 compact output_tokens 从 ~300 涨到 ~3K-15K（10-50×），但 compact 不频繁；抵消的"重新探索一遍仓库"开销（每轮 50K-100K input × 多轮）远大于此。净收益正向。
 
 #### 3.7.7 Phase 4：自动触发与熔断
 
@@ -397,19 +524,22 @@ compact marker 必须是稳定可识别的数据，而不是只能靠自然语�
 
 1. Orchestrator 进入同 session `SessionRunQueue`，`meta.status = running`；同 thread 后续消息继续排队。
 2. append 当前 user message。
-3. 计算最后 compact boundary 之后的候选模型视图预算占用：`lastCompactSummary + boundary 后 tail + currentUserMessage`。
+3. 计算候选模型视图预算占用——基于 `SessionStore.loadMessages` 切片后的输出 + `currentUserMessage`（切片语义见 §3.7.6.2）。
 4. 若达到 `autoCompact.triggerRatio`，且本 session 未熔断，则先发 `activity-state`：`正在整理上下文…`。
-5. 调用 `ContextCompactor.autoCompact()`，使用无工具 LLM 生成 `[compact: auto]` summary 并 append 到 `messages.jsonl`；不通过 `assistant-message` 发 Slack 回复。
-6. 重新 load history / 重建 model-view，继续调用主 `AgentExecutor`。
+5. 调用 `ContextCompactor.autoCompact()`，使用无工具 LLM 生成 `[compact: auto]` summary 并 append 到 `messages.jsonl`（同时写 `compact.jsonl` 边界记录）；不通过 `assistant-message` 发 Slack 回复。
+6. 重新 `loadMessages`（自动从新 boundary 之后切片）/ 重建 model-view，继续调用主 `AgentExecutor`。
 7. 若 auto compact 失败，记录失败计数并回退 Phase 1/2，继续本轮主请求；失败不能让用户请求直接失败。
 
-触发规则：
+触发条件（**必须全部满足**才触发）：
 
-- 默认开启：`agent.context.autoCompact.enabled = true`。
-- 体积阈值：`candidateApproxChars >= maxApproxChars * triggerRatio`（当前用字符近似 token；后续切片会替换为最近一次 API 响应的真实 input_tokens 与模型 context window 比对）。
-- **消息条数不再作为触发条件**：条数与 token 无稳定换算关系，密集 tool 调用 thread 会在条数到达阈值时被错误触发，造成摘要叠摘要、信息密度衰减。
-- 只统计最后 compact boundary 之后的候选视图，避免 append-only 完整历史导致每轮重复 compact。
-- 若 boundary 后有效消息少于 2 条，跳过 auto compact，避免生成空摘要。
+- `autoCompact.enabled === true`
+- 本轮模型视图待发送消息合计 ≥ 2（即 `loadMessages` 切片输出 + 当前 user message 合计 ≥ 2；boundary 后内容太少则即使体积异常也跳过——单条噪声 message 不值得压，避免生成空摘要 / 摘要叠摘要）
+- 体积达到阈值：`approxChars(loadMessages 输出 + userMessage) >= maxApproxChars * triggerRatio`（字符近似为过渡方案，目标设计与切换路径见 §3.7.2 末尾"过渡设计说明"）
+- session 未处于熔断状态（`autoCompactState.breakerOpen === false`）
+
+**注意**：消息条数**不**作为触发条件——条数与 token 无稳定换算关系，密集 tool 调用 thread 会在条数到达阈值时被错误触发，造成摘要叠摘要、信息密度衰减。"≥ 2" 仅是"避免空摘要"的下限保护，不是触发器。
+
+只统计最后 compact boundary 之后的视图——由 §3.7.6.2 的 `loadMessages` 切片语义直接保证，避免 append-only 完整历史导致每轮重复 compact。
 
 熔断规则：
 
@@ -441,9 +571,57 @@ Slack UI：
 
 可观测性：
 
-- 记录日志 tag `context:compact`，包含 trigger reason、candidate chars/messages、failureCount、breakerOpen。
-- 可在 `events.jsonl` 追加非对话事件（例如 `auto_compact_attempt/succeeded/failed/skipped`），但不得污染 `messages.jsonl`；`messages.jsonl` 只追加 compact summary 这类模型上下文事实。
-- live E2E 应覆盖：超阈值后自动 compact、Slack 显示整理上下文活动态、主回复继续完成、`messages.jsonl` 持久化 `[compact: auto]`、`compact.jsonl` 持久化结构化 marker、熔断后不再重复调用 compact。
+事件埋点写入 `events.jsonl`（structured JSON lines，每行一个事件，与 `messages.jsonl` 分离——后者只追加模型上下文事实）。compact 相关 4 类事件：
+
+```ts
+type CompactEvent =
+  | { type: 'compact_attempt'
+      timestamp: string
+      mode: 'auto' | 'manual'
+      trigger: 'budget' | 'mention_command'
+      preCompactApproxChars: number
+      preCompactMessageCount: number }
+  | { type: 'compact_succeeded'
+      timestamp: string
+      mode: 'auto' | 'manual'
+      preCompactApproxChars: number
+      // 切片后 loadMessages 输出 size——有效压缩的直接观察值
+      postCompactApproxChars: number
+      // 关键：postCompactApproxChars >= triggerThreshold？决定下一轮会不会立刻再触发
+      willRetriggerNextTurn: boolean
+      compactionDurationMs: number
+      compactionUsage: {
+        inputTokens: number
+        outputTokens: number
+        cachedInputTokens: number
+      }
+      // PTL retry 走过的话才有
+      ptlRetryCount?: number
+      ptlDroppedMessages?: number }
+  | { type: 'compact_failed'
+      timestamp: string
+      mode: 'auto' | 'manual'
+      reason: 'prompt_too_long' | 'network' | 'api_error' | 'no_summary' | 'unknown'
+      countedAsFailure: boolean      // PTL 类失败 = false，不计入熔断
+      failureCount: number           // 计数后的值
+      breakerOpened: boolean         // 本次失败是否触发熔断
+      errorMessage: string }
+  | { type: 'compact_skipped'
+      timestamp: string
+      mode: 'auto' | 'manual'
+      reason: 'enabled_false' | 'too_few_messages' | 'below_threshold' | 'breaker_open' }
+```
+
+日志 tag `context:compact`（人类可读，dev 排查用）记录同等信息。
+
+**E2E 断言通道**——live E2E 通过读 `events.jsonl` 来判断 compact 是否真实有效：
+
+| 断言 | 读取 | 语义 |
+|---|---|---|
+| **核心**：压缩后不会立刻再触发 | `compact_succeeded.willRetriggerNextTurn === false` | 这是"有效压缩"的硬性证据 |
+| 实际瘦身比例 | `postCompactApproxChars / preCompactApproxChars` | 输出到测试 result 供人工 review，不写死阈值（不同任务复杂度比例不同） |
+| 熔断分支正确触发 | 找到 `compact_skipped` 且 `reason === 'breaker_open'` | B1 熔断行为验证 |
+| "压缩后不重复处理同一片段" | 同一 session 内 `compact_attempt` 数量 | 多轮交互中合理触发，不应出现"刚 compact 完下一轮又 compact" |
 
 ### 3.8 辅助 agent 与 prompt 目录归口
 
