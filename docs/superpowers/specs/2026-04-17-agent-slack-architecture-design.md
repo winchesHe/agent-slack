@@ -260,7 +260,7 @@ im:
 
 §3.7 的 Phase 1-4 在代码层面已**整体交付**并随主流程运行；2026-05-09 spec review 后部分子系统重写为目标设计，需要按本 spec 重构。下面是状态地图，方便读者直接定位"已运行"vs"待重构"的边界：
 
-**已运行（与本 spec 一致）**：
+**已运行（与本 spec 一致；2026-05-10 plan `2026-05-09-compact-rebuild` 全部 6 个 Chunk 落地）**：
 
 - Phase 1 模型视图裁剪 + tool-call/result 不变量保护（§3.7.3 / §3.7.4）
 - Phase 2 模型视图层 tool_result 占位（§3.7.5）
@@ -268,17 +268,12 @@ im:
 - Phase 4 自动触发 + 熔断 + `autoCompactState` 持久化（§3.7.7 主体）
 - 触发条件去消息条数兜底（§3.7.7"触发条件"AND 列表）
 - `maxApproxChars` 默认 1M（§3.7.2）
-
-**待重构（spec 已定目标，代码未跟上）**：
-
-| 子系统 | 当前实现 | 目标设计 |
-|---|---|---|
-| §3.7.2 触发指标 | 字符近似 | 真实 `input_tokens` + `meta.context.lastUsage` 快照 |
-| §3.7.6.1 compact 输入处理 | `COMPACT_INPUT_MAX_CHARS = 120K` 硬截，静默丢失 | 三层处理（tool_result 占位 / 媒体剥离 / PTL retry） |
-| §3.7.6.2 持久化层切断 | 全量 `loadMessages` + 运行时 `splitHistoryAtLastCompact` | `loadMessages` 默认切片 + `loadFullTranscript` |
-| §3.7.6.3 容量与 prompt | `COMPACT_SUMMARY_MAX_CHARS = 1200` + 8 要点限制 | `max_output_tokens = 20K`、删除 cap、9 章节双 block prompt |
-| §3.7.7 可观测性 | 仅日志 tag | `events.jsonl` 4 类 compact 事件埋点 |
-| §3.7.6 边界识别 fallback | `startsWith('[compact:')` 宽松匹配 | 严格正则 `/^\[compact: (manual\|auto)\]\n/` |
+- §3.7.2 触发指标 → token 路径（`lastUsage.apiInputTokens` + `effectiveContextTokens` opt-in）+ 字符回退（首轮）
+- §3.7.6.1 compact 输入处理 → 三层处理（tool_result 占位 / 媒体剥离 / PTL retry，删 `COMPACT_INPUT_MAX_CHARS` 硬截）
+- §3.7.6.2 持久化层切断 → `loadMessages` 默认切片 boundary 后；`loadFullTranscript` 显式取全量
+- §3.7.6.3 容量与 prompt → `max_output_tokens = 20K`、删 1200 cap、9 章节 + `<analysis>`/`<summary>` 双 block prompt
+- §3.7.7 可观测性 → `events.jsonl` 4 类 compact 事件埋点（attempt / succeeded / failed / skipped）
+- §3.7.6 边界识别 fallback → 严格正则 `/^\[compact: (manual\|auto)\]\n/`
 
 #### 3.7.2 配置
 
@@ -311,15 +306,15 @@ agent:
 >
 > **目标设计**：触发判定改用**最近一次 API 响应的真实 input_tokens（含 `cache_creation_input_tokens` + `cache_read_input_tokens`），与 `effectiveContextWindow - 摘要预留 - 安全 buffer` 比较**（参考 free-code [`autoCompact.ts:225-238`](../../../../../general-agent/free-code/src/services/compact/autoCompact.ts:225)）。
 >
-> 数据通路（**已具备 80%**）：
-> - AI SDK `streamText` 的 `step-finish.usage` 已携带 `promptTokens / cachedInputTokens` 真值，[`AiSdkExecutor`](../../../src/agent/AiSdkExecutor.ts:461) 现已读取并通过 `usage-info` 事件向上游暴露
-> - 待补 ①：executor 在 `usage-info` 事件中**额外**暴露"最后一次 step-finish 的 input_tokens 快照"（覆盖语义，与现有跨 step 累加值并存），用于反映"下一轮再发给模型的 ctx 实际大小"
-> - 待补 ②：`SessionMeta.context.lastUsage.apiInputTokens` 字段，覆盖写。下一次 handle 进入时直接读出作为触发判定输入；持久化避免冷启动 / 跨进程退化
-> - 首轮（`lastUsage` 缺失，例如新建 session 后第一次 handle）回退到字符估算，不阻塞触发判定
+> 数据通路（**已落地**）：
+> - AI SDK `streamText` 的 `step-finish.usage` 携带 `promptTokens / cachedInputTokens` 真值，[`AiSdkExecutor`](../../../src/agent/AiSdkExecutor.ts) 在 `usage-info` 事件中暴露累加 `inputTokens` 与"最后一次 step 的"`lastApiInputTokens`（覆盖语义）
+> - `SessionMeta.context.lastUsage.{apiInputTokens, capturedAt}` 持久化，覆盖写；下一次 handle 进入时由 [`SessionStore.getLastUsage`](../../../src/store/SessionStore.ts) 直接读出作为触发判定输入，跨进程不退化
+> - [`shouldTriggerAutoCompact`](../../../src/orchestrator/ConversationOrchestrator.ts) 优先用 `lastUsage.apiInputTokens` 与 `(effectiveContextTokens - 33_000) * triggerRatio` 比较（33_000 = 20_000 summary 预留 + 13_000 safety buffer，对齐 free-code）
+> - 首轮（`lastUsage` 缺失）或 `agent.context.effectiveContextTokens` 未配置时回退字符估算（`maxApproxChars * triggerRatio`），不阻塞触发判定
 >
-> 切换路径：
-> - `maxApproxChars` 在 token-based 触发上线后退役为"compact 服务自身输入容量上限"，或彻底删除（破坏 `config.yaml` 兼容时配合 `schemaVersion` 升迁）
-> - `triggerRatio` 语义保留，分母从 `maxApproxChars` 改为 `effectiveContextWindow - reservedForSummary - safetyBuffer`
+> 关键决策：
+> - `effectiveContextTokens` **显式 opt-in**（schema 无默认）：production 用户按模型窗口设置（Sonnet 200_000 / GPT-5 400_000 / 1M beta 1_000_000）；不配置则保持字符估算行为，向后兼容
+> - `maxApproxChars` 仍保留为字符路径阈值与"compact 服务自身输入容量上限"双重作用
 
 #### 3.7.3 Phase 1：确定性模型视图裁剪
 
@@ -534,7 +529,9 @@ Summary 必须留出足够空间保存"工作记忆"——agent 在压缩后第�
 
 - `autoCompact.enabled === true`
 - 本轮模型视图待发送消息合计 ≥ 2（即 `loadMessages` 切片输出 + 当前 user message 合计 ≥ 2；boundary 后内容太少则即使体积异常也跳过——单条噪声 message 不值得压，避免生成空摘要 / 摘要叠摘要）
-- 体积达到阈值：`approxChars(loadMessages 输出 + userMessage) >= maxApproxChars * triggerRatio`（字符近似为过渡方案，目标设计与切换路径见 §3.7.2 末尾"过渡设计说明"）
+- 体积达到阈值（按优先级）：
+  1. **token 路径**（推荐，需 `effectiveContextTokens` 配置 + `lastUsage` 存在）：`lastUsage.apiInputTokens >= (effectiveContextTokens - 33_000) * triggerRatio`，其中 33_000 = 20_000 摘要预留 + 13_000 safety buffer
+  2. **字符回退路径**（首轮 `lastUsage` 缺失或未配置 `effectiveContextTokens` 时）：`approxChars(loadMessages 输出 + userMessage) >= maxApproxChars * triggerRatio`
 - session 未处于熔断状态（`autoCompactState.breakerOpen === false`）
 
 **注意**：消息条数**不**作为触发条件——条数与 token 无稳定换算关系，密集 tool 调用 thread 会在条数到达阈值时被错误触发，造成摘要叠摘要、信息密度衰减。"≥ 2" 仅是"避免空摘要"的下限保护，不是触发器。

@@ -53,12 +53,12 @@ export function resolveByIds(scenarios: LiveE2EScenario[], ids: string[]): LiveE
   const resolved: LiveE2EScenario[] = []
   for (const id of ids) {
     const needle = id.toLowerCase()
-    const match = scenarios.find(
-      (s) =>
-        s.id.toLowerCase() === needle ||
-        s.id.toLowerCase().includes(needle) ||
-        s.keywords.some((k) => k.toLowerCase() === needle),
-    )
+    // 优先 exact id 匹配；其次 exact keyword 匹配；最后 substring 模糊。
+    // 防止 "auto-compact" 误中 "auto-compact-no-rework"（按 readdir 顺序首个 substring 命中）。
+    const exactId = scenarios.find((s) => s.id.toLowerCase() === needle)
+    const exactKeyword =
+      exactId ?? scenarios.find((s) => s.keywords.some((k) => k.toLowerCase() === needle))
+    const match = exactKeyword ?? scenarios.find((s) => s.id.toLowerCase().includes(needle))
     if (!match) {
       throw new Error(`No scenario matching "${id}". Use --list to see available scenarios.`)
     }
