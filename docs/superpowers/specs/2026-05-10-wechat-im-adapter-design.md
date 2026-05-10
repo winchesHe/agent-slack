@@ -181,12 +181,15 @@ export interface InboundMessage {
 
 - 内存 cache key 已经是 `${imProvider}:${channelId}:${threadTs}`（[SessionStore.ts:276](../../../src/store/SessionStore.ts)），含 imProvider 维度，无需改 key 结构
 - `imProvider` 字段类型是 literal `'slack'`（`SessionMeta` 与 `GetOrCreateArgs` 上）—— 需要升级成 `ImProvider` union
-- **真正的 bug**：[SessionStore.ts:280](../../../src/store/SessionStore.ts) 写死调用 `slackSessionDir(...)`，意味着 wechat 会话会被写到 `sessions/slack/` 下。需要按 `imProvider` 分支选 `slackSessionDir` / `wechatSessionDir`
+- **真正的 bug**：`slackSessionDir(...)` 硬编码出现在两处：
+  - [SessionStore.ts:280](../../../src/store/SessionStore.ts) `getOrCreate()` 创建会话目录
+  - [SessionStore.ts:341](../../../src/store/SessionStore.ts) `appendEvent()` 探测会话目录是否存在
+  两处都需要按 `imProvider` 分支选 `slackSessionDir` / `wechatSessionDir`。如果只改 280 不改 341，wechat 会话的 events.jsonl 会被探测到 `sessions/slack/...` 目录返回 false → 静默丢弃所有 event。
 
 改造：
 
 - `SessionMeta.imProvider` / `GetOrCreateArgs.imProvider` 类型升级为 `ImProvider`
-- `getOrCreate()` 内部按 `args.imProvider` 选目录拼接函数
+- `getOrCreate()` 与 `appendEvent()` 内部按 `args.imProvider` 选目录拼接函数（两处都改）
 - cache key 不动
 
 迁移：现有磁盘 session 已经全部在 `sessions/slack/...` 下，物理路径不变，老数据无需迁移。
@@ -328,6 +331,7 @@ while (!stop.signal.aborted) {
 - 解析 `item_list`：MVP 只看 `type === 1` 的 text_item
   - 遇到 `type === 2/3/4/5`（image/voice/file/video）：打日志 `[Wechat] 暂不支持媒体消息（MVP 阶段），已忽略`，并立即调 `sendText` 回一条 "目前暂不支持图片/语音/文件/视频，请发送文字消息" 提示
   - 媒体 + 文本混合：取文本部分继续处理，媒体部分丢弃 + 提示
+  - **顺序保证**：处理顺序固定为 ① 更新 contextToken 缓存 → ② 解析 item_list → ③ 调 sendText 发提示或入 orchestrator。这样首条媒体消息也能拿到 token、提示能发出去
 - 构造 `InboundMessage`：
   ```ts
   {
@@ -509,7 +513,7 @@ return {
 - `src/im/IMAdapter.ts`：导出 `ImProvider`、`id` 改为 union
 - `src/im/types.ts`：`InboundMessage.imProvider` 改为 union；字段注释补 wechat 语义
 - `src/agent/tools/index.ts`：`buildBuiltinTools` 改条件注入
-- `src/store/SessionStore.ts`：`imProvider` 类型升级；cache key 含 imProvider
+- `src/store/SessionStore.ts`：`imProvider` 类型升级；替换 `getOrCreate` / `appendEvent` 两处 `slackSessionDir` 硬编码为按 `imProvider` 分支选目录
 - `src/workspace/config.ts`：schema 改造（删 `provider`，加 `enabled` 与 `wechat` 子对象）
 - `src/workspace/paths.ts`：新增 `wechatDir` / `wechatCredentialsFile`、新增 `wechatSessionDir()`
 - `src/workspace/upgrade.ts`：迁移规则 `provider: 'slack'` → `enabled: ['slack']`
