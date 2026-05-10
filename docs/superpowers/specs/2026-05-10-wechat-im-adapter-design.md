@@ -87,11 +87,27 @@ im: z.object({
 
 ### 4.3 环境变量条件 require
 
-[createApplication.ts:46-50](../../../src/application/createApplication.ts) 把硬性 `requireEnv('SLACK_BOT_TOKEN')` 等三件套抽到 `loadSlackEnv()`，仅在 `im.enabled.includes('slack')` 时调用。仅启用 wechat 的工作区不应因为缺 SLACK env 报错。
+[createApplication.ts:46-50](../../../src/application/createApplication.ts) 把硬性 `requireEnv('SLACK_BOT_TOKEN')` 等三件套（外加可选的 `SLACK_E2E_TRIGGER_USER_TOKEN`）抽到 `loadSlackEnv()`，仅在 `im.enabled.includes('slack')` 时调用。仅启用 wechat 的工作区不应因为缺 SLACK env 报错。
 
 微信侧不读任何 env：凭证由扫码登录生成，存在工作区文件里。
 
-### 4.4 工作区路径新增
+### 4.4 Slack-only 装配项归类
+
+下列基础设施仅在 Slack 启用时构造或使用：
+
+- `SLACK_*` 环境变量（§4.3）
+- [createApplication.ts:99-101](../../../src/application/createApplication.ts) 的 `channelTaskLedger` 和 [createApplication.ts:181-183](../../../src/application/createApplication.ts) 的 `channelTasks` 装配（cron 触发 Slack 频道消息推送，wechat 单聊语义不适用）
+- `slackBotToken` / `slackAppToken` / `slackSigningSecret` 注入 `createSlackAdapter`
+
+下列基础设施 IM-agnostic、双 IM 共享：
+
+- `orchestrator` / `sessionStore` / `memoryStore` / `runQueue` / `abortRegistry`
+- `mentionCommandRouter`（[ConversationOrchestrator.ts:295](../../../src/orchestrator/ConversationOrchestrator.ts)，对 `input.text` 做文本前缀解析触发 `/compact` 等命令；不依赖 Slack 字段，wechat 用户输入同样命令也能生效）
+- `confirmBridge`（仅 Slack 路径会向其注册 pending；wechat 不写入也无副作用）
+- `contextCompactor` / `selfImproveCollector` / `selfImproveGenerator` / `selfImproveSemanticDedup`
+- `compactAgent`
+
+### 4.5 工作区路径新增
 
 `src/workspace/paths.ts` 新增：
 
@@ -105,6 +121,8 @@ wechatCredentialsFile: path.join(root, 'wechat', 'credentials.json'),
 ## 5. IM 抽象层重塑
 
 ### 5.1 `src/im/IMAdapter.ts`
+
+现状 `id: 'slack' | 'telegram'`（'telegram' 是历史占位、未实现），改造时一起清掉：
 
 ```ts
 export type ImProvider = 'slack' | 'wechat'
@@ -157,13 +175,19 @@ export interface InboundMessage {
 
 `ImProvider` 类型在 `IMAdapter.ts` 导出后此处复用。
 
-### 5.3 `SessionStore` 加 imProvider 维度
+### 5.3 `SessionStore` 解除 'slack' 硬绑定
 
-[SessionStore.ts](../../../src/store/SessionStore.ts) 现状内存 cache key 为 `${channelId}:${threadTs}`，且 `imProvider` 字段写死 `'slack'`。改造：
+[SessionStore.ts](../../../src/store/SessionStore.ts) 现状：
 
-- `imProvider` 类型从 `'slack'` literal 升级为 `ImProvider`
-- 内存 cache key 改为 `${imProvider}:${channelId}:${threadTs}`，消除"靠 ID 格式不撞"的隐式假设
-- 物理目录已经按 `slack/` / `wechat/` 分桶（来自各自的 `*SessionDir` 拼路径函数）
+- 内存 cache key 已经是 `${imProvider}:${channelId}:${threadTs}`（[SessionStore.ts:276](../../../src/store/SessionStore.ts)），含 imProvider 维度，无需改 key 结构
+- `imProvider` 字段类型是 literal `'slack'`（`SessionMeta` 与 `GetOrCreateArgs` 上）—— 需要升级成 `ImProvider` union
+- **真正的 bug**：[SessionStore.ts:280](../../../src/store/SessionStore.ts) 写死调用 `slackSessionDir(...)`，意味着 wechat 会话会被写到 `sessions/slack/` 下。需要按 `imProvider` 分支选 `slackSessionDir` / `wechatSessionDir`
+
+改造：
+
+- `SessionMeta.imProvider` / `GetOrCreateArgs.imProvider` 类型升级为 `ImProvider`
+- `getOrCreate()` 内部按 `args.imProvider` 选目录拼接函数
+- cache key 不动
 
 迁移：现有磁盘 session 已经全部在 `sessions/slack/...` 下，物理路径不变，老数据无需迁移。
 
@@ -175,10 +199,10 @@ export interface InboundMessage {
 
 ```ts
 export interface WechatCredentials {
-  token: string
-  baseUrl: string
-  botId: string
-  userId: string
+  token: string                 // sendmessage / getupdates 鉴权 Bearer
+  baseUrl: string               // ilink 主域，扫码后由服务端返回（可能与配置默认值不同）
+  botId: string                 // 仅用于日志/可观察性，HTTP 调用不带
+  userId: string                // 仅用于日志/可观察性，HTTP 调用不带
 }
 
 export class WechatApi {
@@ -240,7 +264,7 @@ save(path: string, creds: WechatCredentials): Promise<void>  // 写完 chmod 060
 clear(path: string): Promise<void>                           // relogin 时清掉
 ```
 
-凭证文件路径 = `paths.wechatCredentialsFile`（§4.4），即 `.agent-slack/wechat/credentials.json`。
+凭证文件路径 = `paths.wechatCredentialsFile`（§4.5），即 `.agent-slack/wechat/credentials.json`。
 chmod 0600 失败（如 Windows）时静默忽略，CowAgent 同样处理。
 
 ## 7. WechatAdapter
@@ -261,6 +285,7 @@ async start() {
 - 状态机轮询 `pollQrStatus`，间隔 1s：`wait` / `scaned` / `expired` / `confirmed`
 - `expired` 自动 `fetchQrCode` 刷新，最多 10 次
 - 总超时 480s，超时 `start()` 抛错（让 createApplication 报错退出）
+- 扫码窗口期间 `stop()` 被调（如 daemon supervisor 主动终止）：状态机 abort 后立即 `start()` reject（不 hang 到 480s）
 
 ### 7.2 Long-poll loop
 
@@ -298,7 +323,8 @@ while (!stop.signal.aborted) {
 
 - 跳过 `message_type !== 1`（非用户消息）
 - 入站消息去重：`Map<msgId, expireAt>`，TTL 7 小时；定时清理过期项
-- `context_token` 缓存：`Map<userId, contextToken>`，每次入站消息更新（出站 `sendText` 必须回传该 token，CowAgent 同设计）
+- `context_token` 缓存：`Map<userId, contextToken>`，每次入站消息更新（出站 `sendText` 必须回传该 token，CowAgent 同设计）。**仅内存**，bot 重启后该 Map 清空；重启后第一次入站消息前**无法主动 sendText**（这条限制对 MVP 无影响——MVP 不做主动推送 / channel tasks）
+- `get_updates_buf` 同步游标也仅内存，重启后从 `''` 起拉。配合去重 Map 也清空，重启后短窗口内可能见到一次重复消息——MVP 接受（CowAgent 同设计）
 - 解析 `item_list`：MVP 只看 `type === 1` 的 text_item
   - 遇到 `type === 2/3/4/5`（image/voice/file/video）：打日志 `[Wechat] 暂不支持媒体消息（MVP 阶段），已忽略`，并立即调 `sendText` 回一条 "目前暂不支持图片/语音/文件/视频，请发送文字消息" 提示
   - 媒体 + 文本混合：取文本部分继续处理，媒体部分丢弃 + 提示
@@ -334,7 +360,9 @@ while (!stop.signal.aborted) {
 
 ### 8.2 `WechatEventSink`
 
-对照 [SlackEventSink.ts](../../../src/im/slack/SlackEventSink.ts) 但只在 finalize 阶段统一发送：
+对照 [SlackEventSink.ts](../../../src/im/slack/SlackEventSink.ts) 但只在 finalize 阶段统一发送。
+
+**构造时由 `WechatAdapter.processMessage` 注入快照**：`{ toUserId, contextToken, api, renderer, logger }`。`contextToken` 来自 §7.3 的入站消息上的最新值；finalize 全程使用同一个 token，避免中途被新入站消息更新覆盖（避免错位）。
 
 ```ts
 class WechatEventSink implements EventSink {
@@ -475,7 +503,7 @@ return {
 - `src/im/wechat/WechatRenderer.ts`
 - `src/im/wechat/WechatEventSink.ts`
 - 上述各文件对应 `.test.ts`
-- `src/agent/tools/index.test.ts`（如尚不存在）
+- 在现有 [src/agent/tools/tools.test.ts](../../../src/agent/tools/tools.test.ts) 追加 `buildBuiltinTools` 条件注入用例（不新建文件，避免重叠）
 
 修改：
 - `src/im/IMAdapter.ts`：导出 `ImProvider`、`id` 改为 union
@@ -503,7 +531,7 @@ return {
 | `WechatAdapter.test.ts` | 凭证存在直接进 long-poll；凭证不存在走扫码；type=1 文本 → orchestrator；type=2/3/4/5 忽略 + 提示；errcode -14 → 清凭证重扫；`stop()` 触发 abort 退出 |
 | `WechatRenderer.test.ts` | 仅 final text → 单段；含工具调用 → 摘要前缀；超长按 `\n\n/\n/硬切` 分段；failed → 错误提示文案 |
 | `WechatEventSink.test.ts` | mock api.sendText；段间 sleep 500ms；起始 "开始处理" 立刻发；段内失败记日志不抛 |
-| `tools/index.test.ts` | `ctx.confirm` 存在 → keys 含 `ask_confirm`/`self_improve_confirm`；undefined → 不含 |
+| `tools/tools.test.ts`（追加用例） | `ctx.confirm` 存在 → keys 含 `ask_confirm`/`self_improve_confirm`；undefined → 不含 |
 
 ### 12.2 改造现有测试
 
@@ -534,6 +562,7 @@ return {
 1. **个人微信号灰度风险**：账号被风控的实际风险尚未在公司环境验证过；MVP 用最小 surface 验证主链路，再决定是否扩展媒体支持
 2. **system prompt 引导调不存在的 tool**：现有 prompt 可能让模型在微信下调 `ask_confirm`，被 ai-sdk 拒掉。MVP 不动 prompt，观察实际行为
 3. **凭证文件 chmod 0600 在 Windows 静默忽略**：CowAgent 同设计，工作区文件本身已经在用户私有目录下，可接受
+4. **daemon supervisor 启动超时 vs 扫码 480s**：若 supervisor 启动超时阈值小于 480s，初次扫码可能被强制终止。手动验证清单（§12.4）中应核对一次现有 supervisor 的超时阈值；若不够长，要么调高 supervisor 阈值，要么把扫码流程从 `start()` 解耦（不在 MVP 范围）
 
 **后续切片登记**（不做、spec 留 issue 提示）：
 
