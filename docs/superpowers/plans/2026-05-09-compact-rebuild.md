@@ -1,5 +1,21 @@
 # Compact 重构实施计划
 
+> **状态：已归档（2026-05-10 全部 6 个 Chunk 落地完成）**
+>
+> | Chunk | commit | 出口 |
+> | --- | --- | --- |
+> | 0 fixture + e2e 准备 | 见 git history | `tests/fixtures/compact/` 1M-char 确定性 fixture |
+> | 1 COMPACT_INPUT_MAX_CHARS 120K → 1M | 见 git history | 过渡缓解，避免静默丢失 |
+> | 2 A3 持久化层切断 + B3 严格正则 | `5cfa0ce` / `cadca58` | `loadMessages` 默认切片 + boundary 严格正则 |
+> | 3 A2 三层处理 + PTL retry | `d5a58d7` / `c00dddc` / `0f63db5` / `4c03b9a` | tool_result 占位 / 媒体剥离 / PTL retry，删 `COMPACT_INPUT_MAX_CHARS` 硬截 |
+> | 4 §3.7.6.3 prompt 重写 + 容量 | `b05e78c` / `acbfd2f` / `c5a8038` | 9 章节 + `<analysis>`/`<summary>` 双 block，`max_output_tokens=20K`，删 1200 cap + noise filter |
+> | 5 events.jsonl 埋点 + e2e 矩阵 | `7fc4b68` / `63686b0` / `d30f4b5` / `bcb6328` / `35d2030` | 4 类 compact 事件埋点；新增 4 条 e2e（含 compact-effectiveness / no-rework / breaker-open）|
+> | 6 A1 真实 input_tokens 触发 | `927bfbb` / `52ee43b` / `cadbf22` / `10920f4` | `lastApiInputTokens` 暴露 + `meta.context.lastUsage` 持久化 + token 优先 / 字符回退 |
+>
+> **最终状态**：371 单测全过；6/6 compact e2e PASS；spec §3.7.1.1 / §3.7.2 / §3.7.7 同步完成；3 条 memory feedback 落档（trigger / compression ratio / verbatim user content）。
+>
+> **遗留**（独立 spawned task，非本 plan 范围）：compact-command 偶发 `noStaleUsageBeforeCompactReply` finalize/runQueue 并发 race。
+
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 把 agent-slack 的 compact 子系统按 §3.7 review 后的目标设计重构，达成"真实有效压缩"——避免静默丢失、避免摘要叠摘要、避免无效重复触发，使长 thread 在压缩后真正瘦身且 agent 能续上工作。

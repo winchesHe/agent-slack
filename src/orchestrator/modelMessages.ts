@@ -6,7 +6,7 @@ export interface ModelMessageBudget {
    * 模型 context window 总 token 数。配置后启用真实 input_tokens 触发判定；
    * 缺省时回退字符近似（兼容首轮 lastUsage 缺失场景）。
    */
-  effectiveContextTokens?: number
+  effectiveContextTokens?: number | undefined
   keepRecentMessages: number
   keepRecentToolResults: number
   autoCompact?: {
@@ -20,7 +20,6 @@ export const DEFAULT_MODEL_MESSAGE_BUDGET: ModelMessageBudget = {
   // 字符数预算 (JSON.stringify 后)，约 3 字符 ≈ 1 token。
   // 1_000_000 字符 ≈ 250K-330K tokens，覆盖 Sonnet 1M context beta；triggerRatio 0.8 时在 ~800K chars / ~270K tokens 触发压缩。
   maxApproxChars: 1_000_000,
-  effectiveContextTokens: 200_000,
   // 仅作模型视图尾部保留窗口；不参与 autoCompact 触发判定（条数与 token 无稳定换算关系）。
   keepRecentMessages: 80,
   keepRecentToolResults: 20,

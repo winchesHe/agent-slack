@@ -82,11 +82,12 @@ agent:
   maxSteps: 50
   context:
     maxApproxChars: 1000000     # 只限制发给模型的历史视图，不裁剪 messages.jsonl
+    # effectiveContextTokens: 200000  # 显式 opt-in：设了就用真实 input_tokens 触发；不设回退字符估算
     keepRecentMessages: 80      # 模型视图末尾保留的最近消息数；仅作 buildModelMessages 尾部窗口，不参与 autoCompact 触发
     keepRecentToolResults: 20   # 最近 N 个工具结果保留完整；更旧结果仅在模型视图中压缩
     autoCompact:
       enabled: true             # 达到预算阈值时自动压缩上下文，然后继续本轮回复
-      triggerRatio: 0.8         # boundary 后候选视图达到预算 80% 时触发
+      triggerRatio: 0.8         # token 路径：(effectiveContextTokens - 33_000) * 0.8；字符回退：maxApproxChars * 0.8
       maxFailures: 2            # 同 session 连续失败 2 次后自动熔断
 ```
 

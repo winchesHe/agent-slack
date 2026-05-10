@@ -40,6 +40,13 @@ agent:
     # 参考: 200k token 窗口建议 500_000~600_000；400k 窗口建议 900_000~1_000_000；1M 窗口可设 2_000_000+。
     # 当前 900_000 字符 ≈ 300k tokens，匹配 400k token 上下文窗口（GPT-5 长窗口 / 部分 LiteLLM 路由）。
     maxApproxChars: 900000
+    # 模型 context window 总 token 数（**显式 opt-in**，无默认）。
+    # 配置后让 autoCompact 触发优先用真实 input_tokens（spec §3.7.2）：
+    #   threshold = (effectiveContextTokens - 33_000 reserve) * triggerRatio
+    #   33_000 = 20_000 summary 预留 + 13_000 safety buffer（对齐 free-code）
+    # 缺省时回退用 maxApproxChars 字符估算（向后兼容）。
+    # 推荐值：Sonnet 标准窗口 200_000；GPT-5 系列 400_000；1M beta 1_000_000。
+    # effectiveContextTokens: 200000
     # 最多加载最近消息数，避免大量短消息导致上下文膨胀。
     keepRecentMessages: 80
     # 最近 N 个工具结果保留完整；更旧工具结果在模型视图中压缩为占位。
@@ -48,7 +55,8 @@ agent:
       # 达到上下文预算阈值时，先整理上下文，再继续当前 run。
       enabled: true
       # 当前候选上下文达到预算 80% 时触发。
-      # 例如 maxApproxChars=900_000 时，720_000 字符 ≈ 240k tokens 触发压缩。
+      # token 路径（设了 effectiveContextTokens）：(effectiveContextTokens - 33_000) * 0.8
+      # 字符路径（fallback）：maxApproxChars * 0.8
       triggerRatio: 0.8
       # 同 session 连续自动压缩失败次数上限。
       maxFailures: 2
