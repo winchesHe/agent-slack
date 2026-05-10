@@ -165,7 +165,7 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
   // adapters 数组按 enabled 分支构造：仅装配启用的 IM。
   const adapters: IMAdapter[] = []
 
-  if (enabled.includes('slack') && slackEnv) {
+  if (slackEnv) {
     const renderer = createSlackRenderer({ logger })
     const slackConfirm = createSlackConfirm({ logger })
     const slack = createSlackAdapter({

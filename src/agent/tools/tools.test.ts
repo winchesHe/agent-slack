@@ -5,15 +5,17 @@ import path from 'node:path'
 import { bashTool, type ToolContext } from './bash.ts'
 import { editFileTool } from './editFile.ts'
 import { buildBuiltinTools, type BuiltinToolDeps } from './index.ts'
+import type { Logger } from '@/logger/logger.ts'
 
 let cwd: string
 beforeEach(() => {
   cwd = mkdtempSync(path.join(tmpdir(), 'tools-'))
 })
 
-const stubCtx = (): ToolContext => {
-  const make = (): ToolContext['logger'] => {
-    const l: ToolContext['logger'] = {
+const stubCtx = (): ToolContext & { logger: Logger } => {
+  const make = (): Logger => {
+    const l: Logger = {
+      trace: () => {},
       debug: () => {},
       info: () => {},
       warn: () => {},
@@ -136,7 +138,7 @@ describe('buildBuiltinTools 条件注入', () => {
     selfImproveGenerator: {} as never,
     confirmBridge: {} as never,
     paths: {} as never,
-    logger: stubCtx().logger as never,
+    logger: stubCtx().logger,
   })
 
   it('ctx.confirm 存在 → 含 ask_confirm 与 self_improve_confirm', () => {
