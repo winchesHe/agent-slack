@@ -39,6 +39,7 @@
 对任何 env 变量或配置文件字段的引入/修改/删除，必须**同步检查**以下处（顺序即检查顺序）：
 1. **Schema**（运行时校验唯一权威）：`src/workspace/config.ts:ConfigSchema` / `src/channelTasks/config.ts:ChannelTasksConfigSchema`
 2. **模板源**（**单一权威**，onboard / upgrade / dashboard 经 generator 间接读取）：`examples/{.env.example,config.example.yaml,channel-tasks.example.yaml,system.md}`；generator 在 `src/workspace/templates/{config,env,channelTasks,system}.ts`，只做选择和参数化，不内联模板正文
+   - **可插拔功能（新 IM / 新 provider / 新可选模块）必须给出"启用最少步骤"的引导注释**：把开关字段（如 `enabled` 数组成员）作为可注释/取消注释的单行，子对象注释行只放需要 override 默认值的字段；如有一次性副作用（首次扫码、写凭证文件、迁移等），在注释里直说让用户预知。模板**不是字段示意**，是用户照着改的最小说明书
 3. **`agent-slack upgrade` CLI**：`src/workspace/upgrade.ts`。**通常无需手改**——upgrade 自动把 generator 里"用户文件缺失的顶层 key"追加到 workspace 的 `config.yaml` / `channel-tasks.yaml`；嵌套缺失（父存在子缺失）只列入告警，需用户手补
 4. **Dashboard 常用字段表单**：`src/dashboard/configFields.ts`。判断该字段是否常用：
    - 常用 → 加入 `COMMON_CONFIG_FIELDS`（path / label / type / options / help）
