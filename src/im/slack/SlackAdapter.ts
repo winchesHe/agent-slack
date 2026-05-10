@@ -140,7 +140,7 @@ async function appendConfirmEvent(
         channelName: ctx.channelName,
         channelId: ctx.channelId,
         threadTs: ctx.threadTs,
-        imUserId: ctx.userId ?? '',
+        ...(ctx.userId ? { imUserId: ctx.userId } : {}),
       },
       {
         type: 'confirm_action',

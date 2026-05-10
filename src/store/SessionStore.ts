@@ -103,10 +103,9 @@ export interface SessionStore {
       channelId: string
       threadTs: string
       /**
-       * Slack 路径下不参与目录计算（slackSessionDir 不用此字段），仅为类型对齐传任意值即可。
-       * Wechat 路径下作为 wechatSessionDir(paths, userName, userId) 的 userId 维度，必需。
+       * Wechat 路径必需（用作 wechatSessionDir 的 userId 维度）；Slack 路径不参与目录计算可省略。
        */
-      imUserId: string
+      imUserId?: string
     },
     event: SessionEvent,
   ): Promise<void>
@@ -264,13 +263,22 @@ export function createSessionStore(paths: WorkspacePaths): SessionStore {
 
   function pickSessionDir(
     imProvider: ImProvider,
-    args: { channelName: string; channelId: string; threadTs: string; imUserId: string },
+    args: { channelName: string; channelId: string; threadTs: string; imUserId?: string },
   ): string {
-    if (imProvider === 'slack') {
-      return slackSessionDir(paths, args.channelName, args.channelId, args.threadTs)
+    switch (imProvider) {
+      case 'slack':
+        return slackSessionDir(paths, args.channelName, args.channelId, args.threadTs)
+      case 'wechat':
+        if (!args.imUserId) {
+          throw new Error(`pickSessionDir(wechat) 需要 imUserId，但未提供`)
+        }
+        // wechat: 单聊语义，channelName=userName, imUserId=userId
+        return wechatSessionDir(paths, args.channelName, args.imUserId)
+      default: {
+        const _exhaustive: never = imProvider
+        throw new Error(`未知 imProvider: ${String(_exhaustive)}`)
+      }
     }
-    // wechat: 单聊语义，channelName=userName, imUserId=userId
-    return wechatSessionDir(paths, args.channelName, args.imUserId)
   }
 
   const resolveDir = (id: string): string => {
@@ -369,7 +377,7 @@ export function createSessionStore(paths: WorkspacePaths): SessionStore {
         channelName: args.channelName,
         channelId: args.channelId,
         threadTs: args.threadTs,
-        imUserId: args.imUserId,
+        ...(args.imUserId !== undefined ? { imUserId: args.imUserId } : {}),
       })
       if (!existsSync(path.join(dir, 'meta.json'))) return
       await appendFile(path.join(dir, 'events.jsonl'), JSON.stringify(event) + '\n')

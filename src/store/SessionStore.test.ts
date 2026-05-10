@@ -481,4 +481,17 @@ describe('SessionStore', () => {
     const content = await fs.readFile(path.join(sess.dir, 'events.jsonl'), 'utf8')
     expect(content).toContain('"type":"confirm_action"')
   })
+
+  it('wechat path 缺 imUserId 时抛错', async () => {
+    const store = createSessionStore(resolveWorkspacePaths(cwd))
+    await expect(
+      store.getOrCreate({
+        imProvider: 'wechat',
+        channelId: 'uABC',
+        channelName: '张三',
+        threadTs: 'uABC',
+        imUserId: '', // 显式空串模拟漏传
+      }),
+    ).rejects.toThrow(/imUserId/)
+  })
 })
