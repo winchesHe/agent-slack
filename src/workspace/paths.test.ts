@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { resolveWorkspacePaths, slackSessionDir, sanitizeFsSegment } from './paths.ts'
+import {
+  resolveWorkspacePaths,
+  slackSessionDir,
+  sanitizeFsSegment,
+  wechatSessionDir,
+} from './paths.ts'
 
 describe('sanitizeFsSegment', () => {
   it('替换 OS 不合法字符与空白', () => {
@@ -33,6 +38,21 @@ describe('resolveWorkspacePaths', () => {
     expect(p.channelTasksDir).toBe('/tmp/workspace/.agent-slack/channel-tasks')
     expect(p.channelTaskTriggersFile).toBe(
       '/tmp/workspace/.agent-slack/channel-tasks/triggers.jsonl',
+    )
+  })
+
+  it('resolveWorkspacePaths includes wechat dir/credentials', () => {
+    const p = resolveWorkspacePaths('/tmp/ws')
+    expect(p.wechatDir).toBe('/tmp/ws/.agent-slack/wechat')
+    expect(p.wechatCredentialsFile).toBe('/tmp/ws/.agent-slack/wechat/credentials.json')
+  })
+
+  it('wechatSessionDir uses sanitized userName + userId', () => {
+    const p = resolveWorkspacePaths('/tmp/ws')
+    // sanitizeFsSegment 把空格和 / 都替换为 _
+    // '张 三/4' → '张_三_4'
+    expect(wechatSessionDir(p, '张 三/4', 'uABC')).toBe(
+      '/tmp/ws/.agent-slack/sessions/wechat/张_三_4.uABC',
     )
   })
 })

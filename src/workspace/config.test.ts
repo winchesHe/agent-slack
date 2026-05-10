@@ -51,8 +51,28 @@ describe('parseConfig', () => {
     })
   })
 
-  it('未知 provider 报错', () => {
-    expect(() => parseConfig({ im: { provider: 'discord' } })).toThrow()
+  it('im.enabled 默认为 [slack]', () => {
+    const c = parseConfig({})
+    expect(c.im.enabled).toEqual(['slack'])
+  })
+
+  it('im.enabled 数组校验：空数组拒绝', () => {
+    expect(() => parseConfig({ im: { enabled: [] } })).toThrow()
+  })
+
+  it('im.enabled 拒绝未知 provider', () => {
+    expect(() => parseConfig({ im: { enabled: ['discord'] } })).toThrow()
+  })
+
+  it('im.enabled 接受 [slack, wechat] 双开', () => {
+    const c = parseConfig({ im: { enabled: ['slack', 'wechat'] } })
+    expect(c.im.enabled).toEqual(['slack', 'wechat'])
+  })
+
+  it('im.wechat 默认 baseUrl/cdnBaseUrl', () => {
+    const c = parseConfig({})
+    expect(c.im.wechat.baseUrl).toBe('https://ilinkai.weixin.qq.com')
+    expect(c.im.wechat.cdnBaseUrl).toBe('https://novac2c.cdn.weixin.qq.com/c2c')
   })
 
   it('向后兼容：旧 config 里的 agent.provider=litellm 被保留', () => {

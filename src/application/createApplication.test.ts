@@ -22,6 +22,11 @@ const mocks = vi.hoisted(() => {
     start: vi.fn(async () => {}),
     stop: vi.fn(async () => {}),
   }
+  const wechatAdapter = {
+    id: 'wechat' as const,
+    start: vi.fn(async () => {}),
+    stop: vi.fn(async () => {}),
+  }
   const paths = {
     root: '/mock-workspace/.agent-slack',
     configFile: '/mock-workspace/.agent-slack/config.yaml',
@@ -42,6 +47,8 @@ const mocks = vi.hoisted(() => {
     globalRoot: '/mock-home/.agent-slack',
     globalEnv: '/mock-home/.agent-slack/.env',
     globalConfig: '/mock-home/.agent-slack/global.yaml',
+    wechatDir: '/mock-workspace/.agent-slack/wechat',
+    wechatCredentialsFile: '/mock-workspace/.agent-slack/wechat/credentials.json',
     cwd: '/mock-workspace',
   }
 
@@ -68,6 +75,13 @@ const mocks = vi.hoisted(() => {
             reasoningSummary: 'auto' | 'concise' | 'detailed'
           },
           context: { keepRecentToolResults: 20 } as { keepRecentToolResults: number },
+        },
+        im: {
+          enabled: ['slack'] as Array<'slack' | 'wechat'>,
+          wechat: {
+            baseUrl: 'https://ilinkai.weixin.qq.com',
+            cdnBaseUrl: 'https://novac2c.cdn.weixin.qq.com/c2c',
+          },
         },
       },
       systemPrompt: 'system prompt',
@@ -102,8 +116,21 @@ const mocks = vi.hoisted(() => {
       postSessionUsage: vi.fn(async () => {}),
     })),
     createSlackAdapter: vi.fn((_args: unknown) => slackAdapter),
+    WechatApi: vi.fn(),
+    createCredentialsStore: vi.fn(() => ({
+      load: vi.fn(async () => undefined),
+      save: vi.fn(async () => {}),
+      clear: vi.fn(async () => {}),
+    })),
+    createWechatRenderer: vi.fn(() => ({
+      onEvent: vi.fn(),
+      flush: vi.fn(() => []),
+      STARTING_MESSAGE: '开始处理...',
+    })),
+    createWechatAdapter: vi.fn((_args: unknown) => wechatAdapter),
     logger,
     slackAdapter,
+    wechatAdapter,
     paths,
   }
 })
@@ -158,6 +185,22 @@ vi.mock('@/im/slack/SlackRenderer.ts', () => ({
 
 vi.mock('@/im/slack/SlackAdapter.ts', () => ({
   createSlackAdapter: mocks.createSlackAdapter,
+}))
+
+vi.mock('@/im/wechat/WechatApi.ts', () => ({
+  WechatApi: mocks.WechatApi,
+}))
+
+vi.mock('@/im/wechat/CredentialsStore.ts', () => ({
+  createCredentialsStore: mocks.createCredentialsStore,
+}))
+
+vi.mock('@/im/wechat/WechatRenderer.ts', () => ({
+  createWechatRenderer: mocks.createWechatRenderer,
+}))
+
+vi.mock('@/im/wechat/WechatAdapter.ts', () => ({
+  createWechatAdapter: mocks.createWechatAdapter,
 }))
 
 describe('createApplication', () => {
@@ -243,6 +286,13 @@ describe('createApplication', () => {
           responses: { reasoningEffort: 'medium', reasoningSummary: 'auto' } as const,
           context: { keepRecentToolResults: 20 } as { keepRecentToolResults: number },
         },
+        im: {
+          enabled: ['slack'] as Array<'slack' | 'wechat'>,
+          wechat: {
+            baseUrl: 'https://ilinkai.weixin.qq.com',
+            cdnBaseUrl: 'https://novac2c.cdn.weixin.qq.com/c2c',
+          },
+        },
       },
       systemPrompt: 'system prompt',
       skills: [],
@@ -285,6 +335,13 @@ describe('createApplication', () => {
           responses: { reasoningEffort: 'medium', reasoningSummary: 'auto' } as const,
           context: { keepRecentToolResults: 20 } as { keepRecentToolResults: number },
         },
+        im: {
+          enabled: ['slack'] as Array<'slack' | 'wechat'>,
+          wechat: {
+            baseUrl: 'https://ilinkai.weixin.qq.com',
+            cdnBaseUrl: 'https://novac2c.cdn.weixin.qq.com/c2c',
+          },
+        },
       },
       systemPrompt: 'system prompt',
       skills: [],
@@ -308,6 +365,13 @@ describe('createApplication', () => {
           responses: { reasoningEffort: 'medium', reasoningSummary: 'auto' } as const,
           context: { keepRecentToolResults: 20 } as { keepRecentToolResults: number },
         },
+        im: {
+          enabled: ['slack'] as Array<'slack' | 'wechat'>,
+          wechat: {
+            baseUrl: 'https://ilinkai.weixin.qq.com',
+            cdnBaseUrl: 'https://novac2c.cdn.weixin.qq.com/c2c',
+          },
+        },
       },
       systemPrompt: 'system prompt',
       skills: [],
@@ -330,6 +394,13 @@ describe('createApplication', () => {
           provider: 'anthropic' as const,
           responses: { reasoningEffort: 'medium', reasoningSummary: 'auto' } as const,
           context: { keepRecentToolResults: 20 } as { keepRecentToolResults: number },
+        },
+        im: {
+          enabled: ['slack'] as Array<'slack' | 'wechat'>,
+          wechat: {
+            baseUrl: 'https://ilinkai.weixin.qq.com',
+            cdnBaseUrl: 'https://novac2c.cdn.weixin.qq.com/c2c',
+          },
         },
       },
       systemPrompt: 'system prompt',
@@ -368,6 +439,13 @@ describe('createApplication', () => {
           provider: 'openai-responses' as const,
           responses: { reasoningEffort: 'low', reasoningSummary: 'detailed' },
           context: { keepRecentToolResults: 20 } as { keepRecentToolResults: number },
+        },
+        im: {
+          enabled: ['slack'] as Array<'slack' | 'wechat'>,
+          wechat: {
+            baseUrl: 'https://ilinkai.weixin.qq.com',
+            cdnBaseUrl: 'https://novac2c.cdn.weixin.qq.com/c2c',
+          },
         },
       },
       systemPrompt: 'system prompt',
@@ -416,5 +494,81 @@ describe('createApplication', () => {
     process.env.AGENT_PROVIDER = 'anthropic'
     await createApplication({ workspaceDir: '/workspace' })
     expect(mocks.createOpenAICompatible).toHaveBeenCalled()
+  })
+
+  it('仅 slack 启用：adapters 长度 1，且 id=slack', async () => {
+    const app = await createApplication({ workspaceDir: '/workspace' })
+    expect(app.adapters).toHaveLength(1)
+    expect(app.adapters[0]?.id).toBe('slack')
+  })
+
+  it('仅 wechat 启用：不要求 SLACK_* env，adapters 含 wechat 一个', async () => {
+    delete process.env.SLACK_BOT_TOKEN
+    delete process.env.SLACK_APP_TOKEN
+    delete process.env.SLACK_SIGNING_SECRET
+    mocks.loadWorkspaceContext.mockResolvedValueOnce({
+      cwd: '/mock-workspace',
+      paths: mocks.paths,
+      config: {
+        agent: {
+          model: 'test-model',
+          maxSteps: 8,
+          provider: 'litellm' as const,
+          responses: { reasoningEffort: 'medium', reasoningSummary: 'auto' } as const,
+          context: { keepRecentToolResults: 20 } as { keepRecentToolResults: number },
+        },
+        im: {
+          enabled: ['wechat'] as Array<'slack' | 'wechat'>,
+          wechat: {
+            baseUrl: 'https://ilinkai.weixin.qq.com',
+            cdnBaseUrl: 'https://novac2c.cdn.weixin.qq.com/c2c',
+          },
+        },
+      },
+      systemPrompt: 'system prompt',
+      skills: [],
+    })
+
+    // 注意：不调 app.start() 以避免触发扫码登录长循环
+    const app = await createApplication({ workspaceDir: '/workspace' })
+    expect(app.adapters).toHaveLength(1)
+    expect(app.adapters[0]?.id).toBe('wechat')
+    // SlackAdapter 不应被构造
+    expect(mocks.createSlackAdapter).not.toHaveBeenCalled()
+    // WechatAdapter 被构造一次
+    expect(mocks.createWechatAdapter).toHaveBeenCalledTimes(1)
+  })
+
+  it('双开 [slack, wechat]：两个 adapter id 正确', async () => {
+    mocks.loadWorkspaceContext.mockResolvedValueOnce({
+      cwd: '/mock-workspace',
+      paths: mocks.paths,
+      config: {
+        agent: {
+          model: 'test-model',
+          maxSteps: 8,
+          provider: 'litellm' as const,
+          responses: { reasoningEffort: 'medium', reasoningSummary: 'auto' } as const,
+          context: { keepRecentToolResults: 20 } as { keepRecentToolResults: number },
+        },
+        im: {
+          enabled: ['slack', 'wechat'] as Array<'slack' | 'wechat'>,
+          wechat: {
+            baseUrl: 'https://ilinkai.weixin.qq.com',
+            cdnBaseUrl: 'https://novac2c.cdn.weixin.qq.com/c2c',
+          },
+        },
+      },
+      systemPrompt: 'system prompt',
+      skills: [],
+    })
+
+    // 注意：不调 app.start() 以避免触发扫码登录长循环
+    const app = await createApplication({ workspaceDir: '/workspace' })
+    expect(app.adapters).toHaveLength(2)
+    const ids = app.adapters.map((a) => a.id).sort()
+    expect(ids).toEqual(['slack', 'wechat'])
+    expect(mocks.createSlackAdapter).toHaveBeenCalledTimes(1)
+    expect(mocks.createWechatAdapter).toHaveBeenCalledTimes(1)
   })
 })

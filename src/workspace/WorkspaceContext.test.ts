@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import { writeFileSync, mkdirSync, rmSync } from 'node:fs'
 import path from 'node:path'
-import { loadWorkspaceContext } from './WorkspaceContext.ts'
+import { loadWorkspaceContext, migrateLegacyImProvider } from './WorkspaceContext.ts'
 import type { Logger } from '@/logger/logger.ts'
 
 let cwd: string
@@ -83,5 +83,41 @@ describe('loadWorkspaceContext', () => {
     expect(ctx.skills).toHaveLength(0)
     expect(ctx.systemPrompt).toBe('Base system prompt')
     expect(ctx.systemPrompt).not.toContain('Available Skills')
+  })
+
+  it('旧 im.provider yaml 在加载时被迁移为 im.enabled', async () => {
+    writeFileSync(
+      path.join(cwd, '.agent-slack/config.yaml'),
+      'im:\n  provider: slack\n  slack:\n    resolveChannelName: true\n',
+    )
+    const ctx = await loadWorkspaceContext(cwd, stubLogger)
+    expect(ctx.config.im.enabled).toEqual(['slack'])
+  })
+})
+
+describe('migrateLegacyImProvider', () => {
+  it('迁移 im.provider: slack → im.enabled: [slack]', () => {
+    const raw = { im: { provider: 'slack' } }
+    migrateLegacyImProvider(raw)
+    expect(raw.im).toEqual({ enabled: ['slack'] })
+  })
+
+  it('已有 im.enabled 不被覆盖，provider 也不删', () => {
+    const raw = { im: { enabled: ['wechat'], provider: 'slack' } }
+    migrateLegacyImProvider(raw)
+    expect((raw.im as Record<string, unknown>).enabled).toEqual(['wechat'])
+    // 决策：enabled 已存在时不动 provider，避免误删 user 故意写的双字段
+    expect((raw.im as Record<string, unknown>).provider).toBe('slack')
+  })
+
+  it('无 im 字段时不抛错', () => {
+    const raw = { agent: {} }
+    expect(() => migrateLegacyImProvider(raw)).not.toThrow()
+  })
+
+  it('null / undefined / 非对象 直接返回', () => {
+    expect(migrateLegacyImProvider(null)).toBe(null)
+    expect(migrateLegacyImProvider(undefined)).toBe(undefined)
+    expect(migrateLegacyImProvider('foo')).toBe('foo')
   })
 })

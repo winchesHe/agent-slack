@@ -4,15 +4,18 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { bashTool, type ToolContext } from './bash.ts'
 import { editFileTool } from './editFile.ts'
+import { buildBuiltinTools, type BuiltinToolDeps } from './index.ts'
+import type { Logger } from '@/logger/logger.ts'
 
 let cwd: string
 beforeEach(() => {
   cwd = mkdtempSync(path.join(tmpdir(), 'tools-'))
 })
 
-const stubCtx = (): ToolContext => {
-  const make = (): ToolContext['logger'] => {
-    const l: ToolContext['logger'] = {
+const stubCtx = (): ToolContext & { logger: Logger } => {
+  const make = (): Logger => {
+    const l: Logger = {
+      trace: () => {},
       debug: () => {},
       info: () => {},
       warn: () => {},
@@ -125,5 +128,49 @@ describe('edit_file', () => {
       new_string: '"world"',
     })
     expect(readFileSync(path.join(cwd, 'a.txt'), 'utf8')).toBe('const title = “world”')
+  })
+})
+
+describe('buildBuiltinTools 条件注入', () => {
+  const stubDeps = (): BuiltinToolDeps => ({
+    memoryStore: {} as never,
+    selfImproveCollector: {} as never,
+    selfImproveGenerator: {} as never,
+    confirmBridge: {} as never,
+    paths: {} as never,
+    logger: stubCtx().logger,
+  })
+
+  it('ctx.confirm 存在 → 含 ask_confirm 与 self_improve_confirm', () => {
+    const ctx: ToolContext = {
+      ...stubCtx(),
+      confirm: { sessionId: 't', send: async () => {} },
+    }
+    const tools = buildBuiltinTools(ctx, stubDeps())
+    expect(Object.keys(tools)).toEqual(
+      expect.arrayContaining(['bash', 'edit_file', 'ask_confirm', 'self_improve_confirm']),
+    )
+  })
+
+  it('ctx.confirm undefined → 不含 ask_confirm 与 self_improve_confirm', () => {
+    const ctx = stubCtx()
+    const tools = buildBuiltinTools(ctx, stubDeps())
+    expect(Object.keys(tools)).not.toContain('ask_confirm')
+    expect(Object.keys(tools)).not.toContain('self_improve_confirm')
+    expect(Object.keys(tools)).toEqual(
+      expect.arrayContaining(['bash', 'edit_file', 'save_memory', 'self_improve_collect']),
+    )
+  })
+
+  it('两种 ctx 工具数差为 2', () => {
+    const withConfirm: ToolContext = {
+      ...stubCtx(),
+      confirm: { sessionId: 't', send: async () => {} },
+    }
+    const without = stubCtx()
+    expect(
+      Object.keys(buildBuiltinTools(withConfirm, stubDeps())).length -
+        Object.keys(buildBuiltinTools(without, stubDeps())).length,
+    ).toBe(2)
   })
 })

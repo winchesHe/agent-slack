@@ -27,7 +27,8 @@ export function generateConfigYaml(args: GenerateConfigYamlArgs): string {
   const model = args.model ?? DEFAULT_MODEL
 
   // 仅替换第一处出现的 `provider:` 与 `model:`（位于 agent: 块）。
-  // examples/config.example.yaml 的字段顺序保证 agent.provider 在 im.provider 之前出现。
+  // examples/config.example.yaml 的字段顺序保证 agent.provider 在 im 块之前出现，
+  // 所以替换 agent.provider 时不会误碰 im 配置。
   return stripExampleLeadingComments(CONFIG_EXAMPLE)
     .replace(/^(\s*provider:\s*)\S+/m, `$1${provider}`)
     .replace(/^(\s*model:\s*)\S+/m, `$1${model}`)

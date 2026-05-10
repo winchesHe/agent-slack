@@ -67,10 +67,14 @@ skills:
   enabled: ['*']
 
 im:
-  provider: slack
+  enabled:
+    - slack
   slack:
     # true 时会通过 Slack API 解析 channel name；失败时回退 unknown。
     resolveChannelName: true
+  # wechat:                        # 启用微信通道时取消注释
+  #   baseUrl: https://ilinkai.weixin.qq.com
+  #   cdnBaseUrl: https://novac2c.cdn.weixin.qq.com/c2c
 
 daemon:
   # daemon/dashboard 共用 HTTP 监听地址；默认只绑定本机。

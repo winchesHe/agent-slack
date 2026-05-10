@@ -221,7 +221,7 @@ export class WechatApi {
   getConfig(userId: string, contextToken?: string): Promise<unknown>
 
   // 扫码登录
-  fetchQrCode(): Promise<{ qrcode: string; qrcodeImgContent: string }>
+  fetchQrCode(): Promise<{ qrcode: string; qrcode_img_content: string }>
   pollQrStatus(qrcode: string): Promise<QrStatusResp>
 }
 ```

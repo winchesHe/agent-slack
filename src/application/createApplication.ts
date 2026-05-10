@@ -20,6 +20,10 @@ import { createSlackAdapter } from '@/im/slack/SlackAdapter.ts'
 import { createSlackRenderer } from '@/im/slack/SlackRenderer.ts'
 import { createSlackConfirm } from '@/im/slack/SlackConfirm.ts'
 import { createConfirmBridge } from '@/im/slack/ConfirmBridge.ts'
+import { WechatApi } from '@/im/wechat/WechatApi.ts'
+import { createCredentialsStore } from '@/im/wechat/CredentialsStore.ts'
+import { createWechatRenderer } from '@/im/wechat/WechatRenderer.ts'
+import { createWechatAdapter } from '@/im/wechat/WechatAdapter.ts'
 import { createSelfImproveCollector } from '@/agents/selfImprove/collectorAgent.ts'
 import { createSelfImproveGenerator } from '@/agents/selfImprove/generatorAgent.ts'
 import { createSemanticDedup } from '@/agents/selfImprove/semanticDedupAgent.ts'
@@ -30,6 +34,7 @@ import { loadChannelTasksConfigFile } from '@/channelTasks/config.ts'
 import { createChannelTaskTriggerLedger } from '@/channelTasks/triggerLedger.ts'
 import { ConfigError } from '@/core/errors.ts'
 import type { Application } from './types.ts'
+import type { IMAdapter } from '@/im/IMAdapter.ts'
 
 type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error'
 
@@ -42,41 +47,33 @@ export interface CreateApplicationArgs {
 export async function createApplication(args: CreateApplicationArgs): Promise<Application> {
   loadWorkspaceEnv({ workspaceDir: args.workspaceDir })
 
-  // 通用凭证
-  const slackBotToken = requireEnv('SLACK_BOT_TOKEN')
-  const slackAppToken = requireEnv('SLACK_APP_TOKEN')
-  const slackSigningSecret = requireEnv('SLACK_SIGNING_SECRET')
-  const slackE2eTriggerUserToken = process.env.SLACK_E2E_TRIGGER_USER_TOKEN?.trim()
   const logLevel = parseLogLevel(process.env.LOG_LEVEL)
 
   // 日志文件路径：.agent-slack/logs/agent-YYYY-MM-DD.log；由 Dashboard Logs tab 消费
   const logFile = resolveDailyLogFile(args.workspaceDir)
 
-  // 先用 bootstrap logger 加载 workspace context（此时尚未知晓 provider secrets）
-  const bootstrapRedactor = createRedactor([
-    slackBotToken,
-    slackAppToken,
-    slackSigningSecret,
-    ...(slackE2eTriggerUserToken ? [slackE2eTriggerUserToken] : []),
-  ])
+  // bootstrap：尚未知 enabled / IM secrets，redactor 先空。
+  // 此阶段 loadWorkspaceContext 不会接触 IM secrets，可接受。
+  const bootstrapRedactor = createRedactor([])
   const bootstrapLogger = createLogger({ level: logLevel, redactor: bootstrapRedactor, logFile })
 
   const ctx = await loadWorkspaceContext(args.workspaceDir, bootstrapLogger)
   const channelTasksConfig = await loadChannelTasksConfigFile(ctx.paths.channelTasksFile)
+
+  const enabled = ctx.config.im.enabled
+  // SLACK_* env 仅在 im.enabled 含 'slack' 时加载；仅 wechat 启用时不要求这些 env 存在。
+  const slackEnv = enabled.includes('slack') ? loadSlackEnv() : undefined
 
   // provider 唯一来源：config.agent.provider（env 不参与选择）
   const provider = selectProvider(ctx.config.agent.provider)
   const providerEnv = loadProviderEnv(provider)
 
   const redactor = createRedactor([
-    slackBotToken,
-    slackAppToken,
-    slackSigningSecret,
-    ...(slackE2eTriggerUserToken ? [slackE2eTriggerUserToken] : []),
+    ...(slackEnv?.secrets ?? []),
     ...providerEnv.secrets,
   ])
   const logger = createLogger({ level: logLevel, redactor, logFile })
-  logger.withTag('agent').info(`provider=${provider}`)
+  logger.withTag('agent').info(`provider=${provider} im.enabled=${enabled.join(',')}`)
 
   const sessionStore = createSessionStore(ctx.paths)
   const memoryStore = createMemoryStore(ctx.paths)
@@ -96,9 +93,11 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
     keepRecentToolResults: ctx.config.agent.context.keepRecentToolResults,
   })
   const mentionCommandRouter = createMentionCommandRouter({ compactor: contextCompactor })
-  const channelTaskLedger = channelTasksConfig
-    ? createChannelTaskTriggerLedger(ctx.paths.channelTaskTriggersFile)
-    : undefined
+  // channelTaskLedger 仅在 slack 启用时构造（channel-tasks 当前只接 Slack 路径）。
+  const channelTaskLedger =
+    enabled.includes('slack') && channelTasksConfig
+      ? createChannelTaskTriggerLedger(ctx.paths.channelTaskTriggersFile)
+      : undefined
 
   const toolsBuilder = (
     currentUser: { userName: string; userId: string },
@@ -167,35 +166,91 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
     logger,
   })
 
-  const renderer = createSlackRenderer({ logger })
-  const slackConfirm = createSlackConfirm({ logger })
+  // adapters 数组按 enabled 分支构造：仅装配启用的 IM。
+  const adapters: IMAdapter[] = []
 
-  const slack = createSlackAdapter({
-    orchestrator,
-    abortRegistry,
-    runQueue,
-    renderer,
-    slackConfirm,
-    confirmBridge,
-    sessionStore,
-    ...(channelTasksConfig && channelTaskLedger
-      ? { channelTasks: { config: channelTasksConfig, ledger: channelTaskLedger } }
-      : {}),
-    logger,
-    botToken: slackBotToken,
-    appToken: slackAppToken,
-    signingSecret: slackSigningSecret,
-  })
+  if (slackEnv) {
+    const renderer = createSlackRenderer({ logger })
+    const slackConfirm = createSlackConfirm({ logger })
+    const slack = createSlackAdapter({
+      orchestrator,
+      abortRegistry,
+      runQueue,
+      renderer,
+      slackConfirm,
+      confirmBridge,
+      sessionStore,
+      ...(channelTasksConfig && channelTaskLedger
+        ? { channelTasks: { config: channelTasksConfig, ledger: channelTaskLedger } }
+        : {}),
+      logger,
+      botToken: slackEnv.botToken,
+      appToken: slackEnv.appToken,
+      signingSecret: slackEnv.signingSecret,
+    })
+    adapters.push(slack)
+  }
+
+  if (enabled.includes('wechat')) {
+    const wechatApi = new WechatApi({
+      baseUrl: ctx.config.im.wechat.baseUrl,
+      cdnBaseUrl: ctx.config.im.wechat.cdnBaseUrl,
+    })
+    const wechatRenderer = createWechatRenderer({ logger })
+    const wechat = createWechatAdapter({
+      api: wechatApi,
+      credentialsStore: createCredentialsStore(),
+      credentialsFile: ctx.paths.wechatCredentialsFile,
+      orchestrator,
+      sessionStore,
+      runQueue,
+      abortRegistry,
+      renderer: wechatRenderer,
+      logger,
+    })
+    adapters.push(wechat)
+  }
+
+  if (adapters.length === 0) {
+    logger.warn('警告：adapters 为空，没有 IM 在线（检查 im.enabled 配置）')
+  }
 
   return {
-    adapters: [slack],
+    adapters,
     abortRegistry,
     async start() {
-      for (const a of [slack]) await a.start()
+      for (const a of adapters) await a.start()
     },
     async stop() {
-      for (const a of [slack]) await a.stop()
+      for (const a of adapters) await a.stop()
     },
+  }
+}
+
+interface SlackEnv {
+  botToken: string
+  appToken: string
+  signingSecret: string
+  e2eTriggerUserToken?: string
+  secrets: string[]
+}
+
+function loadSlackEnv(): SlackEnv {
+  const botToken = requireEnv('SLACK_BOT_TOKEN')
+  const appToken = requireEnv('SLACK_APP_TOKEN')
+  const signingSecret = requireEnv('SLACK_SIGNING_SECRET')
+  const e2eTriggerUserToken = process.env.SLACK_E2E_TRIGGER_USER_TOKEN?.trim()
+  return {
+    botToken,
+    appToken,
+    signingSecret,
+    ...(e2eTriggerUserToken ? { e2eTriggerUserToken } : {}),
+    secrets: [
+      botToken,
+      appToken,
+      signingSecret,
+      ...(e2eTriggerUserToken ? [e2eTriggerUserToken] : []),
+    ],
   }
 }
 

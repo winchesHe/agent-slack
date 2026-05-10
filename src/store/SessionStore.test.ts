@@ -336,7 +336,13 @@ describe('SessionStore', () => {
   it('appendEvent 追加 compact_attempt 到 events.jsonl', async () => {
     const { store, session } = await createStoreWithSession('t-event-attempt')
     await store.appendEvent(
-      { channelName: 'general', channelId: 'C1', threadTs: 't-event-attempt' },
+      {
+        imProvider: 'slack',
+        channelName: 'general',
+        channelId: 'C1',
+        threadTs: 't-event-attempt',
+        imUserId: 'U1',
+      },
       {
         type: 'compact_attempt',
         timestamp: '2026-05-10T00:00:00.000Z',
@@ -369,7 +375,13 @@ describe('SessionStore', () => {
 
   it('appendEvent 追加 compact_succeeded / compact_failed / compact_skipped', async () => {
     const { store, session } = await createStoreWithSession('t-event-multi')
-    const args = { channelName: 'general', channelId: 'C1', threadTs: 't-event-multi' }
+    const args = {
+      imProvider: 'slack' as const,
+      channelName: 'general',
+      channelId: 'C1',
+      threadTs: 't-event-multi',
+      imUserId: 'U1',
+    }
     await store.appendEvent(args, {
       type: 'compact_succeeded',
       timestamp: '2026-05-10T00:00:01.000Z',
@@ -409,5 +421,77 @@ describe('SessionStore', () => {
     expect(JSON.parse(lines[1]!).countedAsFailure).toBe(true)
     expect(JSON.parse(lines[2]!).type).toBe('compact_skipped')
     expect(JSON.parse(lines[2]!).reason).toBe('breaker_open')
+  })
+
+  it('wechat session 写到 sessions/wechat/ 目录', async () => {
+    const paths = resolveWorkspacePaths(cwd)
+    const store = createSessionStore(paths)
+    const sess = await store.getOrCreate({
+      imProvider: 'wechat',
+      channelId: 'uABC',
+      channelName: '张三',
+      threadTs: 'uABC',
+      imUserId: 'uABC',
+    })
+    expect(sess.dir).toContain(`${path.sep}sessions${path.sep}wechat${path.sep}`)
+    expect(sess.meta.imProvider).toBe('wechat')
+  })
+
+  it('跨 IM 同 (channelId, threadTs) 不冲撞：cache key 含 imProvider', async () => {
+    const paths = resolveWorkspacePaths(cwd)
+    const store = createSessionStore(paths)
+    const slackSess = await store.getOrCreate({
+      imProvider: 'slack',
+      channelId: 'C1',
+      channelName: 'general',
+      threadTs: '1700000000.0001',
+      imUserId: 'U1',
+    })
+    const wechatSess = await store.getOrCreate({
+      imProvider: 'wechat',
+      channelId: 'C1',
+      channelName: 'C1',
+      threadTs: '1700000000.0001',
+      imUserId: 'C1',
+    })
+    expect(slackSess.id).not.toBe(wechatSess.id)
+    expect(slackSess.dir).not.toBe(wechatSess.dir)
+  })
+
+  it('appendEvent 按 imProvider 写到对应桶', async () => {
+    const paths = resolveWorkspacePaths(cwd)
+    const store = createSessionStore(paths)
+    const sess = await store.getOrCreate({
+      imProvider: 'wechat',
+      channelId: 'uABC',
+      channelName: '张三',
+      threadTs: 'uABC',
+      imUserId: 'uABC',
+    })
+    await store.appendEvent(
+      {
+        imProvider: 'wechat',
+        channelName: '张三',
+        channelId: 'uABC',
+        threadTs: 'uABC',
+        imUserId: 'uABC',
+      },
+      { type: 'confirm_action', timestamp: '2026-05-10T00:00:00.000Z', namespace: 'n', itemId: 'i', decision: 'accept', channelId: 'uABC', messageTs: 't' },
+    )
+    const content = await fs.readFile(path.join(sess.dir, 'events.jsonl'), 'utf8')
+    expect(content).toContain('"type":"confirm_action"')
+  })
+
+  it('wechat path 缺 imUserId 时抛错', async () => {
+    const store = createSessionStore(resolveWorkspacePaths(cwd))
+    await expect(
+      store.getOrCreate({
+        imProvider: 'wechat',
+        channelId: 'uABC',
+        channelName: '张三',
+        threadTs: 'uABC',
+        imUserId: '', // 显式空串模拟漏传
+      }),
+    ).rejects.toThrow(/imUserId/)
   })
 })

@@ -1,4 +1,5 @@
 import type { AgentExecutionEvent } from '@/core/events.ts'
+import type { ImProvider } from './IMAdapter.ts'
 
 // ── 通用确认交互（IM-agnostic） ────────────────────────
 // ConfirmSender 由 IM Adapter 实现并在每次 handle 时注入 ToolContext。
@@ -47,14 +48,35 @@ export interface ConfirmSender {
 }
 
 export interface InboundMessage {
-  imProvider: 'slack'
+  imProvider: ImProvider
+  /**
+   * 频道/对话标识。
+   *   Slack: channelId
+   *   Wechat: from_user_id（单聊语义，与下方 threadTs 同值）
+   * 用作 IM 侧路由（往哪个 channel/peer 回消息）。
+   */
   channelId: string
+  /**
+   * 频道可读名。
+   *   Slack: 频道名（resolved by resolveChannelName）
+   *   Wechat: from_user_id（MVP 没有 nickname 来源）
+   */
   channelName: string
+  /**
+   * 会话标识。SessionStore key、ConfirmBridge per-session key。
+   *   Slack: threadTs
+   *   Wechat: from_user_id（单聊语义）
+   */
   threadTs: string
   userId: string
   /** 用户显示名（Slack real_name / name）；用于 memory filename 可读前缀 */
   userName: string
   text: string
+  /**
+   * 入站消息 ID，用于去重。
+   *   Slack: messageTs
+   *   Wechat: message_id
+   */
   messageTs: string
   /** 由 IM Adapter 绑定当前会话上下文构造的确认发送器；tool 层按需调用 */
   confirmSender?: ConfirmSender

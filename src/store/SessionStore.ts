@@ -4,7 +4,8 @@ import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import type { CoreMessage } from 'ai'
 import type { WorkspacePaths } from '@/workspace/paths.ts'
-import { slackSessionDir } from '@/workspace/paths.ts'
+import { slackSessionDir, wechatSessionDir } from '@/workspace/paths.ts'
+import type { ImProvider } from '@/im/IMAdapter.ts'
 
 // 原 core/usage.ts 的 StepUsage 已内联至此，作为 accumulateUsage 的参数类型。
 export interface StepUsage {
@@ -33,7 +34,7 @@ export interface CompactRecord {
 
 export interface SessionMeta {
   schemaVersion: 1
-  imProvider: 'slack'
+  imProvider: ImProvider
   channelId: string
   channelName: string
   threadTs: string
@@ -71,7 +72,7 @@ export interface Session {
 }
 
 export interface GetOrCreateArgs {
-  imProvider: 'slack'
+  imProvider: ImProvider
   channelId: string
   channelName: string
   threadTs: string
@@ -96,7 +97,16 @@ export interface SessionStore {
   appendMessage(id: string, msg: CoreMessage): Promise<void>
   /** 追加一条非对话型运行事件到 <sessionDir>/events.jsonl（目录不存在则跳过） */
   appendEvent(
-    args: { channelName: string; channelId: string; threadTs: string },
+    args: {
+      imProvider: ImProvider
+      channelName: string
+      channelId: string
+      threadTs: string
+      /**
+       * Wechat 路径必需（用作 wechatSessionDir 的 userId 维度）；Slack 路径不参与目录计算可省略。
+       */
+      imUserId?: string
+    },
     event: SessionEvent,
   ): Promise<void>
   accumulateUsage(id: string, step: StepUsage): Promise<void>
@@ -251,6 +261,26 @@ function findBoundaryIndex(
 export function createSessionStore(paths: WorkspacePaths): SessionStore {
   const dirs = new Map<string, string>()
 
+  function pickSessionDir(
+    imProvider: ImProvider,
+    args: { channelName: string; channelId: string; threadTs: string; imUserId?: string },
+  ): string {
+    switch (imProvider) {
+      case 'slack':
+        return slackSessionDir(paths, args.channelName, args.channelId, args.threadTs)
+      case 'wechat':
+        if (!args.imUserId) {
+          throw new Error(`pickSessionDir(wechat) 需要 imUserId，但未提供`)
+        }
+        // wechat: 单聊语义，channelName=userName, imUserId=userId
+        return wechatSessionDir(paths, args.channelName, args.imUserId)
+      default: {
+        const _exhaustive: never = imProvider
+        throw new Error(`未知 imProvider: ${String(_exhaustive)}`)
+      }
+    }
+  }
+
   const resolveDir = (id: string): string => {
     const d = dirs.get(id)
     if (!d) throw new Error(`session not loaded: ${id}`)
@@ -277,7 +307,12 @@ export function createSessionStore(paths: WorkspacePaths): SessionStore {
       const existingDir = dirs.get(id)
       if (existingDir) return { id, dir: existingDir, meta: await readMeta(existingDir) }
 
-      const dir = slackSessionDir(paths, args.channelName, args.channelId, args.threadTs)
+      const dir = pickSessionDir(args.imProvider, {
+        channelName: args.channelName,
+        channelId: args.channelId,
+        threadTs: args.threadTs,
+        imUserId: args.imUserId,
+      })
       if (existsSync(path.join(dir, 'meta.json'))) {
         dirs.set(id, dir)
         return { id, dir, meta: await readMeta(dir) }
@@ -338,7 +373,12 @@ export function createSessionStore(paths: WorkspacePaths): SessionStore {
     },
 
     async appendEvent(args, event) {
-      const dir = slackSessionDir(paths, args.channelName, args.channelId, args.threadTs)
+      const dir = pickSessionDir(args.imProvider, {
+        channelName: args.channelName,
+        channelId: args.channelId,
+        threadTs: args.threadTs,
+        ...(args.imUserId !== undefined ? { imUserId: args.imUserId } : {}),
+      })
       if (!existsSync(path.join(dir, 'meta.json'))) return
       await appendFile(path.join(dir, 'events.jsonl'), JSON.stringify(event) + '\n')
     },

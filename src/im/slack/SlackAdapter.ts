@@ -136,9 +136,11 @@ async function appendConfirmEvent(
   try {
     await ctx.sessionStore.appendEvent(
       {
+        imProvider: 'slack',
         channelName: ctx.channelName,
         channelId: ctx.channelId,
         threadTs: ctx.threadTs,
+        ...(ctx.userId ? { imUserId: ctx.userId } : {}),
       },
       {
         type: 'confirm_action',

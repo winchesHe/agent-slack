@@ -22,10 +22,30 @@ export interface WorkspaceContext {
   skills: Skill[]
 }
 
+/**
+ * Spec §4.2：旧 yaml 的 `im.provider: slack` → `im.enabled: [slack]` 迁移。
+ * 仅做 in-memory 改写，不写回磁盘；下次用户主动编辑 yaml 时会自然落到新形态。
+ *
+ * 不放进 zod schema 兼容层（避免新代码长期挂着旧字段名），
+ * 也不放进 planUpgradeYaml（那是纯追加式、不改写已有 key）。
+ */
+export function migrateLegacyImProvider(raw: unknown): unknown {
+  if (typeof raw !== 'object' || raw === null) return raw
+  const obj = raw as Record<string, unknown>
+  const im = obj.im
+  if (typeof im !== 'object' || im === null) return raw
+  const imObj = im as Record<string, unknown>
+  if (typeof imObj.provider === 'string' && !Array.isArray(imObj.enabled)) {
+    imObj.enabled = [imObj.provider]
+    delete imObj.provider
+  }
+  return raw
+}
+
 export async function loadWorkspaceContext(cwd: string, logger: Logger): Promise<WorkspaceContext> {
   const paths = resolveWorkspacePaths(cwd)
   const config = existsSync(paths.configFile)
-    ? parseConfig(YAML.parse(await readFile(paths.configFile, 'utf8')))
+    ? parseConfig(migrateLegacyImProvider(YAML.parse(await readFile(paths.configFile, 'utf8'))))
     : parseConfig({})
 
   const baseSystemPrompt = existsSync(paths.systemFile)

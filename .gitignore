@@ -17,3 +17,7 @@ coverage/
 .agent-slack/
 memory/.test-tmp/
 external-references/
+
+# spec/plan 的 HTML 预览版（仅供 review 用，长期会与 .md 失同步）
+docs/superpowers/specs/*.html
+docs/superpowers/plans/*.html
