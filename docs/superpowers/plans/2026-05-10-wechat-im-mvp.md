@@ -1145,3 +1145,793 @@ Expected: 零错
 - 不报"缺少 SLACK_BOT_TOKEN"错
 
 ---
+
+## Chunk 2: WechatApi HTTP 客户端 + 凭证管理（S2 一半）
+
+**Chunk 目标：** 实现纯 HTTP 客户端 `WechatApi`（getUpdates / sendText / fetchQrCode / pollQrStatus / getConfig）+ 凭证文件读写 `CredentialsStore`。两个模块都可独立单测，不依赖 orchestrator / config。本 chunk 完成后**仍未引入 WechatAdapter**（adapters 仍为空数组），但底层所有 HTTP 能力已具备并被覆盖测试。
+
+**Chunk 验证终点（运行 `pnpm vitest run` 全绿）：**
+- 新增 `WechatApi.test.ts` 全绿（mock fetch；headers / base_info / endpoint paths / timeout 行为 / errcode 透传）
+- 新增 `CredentialsStore.test.ts` 全绿（写读、不存在文件、chmod 0600 在非 Windows 验证）
+- 现有所有测试无回归
+- `pnpm tsc -b` 类型零错
+
+**参考文件**：
+- [external-references/CowAgent/channel/weixin/weixin_api.py](../../../external-references/CowAgent/channel/weixin/weixin_api.py)（直接对照 Python 反向 SDK）
+- spec §6（接口定义、实现要点、凭证管理）
+
+---
+
+### Task 2.1: 装 `qrcode-terminal` 依赖
+
+**Files:**
+- Modify: `package.json`
+
+`qrcode-terminal` 用于在 WechatAdapter 启动时打印 ASCII 二维码（Chunk 3 用，本 chunk 提前装好以避免 chunk 边界 dependency churn）。
+
+- [ ] **Step 2.1.1: 装包**
+
+Run: `pnpm add qrcode-terminal && pnpm add -D @types/qrcode-terminal`
+Expected: `package.json` 与 `pnpm-lock.yaml` 更新
+
+- [ ] **Step 2.1.2: 验证**
+
+Run: `pnpm tsc -b`
+Expected: 零错（暂未使用）
+
+- [ ] **Step 2.1.3: 提交**
+
+```bash
+git add package.json pnpm-lock.yaml
+git commit -m "chore(deps): 添加 qrcode-terminal 依赖（wechat 扫码登录用）"
+```
+
+---
+
+### Task 2.2: 定义 wechat 协议类型 + WechatApi 接口骨架
+
+**Files:**
+- Create: `src/im/wechat/protocol.ts`（HTTP 响应/请求类型）
+- Create: `src/im/wechat/WechatApi.ts`（接口骨架，实现见后续 task）
+
+把腾讯 ilink bot 的 JSON 协议类型集中在 `protocol.ts`，让 `WechatApi.ts` 与 `WechatAdapter.ts` 都可引用，不至于把 string literal 散落各处。
+
+- [ ] **Step 2.2.1: 创建 `src/im/wechat/protocol.ts`**
+
+```ts
+// 腾讯 ilink bot HTTP 协议类型定义
+// 反向工程自 CowAgent channel/weixin/weixin_api.py
+
+/** 消息 item 类型（CowAgent 的 ITEM_* 常量） */
+export const enum WeixinItemType {
+  TEXT = 1,
+  IMAGE = 2,
+  VOICE = 3,
+  FILE = 4,
+  VIDEO = 5,
+}
+
+/** 消息发送方类型 */
+export const enum WeixinMessageType {
+  USER = 1,  // 用户发给 bot
+  BOT = 2,   // bot 发给用户
+}
+
+export const enum WeixinMessageState {
+  /** sendmessage 必须传 2 = FINISH，CowAgent 同设计 */
+  FINISH = 2,
+}
+
+export interface WeixinTextItem {
+  type: WeixinItemType.TEXT
+  text_item: { text: string }
+}
+
+export interface WeixinMediaItem {
+  type: WeixinItemType.IMAGE | WeixinItemType.VOICE | WeixinItemType.FILE | WeixinItemType.VIDEO
+  // MVP 不解析，保留字段以便日志
+  [key: string]: unknown
+}
+
+export type WeixinItem = WeixinTextItem | WeixinMediaItem
+
+export interface InboundWeixinMessage {
+  message_type: WeixinMessageType
+  message_id?: string
+  seq?: string | number
+  from_user_id: string
+  to_user_id: string
+  context_token: string
+  create_time_ms?: number
+  item_list: WeixinItem[]
+}
+
+export interface GetUpdatesResp {
+  ret?: number
+  errcode?: number
+  errmsg?: string
+  /** 同步游标，下次 getUpdates 透传 */
+  get_updates_buf?: string
+  msgs?: InboundWeixinMessage[]
+}
+
+export interface QrStatusResp {
+  /** wait | scaned | expired | confirmed */
+  status: string
+  qrcode?: string
+  bot_token?: string
+  ilink_bot_id?: string
+  ilink_user_id?: string
+  baseurl?: string
+}
+
+export interface FetchQrCodeResp {
+  qrcode: string
+  qrcode_img_content: string
+}
+
+/** errcode -14 = session 过期，触发 relogin */
+export const ERRCODE_SESSION_EXPIRED = -14
+```
+
+- [ ] **Step 2.2.2: 创建 `src/im/wechat/WechatApi.ts` 骨架**
+
+```ts
+import { randomUUID } from 'node:crypto'
+import {
+  ERRCODE_SESSION_EXPIRED,
+  WeixinItemType,
+  WeixinMessageState,
+  WeixinMessageType,
+  type FetchQrCodeResp,
+  type GetUpdatesResp,
+  type QrStatusResp,
+} from './protocol.ts'
+
+export interface WechatCredentials {
+  /** sendmessage / getupdates 鉴权 Bearer */
+  token: string
+  /** ilink 主域，扫码后由服务端返回（可能与配置默认值不同） */
+  baseUrl: string
+  /** 仅用于日志/可观察性，HTTP 调用不带 */
+  botId: string
+  /** 仅用于日志/可观察性，HTTP 调用不带 */
+  userId: string
+}
+
+export interface WechatApiOpts {
+  baseUrl: string
+  cdnBaseUrl: string
+  token?: string
+}
+
+const CHANNEL_VERSION = '2.0.0'
+const CLIENT_VERSION = '131072'  // 2.0.0 编码 = 0x00020000
+const BOT_TYPE = '3'
+const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000
+const LONG_POLL_BUFFER_MS = 5_000
+const DEFAULT_API_TIMEOUT_MS = 15_000
+
+export class WechatApi {
+  baseUrl: string
+  cdnBaseUrl: string
+  private token: string
+
+  constructor(opts: WechatApiOpts) {
+    this.baseUrl = opts.baseUrl.endsWith('/') ? opts.baseUrl : opts.baseUrl + '/'
+    this.cdnBaseUrl = opts.cdnBaseUrl
+    this.token = opts.token ?? ''
+  }
+
+  setToken(token: string): void {
+    this.token = token
+  }
+
+  // 实现见后续 task
+  async getUpdates(_buf: string, _signal?: AbortSignal): Promise<GetUpdatesResp> {
+    throw new Error('not implemented')
+  }
+  async sendText(_to: string, _text: string, _contextToken: string): Promise<void> {
+    throw new Error('not implemented')
+  }
+  async getConfig(_userId: string, _contextToken?: string): Promise<unknown> {
+    throw new Error('not implemented')
+  }
+  async fetchQrCode(): Promise<FetchQrCodeResp> {
+    throw new Error('not implemented')
+  }
+  async pollQrStatus(_qrcode: string): Promise<QrStatusResp> {
+    throw new Error('not implemented')
+  }
+}
+
+export { ERRCODE_SESSION_EXPIRED }
+```
+
+- [ ] **Step 2.2.3: 类型检查**
+
+Run: `pnpm tsc -b`
+Expected: 零错（仅骨架，未导出未引用）
+
+- [ ] **Step 2.2.4: 不 commit**（与 Task 2.3 一起 commit）
+
+---
+
+### Task 2.3: WechatApi 实现 `_post` 通用方法 + headers + base_info
+
+**Files:**
+- Modify: `src/im/wechat/WechatApi.ts`
+- Create: `src/im/wechat/WechatApi.test.ts`
+
+实现 `_post` 私有方法（统一 headers / body / timeout）。这是其他 endpoint 方法的基础。
+
+- [ ] **Step 2.3.1: 在 `WechatApi` 类内加 `_post`**
+
+```ts
+private async _post<T>(
+  endpoint: string,
+  body: Record<string, unknown>,
+  opts?: { timeoutMs?: number; signal?: AbortSignal },
+): Promise<T> {
+  const url = this.baseUrl + endpoint
+  const timeoutMs = opts?.timeoutMs ?? DEFAULT_API_TIMEOUT_MS
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    AuthorizationType: 'ilink_bot_token',
+    'X-WECHAT-UIN': randomUin(),
+    'iLink-App-Id': 'bot',
+    'iLink-App-ClientVersion': CLIENT_VERSION,
+  }
+  if (this.token) headers.Authorization = `Bearer ${this.token}`
+
+  // 注入 base_info.channel_version
+  const wrappedBody = {
+    ...body,
+    base_info: { channel_version: CHANNEL_VERSION, ...((body.base_info as object) ?? {}) },
+  }
+
+  // 组合 timeout signal 与外部传入的 abort signal
+  const ctl = new AbortController()
+  const timer = setTimeout(() => ctl.abort(), timeoutMs)
+  if (opts?.signal) {
+    if (opts.signal.aborted) ctl.abort()
+    else opts.signal.addEventListener('abort', () => ctl.abort(), { once: true })
+  }
+
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(wrappedBody),
+      signal: ctl.signal,
+    })
+    if (!resp.ok) throw new Error(`HTTP ${resp.status} ${endpoint}`)
+    return (await resp.json()) as T
+  } finally {
+    clearTimeout(timer)
+  }
+}
+```
+
+文件末尾加 helper：
+
+```ts
+function randomUin(): string {
+  const val = Math.floor(Math.random() * 0xffffffff)
+  return Buffer.from(String(val), 'utf8').toString('base64')
+}
+```
+
+- [ ] **Step 2.3.2: 类型检查**
+
+Run: `pnpm tsc -b`
+Expected: 零错（_post 是 private，本 task 不写测试，等 Task 2.4 通过 getUpdates 公共方法间接覆盖）
+
+注：跳过此处独立测试是有意为之——`_post` 是私有方法，对外行为只能通过公共方法（getUpdates / sendText / getConfig）观察。把测试推到 Task 2.4 一起开，避免占位无意义测试。
+
+---
+
+### Task 2.4: 实现 `getUpdates` 与 `sendText` + 测试
+
+**Files:**
+- Modify: `src/im/wechat/WechatApi.ts`
+- Modify: `src/im/wechat/WechatApi.test.ts`
+
+按 spec §6.2 与 CowAgent `weixin_api.py:89-107`。
+
+- [ ] **Step 2.4.1: `getUpdates` 实现（替换骨架）**
+
+```ts
+async getUpdates(buf: string, signal?: AbortSignal): Promise<GetUpdatesResp> {
+  try {
+    return await this._post<GetUpdatesResp>(
+      'ilink/bot/getupdates',
+      { get_updates_buf: buf },
+      {
+        timeoutMs: DEFAULT_LONG_POLL_TIMEOUT_MS + LONG_POLL_BUFFER_MS,
+        ...(signal ? { signal } : {}),
+      },
+    )
+  } catch (err) {
+    // long-poll 超时是常态：返回空响应让上层继续下一轮
+    if (err instanceof Error && err.name === 'AbortError') {
+      return { ret: 0, msgs: [] }
+    }
+    throw err
+  }
+}
+```
+
+注：CowAgent 把所有 timeout 都视为空响应；这里我们仅在外层 abort（含我们自己的 timeoutMs）触发时返回空。`signal.aborted` 由调用方触发的也走这里——为了简单不区分。如果调用方 abort（adapter stop），上层 long-poll loop 会检查 `stop.signal.aborted` 退出循环，不会被这次空响应误导。
+
+- [ ] **Step 2.4.2: `sendText` 实现**
+
+```ts
+async sendText(to: string, text: string, contextToken: string): Promise<void> {
+  await this._post('ilink/bot/sendmessage', {
+    msg: {
+      from_user_id: '',
+      to_user_id: to,
+      client_id: randomUUID().replace(/-/g, '').slice(0, 16),
+      message_type: WeixinMessageType.BOT,
+      message_state: WeixinMessageState.FINISH,
+      item_list: [{ type: WeixinItemType.TEXT, text_item: { text } }],
+      context_token: contextToken,
+    },
+  })
+}
+```
+
+- [ ] **Step 2.4.3: `getConfig` 实现**
+
+```ts
+async getConfig(userId: string, contextToken: string = ''): Promise<unknown> {
+  return await this._post<unknown>(
+    'ilink/bot/getconfig',
+    { ilink_user_id: userId, context_token: contextToken },
+    { timeoutMs: 10_000 },
+  )
+}
+```
+
+- [ ] **Step 2.4.4: 创建 `src/im/wechat/WechatApi.test.ts`**
+
+```ts
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { WechatApi } from './WechatApi.ts'
+import { ERRCODE_SESSION_EXPIRED } from './protocol.ts'
+
+describe('WechatApi.getUpdates', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  let api: WechatApi
+
+  beforeEach(() => {
+    fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    api = new WechatApi({
+      baseUrl: 'https://ilink.example/',
+      cdnBaseUrl: 'https://cdn.example',
+      token: 'tok-abc',
+    })
+  })
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
+
+  it('POST /ilink/bot/getupdates；body 含 get_updates_buf 与 base_info', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ ret: 0, msgs: [], get_updates_buf: 'buf2' }),
+    })
+    const resp = await api.getUpdates('buf1')
+
+    expect(fetchMock).toHaveBeenCalledOnce()
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('https://ilink.example/ilink/bot/getupdates')
+    expect(init.method).toBe('POST')
+    const body = JSON.parse(init.body)
+    expect(body.get_updates_buf).toBe('buf1')
+    expect(body.base_info).toEqual({ channel_version: '2.0.0' })
+    expect(init.headers['Authorization']).toBe('Bearer tok-abc')
+    expect(init.headers['AuthorizationType']).toBe('ilink_bot_token')
+    expect(init.headers['iLink-App-Id']).toBe('bot')
+    expect(init.headers['iLink-App-ClientVersion']).toBe('131072')
+    expect(init.headers['X-WECHAT-UIN']).toMatch(/^[A-Za-z0-9+/=]+$/)
+    expect(resp.get_updates_buf).toBe('buf2')
+  })
+
+  it('long-poll abort（timeout 触发）返回空响应 { ret:0, msgs:[] }', async () => {
+    fetchMock.mockImplementation((_url, init: RequestInit) => {
+      return new Promise((_resolve, reject) => {
+        ;(init.signal as AbortSignal).addEventListener('abort', () => {
+          const err = new Error('aborted')
+          err.name = 'AbortError'
+          reject(err)
+        })
+      })
+    })
+    // 用真实定时器太慢，注入超短 timeout 不可行（_post 内部用了固定 const）
+    // 解决：测试时直接 abort 一个外部 signal
+    const ctl = new AbortController()
+    setTimeout(() => ctl.abort(), 0)
+    const resp = await api.getUpdates('', ctl.signal)
+    expect(resp).toEqual({ ret: 0, msgs: [] })
+  })
+
+  it('errcode -14 透传给调用方', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ ret: 0, errcode: -14, errmsg: 'session expired' }),
+    })
+    const resp = await api.getUpdates('')
+    expect(resp.errcode).toBe(ERRCODE_SESSION_EXPIRED)
+    expect(resp.errmsg).toBe('session expired')
+  })
+
+  it('randomUin round-trip 是数字字符串的 base64', async () => {
+    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ ret: 0 }) })
+    await api.getUpdates('')
+    const init = fetchMock.mock.calls[0][1]
+    const uinB64 = init.headers['X-WECHAT-UIN']
+    const decoded = Buffer.from(uinB64, 'base64').toString('utf8')
+    expect(decoded).toMatch(/^\d+$/)  // 解码出来必须是纯十进制数字串（CowAgent 设计）
+  })
+
+  it('HTTP 非 2xx 抛错', async () => {
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 500 })
+    await expect(api.getUpdates('')).rejects.toThrow(/HTTP 500/)
+  })
+})
+
+describe('WechatApi.sendText', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  let api: WechatApi
+
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) })
+    vi.stubGlobal('fetch', fetchMock)
+    api = new WechatApi({ baseUrl: 'https://ilink.example/', cdnBaseUrl: 'https://cdn.example', token: 'tok' })
+  })
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
+
+  it('POST /ilink/bot/sendmessage；body 结构对齐 CowAgent', async () => {
+    await api.sendText('uABC', 'hello', 'ctx-123')
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('https://ilink.example/ilink/bot/sendmessage')
+    const body = JSON.parse(init.body)
+    expect(body.msg.from_user_id).toBe('')
+    expect(body.msg.to_user_id).toBe('uABC')
+    expect(body.msg.message_type).toBe(2)   // BOT
+    expect(body.msg.message_state).toBe(2)  // FINISH
+    expect(body.msg.context_token).toBe('ctx-123')
+    expect(body.msg.client_id).toMatch(/^[a-f0-9]{16}$/)
+    expect(body.msg.item_list).toEqual([{ type: 1, text_item: { text: 'hello' } }])
+  })
+})
+```
+
+- [ ] **Step 2.4.5: 跑测试**
+
+Run: `pnpm vitest run src/im/wechat/WechatApi.test.ts`
+Expected: 全绿
+
+注：long-poll 的 abort 行为同样适用——caller 通过 AbortSignal 主动 abort（如 adapter `stop()`）后会拿到 `{ret:0,msgs:[]}`；上层 long-poll loop 必须靠 stop flag 而非空响应判断退出（已在 spec §6.2 / §7.2 明确）。
+
+---
+
+### Task 2.5: 实现 `fetchQrCode` 与 `pollQrStatus` + 测试
+
+**Files:**
+- Modify: `src/im/wechat/WechatApi.ts`
+- Modify: `src/im/wechat/WechatApi.test.ts`
+
+扫码登录的两个 GET endpoint。CowAgent `weixin_api.py:213-231` 对照。
+
+- [ ] **Step 2.5.1: 加私有 `_get` helper（与 _post 平级）**
+
+```ts
+private async _get<T>(
+  fullUrl: string,
+  opts?: { timeoutMs?: number; withHeaders?: boolean },
+): Promise<T> {
+  const timeoutMs = opts?.timeoutMs ?? DEFAULT_API_TIMEOUT_MS
+  const ctl = new AbortController()
+  const timer = setTimeout(() => ctl.abort(), timeoutMs)
+  const headers: Record<string, string> = opts?.withHeaders
+    ? { 'iLink-App-Id': 'bot', 'iLink-App-ClientVersion': CLIENT_VERSION }
+    : {}
+  try {
+    const resp = await fetch(fullUrl, { method: 'GET', headers, signal: ctl.signal })
+    if (!resp.ok) throw new Error(`HTTP ${resp.status} ${fullUrl}`)
+    return (await resp.json()) as T
+  } finally {
+    clearTimeout(timer)
+  }
+}
+```
+
+- [ ] **Step 2.5.2: `fetchQrCode` 实现**
+
+```ts
+async fetchQrCode(): Promise<FetchQrCodeResp> {
+  const url = `${this.baseUrl}ilink/bot/get_bot_qrcode?bot_type=${BOT_TYPE}`
+  return await this._get<FetchQrCodeResp>(url, { timeoutMs: 15_000 })
+}
+```
+
+- [ ] **Step 2.5.3: `pollQrStatus` 实现**
+
+```ts
+async pollQrStatus(qrcode: string): Promise<QrStatusResp> {
+  const url = `${this.baseUrl}ilink/bot/get_qrcode_status?qrcode=${encodeURIComponent(qrcode)}`
+  try {
+    return await this._get<QrStatusResp>(url, { timeoutMs: 35_000, withHeaders: true })
+  } catch (err) {
+    // 与 CowAgent 一致：超时返回 wait 让上层继续轮询
+    if (err instanceof Error && err.name === 'AbortError') {
+      return { status: 'wait' }
+    }
+    throw err
+  }
+}
+```
+
+- [ ] **Step 2.5.4: 测试 — fetchQrCode / pollQrStatus**
+
+加在 `WechatApi.test.ts` 末尾：
+
+```ts
+describe('WechatApi.fetchQrCode / pollQrStatus', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  let api: WechatApi
+
+  beforeEach(() => {
+    fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    api = new WechatApi({ baseUrl: 'https://ilink.example/', cdnBaseUrl: 'https://cdn.example' })
+  })
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
+
+  it('fetchQrCode：GET /ilink/bot/get_bot_qrcode?bot_type=3', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ qrcode: 'qr-abc', qrcode_img_content: 'https://qr.example/...' }),
+    })
+    const resp = await api.fetchQrCode()
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('https://ilink.example/ilink/bot/get_bot_qrcode?bot_type=3')
+    expect(init.method).toBe('GET')
+    expect(resp.qrcode).toBe('qr-abc')
+  })
+
+  it('pollQrStatus：GET /ilink/bot/get_qrcode_status?qrcode=...，URL 编码', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ status: 'wait' }),
+    })
+    await api.pollQrStatus('qr/abc?special')
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toContain(encodeURIComponent('qr/abc?special'))
+    expect(init.headers['iLink-App-Id']).toBe('bot')
+  })
+
+  it('pollQrStatus AbortError 返回 { status: wait }（CowAgent 同设计）', async () => {
+    // 直接 mock fetch reject 一个 AbortError，避开 fakeTimer 相关脆弱性
+    const abortErr = new Error('aborted')
+    abortErr.name = 'AbortError'
+    fetchMock.mockRejectedValueOnce(abortErr)
+    const resp = await api.pollQrStatus('qr')
+    expect(resp).toEqual({ status: 'wait' })
+  })
+})
+```
+
+注：CowAgent (`weixin_api.py:226-231`) 把所有 `requests.exceptions.Timeout` 视为 `{status: 'wait'}` 让上层继续轮询。我们用 `AbortError` 走同一路径（_get 内部 timer 触发 abort 后 fetch reject 时 err.name === 'AbortError'）。直接 mock reject 比 fake timer 稳定。
+
+- [ ] **Step 2.5.5: 跑测试**
+
+Run: `pnpm vitest run src/im/wechat/WechatApi.test.ts`
+Expected: 全绿（如果超时 case 不稳，临时 skip）
+
+- [ ] **Step 2.5.6: 提交 Task 2.2 + 2.3 + 2.4 + 2.5**
+
+```bash
+git add src/im/wechat/protocol.ts src/im/wechat/WechatApi.ts src/im/wechat/WechatApi.test.ts
+git commit -m "$(cat <<'EOF'
+feat(wechat): WechatApi HTTP 客户端 + ilink 协议类型
+
+- protocol.ts: ilink bot 协议类型（item types / message types /
+  GetUpdatesResp / QrStatusResp / FetchQrCodeResp / errcode 常量）
+- WechatApi.ts: 直连 https://ilinkai.weixin.qq.com/ilink/bot/*
+  - getUpdates (long-poll 40s timeout，超时返回空让上层继续)
+  - sendText (item_list type=1 text_item)
+  - getConfig
+  - fetchQrCode / pollQrStatus (GET 路径)
+  - 通用 headers (Authorization Bearer / X-WECHAT-UIN 随机 / iLink-App-Id)
+  - body 自动注入 base_info.channel_version=2.0.0
+- WechatApi.test.ts mock fetch 验证 endpoint / headers / body 结构
+
+不依赖 orchestrator / config，纯 HTTP 客户端。CowAgent
+channel/weixin/weixin_api.py 反向工程对照。
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+EOF
+)"
+```
+
+---
+
+### Task 2.6: `CredentialsStore` 实现 + 测试
+
+**Files:**
+- Create: `src/im/wechat/CredentialsStore.ts`
+- Create: `src/im/wechat/CredentialsStore.test.ts`
+
+按 spec §6.3：load / save / clear；save 后 chmod 0600，Windows 静默失败。
+
+- [ ] **Step 2.6.1: 创建 `src/im/wechat/CredentialsStore.ts`**
+
+```ts
+import { readFile, writeFile, mkdir, unlink, chmod } from 'node:fs/promises'
+import path from 'node:path'
+import type { WechatCredentials } from './WechatApi.ts'
+
+export interface CredentialsStore {
+  load(filePath: string): Promise<WechatCredentials | undefined>
+  save(filePath: string, creds: WechatCredentials): Promise<void>
+  clear(filePath: string): Promise<void>
+}
+
+export function createCredentialsStore(): CredentialsStore {
+  return {
+    async load(filePath) {
+      try {
+        const raw = await readFile(filePath, 'utf8')
+        const parsed = JSON.parse(raw) as Partial<WechatCredentials>
+        if (!parsed.token || !parsed.baseUrl) return undefined
+        return {
+          token: parsed.token,
+          baseUrl: parsed.baseUrl,
+          botId: parsed.botId ?? '',
+          userId: parsed.userId ?? '',
+        }
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+        throw err
+      }
+    },
+
+    async save(filePath, creds) {
+      await mkdir(path.dirname(filePath), { recursive: true })
+      await writeFile(filePath, JSON.stringify(creds, null, 2), 'utf8')
+      // Windows / 非 POSIX FS 上 chmod 0600 会静默忽略或报错；按 CowAgent 设计兜底
+      try {
+        await chmod(filePath, 0o600)
+      } catch {
+        // 忽略
+      }
+    },
+
+    async clear(filePath) {
+      try {
+        await unlink(filePath)
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+      }
+    },
+  }
+}
+```
+
+- [ ] **Step 2.6.2: 创建 `src/im/wechat/CredentialsStore.test.ts`**
+
+```ts
+import { describe, it, expect, beforeEach } from 'vitest'
+import { mkdtempSync, statSync } from 'node:fs'
+import { tmpdir, platform } from 'node:os'
+import path from 'node:path'
+import { createCredentialsStore } from './CredentialsStore.ts'
+
+describe('CredentialsStore', () => {
+  let dir: string
+  let filePath: string
+  const store = createCredentialsStore()
+
+  beforeEach(() => {
+    dir = mkdtempSync(path.join(tmpdir(), 'wechat-cred-'))
+    filePath = path.join(dir, 'subdir', 'credentials.json')
+  })
+
+  it('save 然后 load 返回相同凭证；目录会自动创建', async () => {
+    await store.save(filePath, {
+      token: 'tok-1', baseUrl: 'https://ilink.example/', botId: 'b', userId: 'u',
+    })
+    const loaded = await store.load(filePath)
+    expect(loaded).toEqual({
+      token: 'tok-1', baseUrl: 'https://ilink.example/', botId: 'b', userId: 'u',
+    })
+  })
+
+  it('load 不存在的文件返回 undefined', async () => {
+    const loaded = await store.load(path.join(dir, 'nope.json'))
+    expect(loaded).toBeUndefined()
+  })
+
+  it('load 损坏的 JSON 抛错', async () => {
+    const bad = path.join(dir, 'bad.json')
+    const fs = await import('node:fs/promises')
+    await fs.writeFile(bad, '{ not json }', 'utf8')
+    await expect(store.load(bad)).rejects.toThrow()
+  })
+
+  it('load 缺关键字段（token/baseUrl）返回 undefined', async () => {
+    const bad = path.join(dir, 'partial.json')
+    const fs = await import('node:fs/promises')
+    await fs.writeFile(bad, JSON.stringify({ botId: 'b' }), 'utf8')
+    expect(await store.load(bad)).toBeUndefined()
+  })
+
+  it('save 后文件权限是 0600（非 Windows）', async () => {
+    if (platform() === 'win32') return  // skip on Windows
+    await store.save(filePath, { token: 't', baseUrl: 'b', botId: '', userId: '' })
+    const mode = statSync(filePath).mode & 0o777
+    expect(mode).toBe(0o600)
+  })
+
+  it('clear 删除文件；不存在时不抛错', async () => {
+    await store.save(filePath, { token: 't', baseUrl: 'b', botId: '', userId: '' })
+    await store.clear(filePath)
+    expect(await store.load(filePath)).toBeUndefined()
+    // 再 clear 一次不抛
+    await expect(store.clear(filePath)).resolves.toBeUndefined()
+  })
+})
+```
+
+- [ ] **Step 2.6.3: 跑测试**
+
+Run: `pnpm vitest run src/im/wechat/CredentialsStore.test.ts`
+Expected: 全绿
+
+- [ ] **Step 2.6.4: 提交**
+
+```bash
+git add src/im/wechat/CredentialsStore.ts src/im/wechat/CredentialsStore.test.ts
+git commit -m "$(cat <<'EOF'
+feat(wechat): CredentialsStore 实现 + 测试
+
+- load: 读 .agent-slack/wechat/credentials.json，缺字段返 undefined
+- save: 自动创建目录；写完 chmod 0600（Windows 静默失败）
+- clear: 删除文件；不存在时不抛错（relogin 流程容错）
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+EOF
+)"
+```
+
+---
+
+### Task 2.7: Chunk 2 终验
+
+- [ ] **Step 2.7.1: 全套测试**
+
+Run: `pnpm vitest run`
+Expected: 全绿
+
+- [ ] **Step 2.7.2: 类型检查**
+
+Run: `pnpm tsc -b`
+Expected: 零错
+
+- [ ] **Step 2.7.3: 验证 wechat/ 目录结构**
+
+```
+src/im/wechat/
+├── protocol.ts
+├── WechatApi.ts
+├── WechatApi.test.ts
+├── CredentialsStore.ts
+└── CredentialsStore.test.ts
+```
+
+Adapter / Renderer / EventSink 仍未引入（在 Chunk 3）。
+
+---
