@@ -5,7 +5,7 @@ import type { ConversationOrchestrator } from '@/orchestrator/ConversationOrches
 import type { Logger } from '@/logger/logger.ts'
 import type { AbortRegistry } from '@/orchestrator/AbortRegistry.ts'
 import type { SessionRunQueue } from '@/orchestrator/SessionRunQueue.ts'
-import type { ConfirmSender } from '@/im/types.ts'
+import type { ConfirmSender, InboundMessage } from '@/im/types.ts'
 import type { ConfirmBridge } from '@/im/slack/ConfirmBridge.ts'
 import type { SessionStore } from '@/store/SessionStore.ts'
 import type { ChannelTasksConfig } from '@/channelTasks/config.ts'
@@ -190,27 +190,6 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
       const userId = event.user ?? 'unknown'
       const userName = await resolveUserName(client as unknown as WebClient, userId)
 
-      const sink = createSlackEventSink({
-        web: client as unknown as WebClient,
-        channelId,
-        threadTs,
-        sourceMessageTs: messageTs,
-        shouldSuppressUsage: () =>
-          shouldSuppressUsage({
-            client: client as unknown as WebClient,
-            channelId,
-            logger: log,
-            runQueue: deps.runQueue,
-            sessionId,
-            sourceMessageTs: messageTs,
-            threadTs,
-            userId,
-          }),
-        ...(deps.workspaceLabel ? { workspaceLabel: deps.workspaceLabel } : {}),
-        renderer: deps.renderer,
-        logger: deps.logger,
-      })
-
       const cleanText = (event.text ?? '').replace(/<@[^>]+>/g, '').trim()
 
       // 构造 IM-agnostic 确认发送器，绑定本次会话的 web/channel/thread。
@@ -224,7 +203,7 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
       if (deps.runQueue.queueDepth(sessionId) > 0) {
         // fire-and-forget：hourglass 仅做视觉提示，不能阻塞 enqueue。
         // 若 await 这条 reactions.add，turn N+1 的 runQueue.enqueue 会被推迟 ~200-500ms，
-        // 期间 turn N 的 finalize 可能正好跑到 shouldSuppressUsage 决策——此时 queueDepth 仍 =1，
+        // 期间 turn N 的 finalize 可能正好跑到 shouldSuppressUsage 决策——此时 queueDepth 仍 =1,
         // 错判为"无下一轮"，把 stale usage row 发出去。失败侧仍 warn，与原行为一致。
         void client.reactions
           .add({
@@ -237,8 +216,8 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
           })
       }
 
-      await deps.orchestrator.handle(
-        {
+      await runSlackSession({
+        inbound: {
           imProvider: 'slack',
           channelId,
           channelName,
@@ -249,8 +228,23 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
           messageTs,
           confirmSender,
         },
-        sink,
-      )
+        web: client as unknown as WebClient,
+        renderer: deps.renderer,
+        orchestrator: deps.orchestrator,
+        logger: deps.logger,
+        ...(deps.workspaceLabel ? { workspaceLabel: deps.workspaceLabel } : {}),
+        shouldSuppressUsage: () =>
+          shouldSuppressUsage({
+            client: client as unknown as WebClient,
+            channelId,
+            logger: log,
+            runQueue: deps.runQueue,
+            sessionId,
+            sourceMessageTs: messageTs,
+            threadTs,
+            userId,
+          }),
+      })
     } catch (err) {
       log.error('app_mention handler failed', err)
     }
@@ -418,11 +412,24 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
       args.match.channelId,
       args.match.threadTs,
     )
-    const sink = createSlackEventSink({
+
+    await runSlackSession({
+      inbound: {
+        imProvider: 'slack',
+        channelId: args.match.channelId,
+        channelName: args.channelName,
+        threadTs: args.match.threadTs,
+        userId: args.match.actor.id,
+        userName,
+        text,
+        messageTs: args.match.messageTs,
+        confirmSender,
+      },
       web: args.client,
-      channelId: args.match.channelId,
-      threadTs: args.match.threadTs,
-      sourceMessageTs: args.match.messageTs,
+      renderer: deps.renderer,
+      orchestrator: deps.orchestrator,
+      logger: deps.logger,
+      ...(deps.workspaceLabel ? { workspaceLabel: deps.workspaceLabel } : {}),
       shouldSuppressUsage: () =>
         shouldSuppressUsage({
           client: args.client,
@@ -434,25 +441,7 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
           threadTs: args.match.threadTs,
           userId: args.match.actor.id,
         }),
-      ...(deps.workspaceLabel ? { workspaceLabel: deps.workspaceLabel } : {}),
-      renderer: deps.renderer,
-      logger: deps.logger,
     })
-
-    await deps.orchestrator.handle(
-      {
-        imProvider: 'slack',
-        channelId: args.match.channelId,
-        channelName: args.channelName,
-        threadTs: args.match.threadTs,
-        userId: args.match.actor.id,
-        userName,
-        text,
-        messageTs: args.match.messageTs,
-        confirmSender,
-      },
-      sink,
-    )
   }
 
   async function resolveChannelName(client: WebClient, channelId: string): Promise<string> {
@@ -590,6 +579,36 @@ function toChannelTaskMessageEvent(event: unknown): SlackChannelTaskMessageEvent
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
+}
+
+// 共享会话执行 helper：构造 sink + 调 orchestrator.handle。
+// inbound 路径（app_mention / channel task）和 scheduled 路径都走它，避免 sink 构造多处漂移。
+export interface RunSlackSessionArgs {
+  inbound: InboundMessage
+  web: WebClient
+  renderer: SlackRenderer
+  orchestrator: ConversationOrchestrator
+  logger: Logger
+  workspaceLabel?: string
+  /**
+   * 是否抑制 usage 行（避免连续多轮里 turn N 的 stale usage 干扰 turn N+1）。
+   * inbound 路径传真实闭包；scheduled 路径不传，sink 内置不抑制（spec §5.2 queueDepth=0 行为正确）。
+   */
+  shouldSuppressUsage?: () => boolean | Promise<boolean>
+}
+
+export async function runSlackSession(args: RunSlackSessionArgs): Promise<void> {
+  const sink = createSlackEventSink({
+    web: args.web,
+    channelId: args.inbound.channelId,
+    threadTs: args.inbound.threadTs,
+    sourceMessageTs: args.inbound.messageTs,
+    ...(args.shouldSuppressUsage ? { shouldSuppressUsage: args.shouldSuppressUsage } : {}),
+    ...(args.workspaceLabel ? { workspaceLabel: args.workspaceLabel } : {}),
+    renderer: args.renderer,
+    logger: args.logger,
+  })
+  await args.orchestrator.handle(args.inbound, sink)
 }
 
 interface ShouldSuppressUsageArgs {

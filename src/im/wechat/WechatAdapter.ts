@@ -288,31 +288,48 @@ async function processMessage(
 
   if (!textBody) return // 没文本不进 orchestrator
 
-  // 4. 构造 InboundMessage 并送入 orchestrator
-  const inbound: InboundMessage = {
-    imProvider: 'wechat',
-    channelId: fromUserId,
-    channelName: fromUserId,
-    threadTs: fromUserId,
-    messageTs: msgId,
-    userId: fromUserId,
-    userName: fromUserId,
-    text: textBody,
-    // confirmSender 留空：wechat 不注入 confirm tool
-  }
-
-  const sink = createWechatEventSink({
+  // 4. 构造 InboundMessage 并送入 orchestrator（fire-and-forget：单条消息处理失败不阻塞下一条入站）
+  void runWechatSession({
+    inbound: {
+      imProvider: 'wechat',
+      channelId: fromUserId,
+      channelName: fromUserId,
+      threadTs: fromUserId,
+      messageTs: msgId,
+      userId: fromUserId,
+      userName: fromUserId,
+      text: textBody,
+      // confirmSender 留空：wechat 不注入 confirm tool
+    },
     api: deps.api,
-    renderer: deps.rendererFactory(),
-    toUserId: fromUserId,
+    rendererFactory: deps.rendererFactory,
     contextToken,
+    orchestrator: deps.orchestrator,
     logger: deps.logger,
-  })
-
-  // fire-and-forget：单条消息处理失败不阻塞下一条入站
-  void deps.orchestrator
-    .handle(inbound, sink)
-    .catch((err) => log.error('orchestrator.handle 失败', { err }))
+  }).catch((err) => log.error('orchestrator.handle 失败', { err }))
 }
 
 export { processMessage }
+
+// 共享会话执行 helper：构造 sink + 调 orchestrator.handle。
+// inbound 路径（processMessage）和 scheduled 路径都走它，避免 sink 构造多处漂移。
+export interface RunWechatSessionArgs {
+  inbound: InboundMessage
+  api: WechatApi
+  rendererFactory: () => WechatRenderer
+  orchestrator: ConversationOrchestrator
+  logger: Logger
+  /** scheduled 模式无对方入站消息可锚，传 ''（spec §6.4 风险条目，filehelper 可用） */
+  contextToken: string
+}
+
+export async function runWechatSession(args: RunWechatSessionArgs): Promise<void> {
+  const sink = createWechatEventSink({
+    api: args.api,
+    renderer: args.rendererFactory(),
+    toUserId: args.inbound.channelId,
+    contextToken: args.contextToken,
+    logger: args.logger,
+  })
+  await args.orchestrator.handle(args.inbound, sink)
+}
