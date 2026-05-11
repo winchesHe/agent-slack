@@ -788,6 +788,19 @@ src/agents/
 - 命中规则后复用 `ConversationOrchestrator.handle()`，不新增 agent 编排 SDK，不暴露为主 agent tool。
 - Dashboard 通过独立 Channel Tasks tab/API 管理 raw YAML，并保留中文注释模板。
 
+### 4.7 定时任务（scheduledTasks，增量 spec）
+
+时间驱动入口：daemon 启动时按 yaml 注册 cron jobs，到点触发 prompt 投递到指定 Slack 频道 / 微信会话。详细设计见 [`2026-05-10-scheduled-tasks-design.md`](./2026-05-10-scheduled-tasks-design.md)。
+
+该增量设计的核心边界：
+
+- 配置 `.agent-slack/scheduled-tasks.yaml`，文件缺失或顶层 `enabled:false` 即关闭。
+- 每个 IM adapter 内部暴露 `runScheduled<IM>Session` 纯函数；`createSlackAdapter` / `createWechatAdapter` 返回 handle 结构（`{ adapter, scheduledHook, ... }`），IMAdapter 公共接口不变。
+- 复用 inbound 路径的 sink 构造与 `orchestrator.handle()`；定时任务不参与 `runQueue`。
+- daemon 模式由 `scheduler`（croner-based）触发；CLI `agent-slack scheduled-tasks run <id>` 走同一个 runner（独立进程，trigger='manual'）。
+- jsonl 历史落到 `.agent-slack/logs/scheduled-tasks.jsonl`，与 daemon 共享。
+- 一期 wechat 仅支持 `filehelper`（`context_token` 风险，spec §6.4）。
+
 ---
 
 ## 5. 运行时入口

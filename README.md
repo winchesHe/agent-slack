@@ -184,6 +184,75 @@ Slack App 需要额外开启事件订阅和 scope：
 
 ---
 
+## 定时任务 / Scheduled Tasks（可选）
+
+agent-slack 支持时间驱动入口：在 `.agent-slack/scheduled-tasks.yaml` 配 `cron` + `prompt` + IM 目标，daemon 跑起就会到点触发并把结果发到指定 Slack 频道或微信会话。
+
+**最简启用步骤：**
+
+1. 复制模板：`cp .agent-slack/scheduled-tasks.example.yaml .agent-slack/scheduled-tasks.yaml`（或运行 `agent-slack upgrade` 让框架自动补齐）。
+2. 顶层 `enabled: true`；至少一条 task 内部 `enabled: true`。
+3. 重启 daemon：`agent-slack daemon restart`。
+
+**立即手动跑一次（独立进程）：**
+
+```bash
+agent-slack scheduled-tasks run <id>
+```
+
+每次运行的状态写到 `.agent-slack/logs/scheduled-tasks.jsonl`（每行一条 JSON，`started`/`success`/`failed`/`skipped`，含 `runId` / `taskId` / `trigger` / `target` / `error` / `finalSummary`）。
+
+最小示例：
+
+```yaml
+version: 1
+enabled: true
+
+tasks:
+  - id: daily-standup
+    enabled: true
+    description: 工作日早上 9 点总结昨日 PR/issue
+    cron: '0 9 * * 1-5'
+    # timezone: 'Asia/Shanghai'   # 可选；默认本机时区
+    prompt: |
+      请总结最近 24 小时仓库的关键变更，列 3-5 条要点。
+    target:
+      im: slack
+      channelId: C0123456789
+
+  - id: weekly-report
+    enabled: false   # 未启用就不会被 scheduler 注册，但仍可手动 run
+    cron: '0 17 * * 5'
+    prompt: |
+      生成本周工作小结，3 个 highlight + 下周计划。
+    target:
+      im: wechat
+      to: filehelper
+```
+
+**已知限制（首版）：**
+
+- **微信 target 当前仅 `filehelper` 经过验证**。其他联系人定时发送依赖 `context_token` 缓存机制（一期不实现），可能被服务端拒绝。
+- **daemon SIGTERM 不 graceful drain**：被打断的任务会在 jsonl 留 `started` 无终态行（便于排查"为什么半截"）。
+- **CLI 与 daemon 同时刻撞同一任务会双发**：跨进程互锁成本高，撞同一时刻概率低，已知接受。
+- 一期不做失败重试 / 多目标 fan-out。需要时复制任务。
+- Schema 错误（cron 非法 / id 重复 / 目标 IM 未在 `config.im.enabled` 启用）→ daemon 启动 / CLI 调用都会早失败。
+
+**CLI 退出码：**
+
+| code | 触发 |
+|---|---|
+| 0 | 成功 |
+| 1 | 一般运行时错误 |
+| 2 | rule id 不存在 |
+| 3 | 微信凭证缺失（target=wechat 时） |
+| 4 | 目标 IM 未在 `config.im.enabled` 启用 |
+| 5 | yaml schema 错或文件不存在 |
+
+完整设计见 `docs/superpowers/specs/2026-05-10-scheduled-tasks-design.md`。
+
+---
+
 ## Project Structure
 
 ```
