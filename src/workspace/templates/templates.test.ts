@@ -14,6 +14,7 @@ import {
   generateConfigYaml,
   generateEnvExample,
   generateEnvLocal,
+  generateScheduledTasksYaml,
   generateSystemMd,
 } from './index.ts'
 
@@ -35,6 +36,12 @@ describe('templates: example mode 与 examples/* 一致', () => {
   it('generateChannelTasksYaml({ mode: example }) == examples/channel-tasks.example.yaml', () => {
     expect(generateChannelTasksYaml({ mode: 'example' })).toBe(
       readExample('channel-tasks.example.yaml'),
+    )
+  })
+
+  it('generateScheduledTasksYaml({ mode: example }) == examples/scheduled-tasks.example.yaml', () => {
+    expect(generateScheduledTasksYaml({ mode: 'example' })).toBe(
+      readExample('scheduled-tasks.example.yaml'),
     )
   })
 
@@ -81,6 +88,17 @@ describe('templates: channelTasks workspace mode', () => {
     expect(out).toContain('# 文件缺失时该功能关闭')
     expect(out).toContain('version: 1')
     expect(out).toContain('rules:')
+  })
+})
+
+describe('templates: scheduledTasks workspace mode', () => {
+  it('替换示例引导为 workspace 头部', () => {
+    const out = generateScheduledTasksYaml({ mode: 'workspace' })
+    expect(out).not.toContain('# 定时任务（scheduledTasks）配置示例。')
+    expect(out).toContain('# agent-slack 定时任务（scheduledTasks）配置。')
+    expect(out).toContain('# 文件缺失时功能关闭')
+    expect(out).toContain('version: 1')
+    expect(out).toContain('tasks:')
   })
 })
 

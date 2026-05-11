@@ -1,0 +1,31 @@
+# 定时任务（scheduledTasks）配置示例。
+# 复制到你的 workspace: .agent-slack/scheduled-tasks.yaml
+# 文件缺失时功能关闭；保存后需要重启 agent-slack daemon。
+
+version: 1
+enabled: false   # 启用：改为 true
+
+tasks:
+  - id: daily-standup
+    enabled: false   # 启用：改为 true
+    description: 示例：工作日早上 9 点总结仓库变更并发到 Slack 频道。
+    cron: '0 9 * * 1-5'
+    # timezone: 'Asia/Shanghai'   # 可选；默认本机时区
+    prompt: |
+      请总结最近 24 小时仓库的关键变更，列 3-5 条要点。
+    target:
+      im: slack
+      channelId: C0123456789
+      # im=wechat 时改为以下两行（删 channelId 行）：
+      # im: wechat
+      # to: filehelper
+
+  - id: weekly-report
+    enabled: false   # 启用：改为 true
+    description: 示例：每周五 17 点发到微信文件助手。当前仅 filehelper 经过验证。
+    cron: '0 17 * * 5'
+    prompt: |
+      生成本周工作小结，3 个 highlight + 下周计划。
+    target:
+      im: wechat
+      to: filehelper

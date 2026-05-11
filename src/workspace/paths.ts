@@ -6,6 +6,8 @@ export interface WorkspacePaths {
   root: string
   configFile: string
   channelTasksFile: string
+  scheduledTasksFile: string
+  scheduledTasksLogFile: string
   systemFile: string
   experienceFile: string
   channelTasksDir: string
@@ -35,6 +37,8 @@ export function resolveWorkspacePaths(cwd: string): WorkspacePaths {
     root,
     configFile: path.join(root, 'config.yaml'),
     channelTasksFile: path.join(root, 'channel-tasks.yaml'),
+    scheduledTasksFile: path.join(root, 'scheduled-tasks.yaml'),
+    scheduledTasksLogFile: path.join(root, 'logs', 'scheduled-tasks.jsonl'),
     systemFile: path.join(root, 'system.md'),
     experienceFile: path.join(root, 'experience.md'),
     channelTasksDir: path.join(root, 'channel-tasks'),

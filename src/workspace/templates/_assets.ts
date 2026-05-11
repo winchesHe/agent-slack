@@ -38,6 +38,7 @@ function load(name: string): string {
 export const ENV_EXAMPLE: string = load('.env.example')
 export const CONFIG_EXAMPLE: string = load('config.example.yaml')
 export const CHANNEL_TASKS_EXAMPLE: string = load('channel-tasks.example.yaml')
+export const SCHEDULED_TASKS_EXAMPLE: string = load('scheduled-tasks.example.yaml')
 // system.md 在 example / workspace 两种 mode 下共用同一份正文，
 // example mode 由 generator 在前面拼接引导段。
 export const SYSTEM_BODY: string = load('system.md')

@@ -1,5 +1,6 @@
-// agent-slack upgrade：把当前 workspace 的 config.yaml / channel-tasks.yaml 与最新 generator 模板对比，
-// 顶层缺失 key 自动追加（含中文注释 + 分隔注释）。system.md 缺失则按 workspace 模板创建；存在不动。
+// agent-slack upgrade：把当前 workspace 的 config.yaml / channel-tasks.yaml / scheduled-tasks.yaml
+// 与最新 generator 模板对比，顶层缺失 key 自动追加（含中文注释 + 分隔注释）。
+// system.md 缺失则按 workspace 模板创建；存在不动。
 // .env.local 不参与（凭证类，用户自管）。
 //
 // 行为约定：
@@ -15,6 +16,7 @@ import { resolveWorkspacePaths } from '@/workspace/paths.ts'
 import {
   generateChannelTasksYaml,
   generateConfigYaml,
+  generateScheduledTasksYaml,
   generateSystemMd,
 } from '@/workspace/templates/index.ts'
 import { backupSuffix, planUpgradeYaml, type UpgradeYamlPlan } from '@/workspace/upgrade.ts'
@@ -48,6 +50,11 @@ export async function upgradeCommand(opts: UpgradeOpts): Promise<void> {
       label: 'channel-tasks.yaml',
       filePath: paths.channelTasksFile,
       template: generateChannelTasksYaml({ mode: 'workspace' }),
+    },
+    {
+      label: 'scheduled-tasks.yaml',
+      filePath: paths.scheduledTasksFile,
+      template: generateScheduledTasksYaml({ mode: 'workspace' }),
     },
   ]
 

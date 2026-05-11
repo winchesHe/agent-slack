@@ -11,6 +11,7 @@
 //   .env.example                ← generateEnvExample()
 //   config.example.yaml         ← generateConfigYaml({ mode: 'example' })
 //   channel-tasks.example.yaml  ← generateChannelTasksYaml({ mode: 'example' })
+//   scheduled-tasks.example.yaml ← generateScheduledTasksYaml({ mode: 'example' })
 //   system.md                   ← generateSystemMd({ mode: 'workspace' })
 //                                 generateSystemMd({ mode: 'example' }) 在 system.md 前
 //                                 拼接一段引导注释。
@@ -28,4 +29,8 @@ export {
   type SlackEnvCreds,
 } from './env.ts'
 export { generateChannelTasksYaml, type GenerateChannelTasksYamlArgs } from './channelTasks.ts'
+export {
+  generateScheduledTasksYaml,
+  type GenerateScheduledTasksYamlArgs,
+} from './scheduledTasks.ts'
 export { generateSystemMd, type GenerateSystemMdArgs } from './system.ts'
