@@ -134,9 +134,11 @@ export function createWechatAdapter(deps: WechatAdapterDeps): WechatAdapterHandl
 
   async function prepareForManualRun(file: string): Promise<void> {
     const creds = await loadCredentialsOnly(file)
-    // 凭证里的 baseUrl 可能与配置 baseUrl 不同（spec §5.3 引用 WechatApi.ts:115 的扫码主域切换）
+    // 凭证里的 baseUrl 可能与配置 baseUrl 不同（spec §5.3 引用 WechatApi.ts:115 的扫码主域切换）。
+    // 必须保留与 WechatApi 构造时一致的"补 trailing /"归一化，否则 `baseUrl + endpoint` 会拼成
+    // 不存在的主机名（例如 `...comilink/bot/sendmessage`），node fetch 报 TypeError: fetch failed。
     if (creds.baseUrl) {
-      deps.api.baseUrl = creds.baseUrl
+      deps.api.baseUrl = creds.baseUrl.endsWith('/') ? creds.baseUrl : creds.baseUrl + '/'
     }
     deps.api.setToken(creds.token)
   }
