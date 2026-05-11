@@ -146,7 +146,7 @@ describe('createWechatAdapter.start', () => {
       fetchQrCode: vi.fn(),
       getUpdates: vi.fn().mockResolvedValue({ ret: 0, msgs: [] }),
     }
-    const adapter = createWechatAdapter({
+    const { adapter } = createWechatAdapter({
       api: api as never,
       credentialsStore: store,
       credentialsFile: credsFile,
@@ -172,7 +172,7 @@ describe('createWechatAdapter.start', () => {
       pollQrStatus: vi.fn().mockResolvedValue({ status: 'expired' }),
       setToken: vi.fn(),
     } as never
-    const adapter = createWechatAdapter({
+    const { adapter } = createWechatAdapter({
       api,
       credentialsStore: createCredentialsStore(),
       credentialsFile: credsFile,

@@ -159,7 +159,26 @@ async function appendConfirmEvent(
   }
 }
 
-export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
+export interface SlackScheduledHookArgs {
+  taskId: string
+  channelId: string
+  prompt: string
+}
+
+export interface SlackScheduledHook {
+  run: (args: SlackScheduledHookArgs) => Promise<void>
+}
+
+export interface SlackAdapterHandle {
+  adapter: IMAdapter
+  /**
+   * daemon 模式下定时任务的回调入口：闭包绑定 Bolt App 的 web client 与本次装配的依赖。
+   * CLI 模式不经此 hook，自己 new WebClient + 直接调 runScheduledSlackSession。
+   */
+  scheduledHook: SlackScheduledHook
+}
+
+export function createSlackAdapter(deps: SlackAdapterDeps): SlackAdapterHandle {
   const log = deps.logger.withTag('slack')
   const channelNameCache = new Map<string, string>()
   const userNameCache = new Map<string, string>()
@@ -538,7 +557,7 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
     }
   }
 
-  return {
+  const adapter: IMAdapter = {
     id: 'slack',
     async start() {
       await app.start()
@@ -549,6 +568,15 @@ export function createSlackAdapter(deps: SlackAdapterDeps): IMAdapter {
       log.info('slack adapter stopped')
     },
   }
+
+  const scheduledHook: SlackScheduledHook = {
+    async run(_args) {
+      // 在 Slice 6 接通；这里保留契约以让 createApplication 装配能编译。
+      throw new Error('slack scheduledHook not implemented yet')
+    },
+  }
+
+  return { adapter, scheduledHook }
 }
 
 async function appendTriggerWithoutDedupe(

@@ -38,12 +38,44 @@ const BACKOFF_DELAY_MS = 30_000
 const MAX_CONSECUTIVE_FAILURES = 3
 const DEDUP_TTL_MS = 7 * 60 * 60 * 1_000 // 7 小时
 
-export function createWechatAdapter(deps: WechatAdapterDeps): IMAdapter {
+export interface WechatScheduledHookArgs {
+  taskId: string
+  to: string
+  prompt: string
+}
+
+export interface WechatScheduledHook {
+  run: (args: WechatScheduledHookArgs) => Promise<void>
+}
+
+export class MissingWechatCredentialsError extends Error {
+  constructor(file: string) {
+    super(`未找到微信凭证文件 ${file}；请先用 'agent-slack daemon start' 完成扫码登录`)
+    this.name = 'MissingWechatCredentialsError'
+  }
+}
+
+export interface WechatAdapterHandle {
+  adapter: IMAdapter
+  /**
+   * daemon 模式下定时任务的回调入口：闭包绑定 WechatApi 与本次装配的依赖。
+   * CLI 模式不经此 hook，自己加载凭证 + 直接调 runScheduledWechatSession。
+   */
+  scheduledHook: WechatScheduledHook
+  /**
+   * CLI 模式专用：仅读取凭证文件并 setToken，不触发 QR 登录。
+   * 缺失则抛 MissingWechatCredentialsError，调用方据此 exit 3。
+   * 凭证里如带 baseUrl，调用方应先 api.baseUrl = creds.baseUrl 再 setToken。
+   */
+  loadCredentialsOnly: (file: string) => Promise<WechatCredentials>
+}
+
+export function createWechatAdapter(deps: WechatAdapterDeps): WechatAdapterHandle {
   const log = deps.logger.withTag('wechat')
   let stopRequested = false
   let stopCtl: AbortController | undefined
 
-  return {
+  const adapter: IMAdapter = {
     id: 'wechat' as ImProvider,
 
     async start() {
@@ -69,6 +101,21 @@ export function createWechatAdapter(deps: WechatAdapterDeps): IMAdapter {
       stopCtl?.abort()
     },
   }
+
+  const scheduledHook: WechatScheduledHook = {
+    async run(_args) {
+      // 在 Slice 7 接通；这里保留契约以让 createApplication 装配能编译。
+      throw new Error('wechat scheduledHook not implemented yet')
+    },
+  }
+
+  async function loadCredentialsOnly(file: string): Promise<WechatCredentials> {
+    const creds = await deps.credentialsStore.load(file)
+    if (!creds) throw new MissingWechatCredentialsError(file)
+    return creds
+  }
+
+  return { adapter, scheduledHook, loadCredentialsOnly }
 }
 
 /**

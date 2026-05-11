@@ -209,10 +209,11 @@ describe('SlackAdapter', () => {
   })
 
   it('构造不抛 + 暴露 id/start/stop 接口', () => {
-    const adapter = createSlackAdapter(createDeps())
-    expect(adapter.id).toBe('slack')
-    expect(typeof adapter.start).toBe('function')
-    expect(typeof adapter.stop).toBe('function')
+    const handle = createSlackAdapter(createDeps())
+    expect(handle.adapter.id).toBe('slack')
+    expect(typeof handle.adapter.start).toBe('function')
+    expect(typeof handle.adapter.stop).toBe('function')
+    expect(typeof handle.scheduledHook.run).toBe('function')
     expect(boltMock.App).toHaveBeenCalledWith(
       expect.objectContaining({
         ignoreSelf: false,

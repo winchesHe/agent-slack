@@ -168,11 +168,13 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
 
   // adapters 数组按 enabled 分支构造：仅装配启用的 IM。
   const adapters: IMAdapter[] = []
+  let slackHandle: ReturnType<typeof createSlackAdapter> | undefined
+  let wechatHandle: ReturnType<typeof createWechatAdapter> | undefined
 
   if (slackEnv) {
     const renderer = createSlackRenderer({ logger })
     const slackConfirm = createSlackConfirm({ logger })
-    const slack = createSlackAdapter({
+    slackHandle = createSlackAdapter({
       orchestrator,
       abortRegistry,
       runQueue,
@@ -188,7 +190,7 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
       appToken: slackEnv.appToken,
       signingSecret: slackEnv.signingSecret,
     })
-    adapters.push(slack)
+    adapters.push(slackHandle.adapter)
   }
 
   if (enabled.includes('wechat')) {
@@ -196,7 +198,7 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
       baseUrl: ctx.config.im.wechat.baseUrl,
       cdnBaseUrl: ctx.config.im.wechat.cdnBaseUrl,
     })
-    const wechat = createWechatAdapter({
+    wechatHandle = createWechatAdapter({
       api: wechatApi,
       credentialsStore: createCredentialsStore(),
       credentialsFile: ctx.paths.wechatCredentialsFile,
@@ -207,12 +209,15 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
       rendererFactory: () => createWechatRenderer({ logger }),
       logger,
     })
-    adapters.push(wechat)
+    adapters.push(wechatHandle.adapter)
   }
 
   if (adapters.length === 0) {
     logger.warn('警告：adapters 为空，没有 IM 在线（检查 im.enabled 配置）')
   }
+  // slackHandle / wechatHandle 暂保留在闭包中，Slice 10 接通定时任务装配
+  void slackHandle
+  void wechatHandle
 
   return {
     adapters,

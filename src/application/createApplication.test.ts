@@ -22,10 +22,24 @@ const mocks = vi.hoisted(() => {
     start: vi.fn(async () => {}),
     stop: vi.fn(async () => {}),
   }
+  const slackHandle = {
+    adapter: slackAdapter,
+    scheduledHook: { run: vi.fn(async () => {}) },
+  }
   const wechatAdapter = {
     id: 'wechat' as const,
     start: vi.fn(async () => {}),
     stop: vi.fn(async () => {}),
+  }
+  const wechatHandle = {
+    adapter: wechatAdapter,
+    scheduledHook: { run: vi.fn(async () => {}) },
+    loadCredentialsOnly: vi.fn(async () => ({
+      token: 'tok',
+      baseUrl: 'https://x.example/',
+      botId: '',
+      userId: '',
+    })),
   }
   const paths = {
     root: '/mock-workspace/.agent-slack',
@@ -115,7 +129,7 @@ const mocks = vi.hoisted(() => {
       postThreadReply: vi.fn(async () => {}),
       postSessionUsage: vi.fn(async () => {}),
     })),
-    createSlackAdapter: vi.fn((_args: unknown) => slackAdapter),
+    createSlackAdapter: vi.fn((_args: unknown) => slackHandle),
     WechatApi: vi.fn(),
     createCredentialsStore: vi.fn(() => ({
       load: vi.fn(async () => undefined),
@@ -127,7 +141,7 @@ const mocks = vi.hoisted(() => {
       flush: vi.fn(() => []),
       STARTING_MESSAGE: '开始处理...',
     })),
-    createWechatAdapter: vi.fn((_args: unknown) => wechatAdapter),
+    createWechatAdapter: vi.fn((_args: unknown) => wechatHandle),
     logger,
     slackAdapter,
     wechatAdapter,
