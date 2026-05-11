@@ -16,6 +16,7 @@ import {
   daemonLogsCommand,
   daemonAttachCommand,
 } from './commands/daemon.ts'
+import { runScheduledTaskCli } from './commands/scheduledTasks.ts'
 import { runDaemonEntry } from '@/daemon/entry.ts'
 import pkg from '../../package.json' with { type: 'json' }
 
@@ -129,6 +130,20 @@ daemon
   .option('--cwd <dir>', 'workspace 目录', process.cwd())
   .action(async (opts: { cwd: string }) => {
     await daemonAttachCommand({ cwd: opts.cwd })
+  })
+
+// ---------- scheduled-tasks 子命令集 ----------
+const scheduledTasks = program
+  .command('scheduled-tasks')
+  .description('定时任务（scheduledTasks）控制')
+
+scheduledTasks
+  .command('run <id>')
+  .description('手动触发一个定时任务（独立进程，不依赖 daemon）')
+  .option('--cwd <dir>', 'workspace 目录', process.cwd())
+  .action(async (id: string, opts: { cwd: string }) => {
+    const code = await runScheduledTaskCli({ cwd: opts.cwd, id })
+    process.exit(code)
   })
 
 // 隐藏子命令：被 `daemon start` spawn 出的子进程调用

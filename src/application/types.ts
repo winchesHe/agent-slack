@@ -1,5 +1,6 @@
 import type { IMAdapter } from '@/im/IMAdapter.ts'
 import type { AbortRegistry } from '@/orchestrator/AbortRegistry.ts'
+import type { WechatAdapterHandle } from '@/im/wechat/WechatAdapter.ts'
 import type {
   ScheduledTaskRunner,
   ScheduledTaskScheduler,
@@ -19,4 +20,9 @@ export interface Application {
     runner: ScheduledTaskRunner
     scheduler?: ScheduledTaskScheduler
   }
+  /**
+   * 仅 im.enabled 含 'wechat' 时构造；用于 CLI scheduled-tasks run 模式的 preflight
+   * （loadCredentialsOnly + setToken），daemon 模式下 scheduler 走 adapter.start() 自动完成 setToken。
+   */
+  wechatHandle?: WechatAdapterHandle
 }

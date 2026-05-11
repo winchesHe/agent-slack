@@ -60,7 +60,7 @@ export interface WechatAdapterHandle {
   adapter: IMAdapter
   /**
    * daemon 模式下定时任务的回调入口：闭包绑定 WechatApi 与本次装配的依赖。
-   * CLI 模式不经此 hook，自己加载凭证 + 直接调 runScheduledWechatSession。
+   * CLI 模式不经此 hook，自己 prepareForManualRun + scheduledHook.run。
    */
   scheduledHook: WechatScheduledHook
   /**
@@ -69,6 +69,12 @@ export interface WechatAdapterHandle {
    * 凭证里如带 baseUrl，调用方应先 api.baseUrl = creds.baseUrl 再 setToken。
    */
   loadCredentialsOnly: (file: string) => Promise<WechatCredentials>
+  /**
+   * CLI scheduled-tasks run 前的 preflight：
+   *   loadCredentialsOnly → 同步 deps.api.baseUrl (如 creds.baseUrl 与配置不同) → deps.api.setToken
+   * 失败抛 MissingWechatCredentialsError，调用方按 spec §5.3 exit 3。
+   */
+  prepareForManualRun: (credentialsFile: string) => Promise<void>
 }
 
 export function createWechatAdapter(deps: WechatAdapterDeps): WechatAdapterHandle {
@@ -126,7 +132,16 @@ export function createWechatAdapter(deps: WechatAdapterDeps): WechatAdapterHandl
     return creds
   }
 
-  return { adapter, scheduledHook, loadCredentialsOnly }
+  async function prepareForManualRun(file: string): Promise<void> {
+    const creds = await loadCredentialsOnly(file)
+    // 凭证里的 baseUrl 可能与配置 baseUrl 不同（spec §5.3 引用 WechatApi.ts:115 的扫码主域切换）
+    if (creds.baseUrl) {
+      deps.api.baseUrl = creds.baseUrl
+    }
+    deps.api.setToken(creds.token)
+  }
+
+  return { adapter, scheduledHook, loadCredentialsOnly, prepareForManualRun }
 }
 
 /**

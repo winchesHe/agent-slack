@@ -265,6 +265,7 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
     adapters,
     abortRegistry,
     ...(scheduledTasks ? { scheduledTasks } : {}),
+    ...(wechatHandle ? { wechatHandle } : {}),
     async start() {
       for (const a of adapters) await a.start()
       scheduledTasks?.scheduler?.start()
