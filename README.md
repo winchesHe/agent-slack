@@ -230,9 +230,13 @@ tasks:
       to: filehelper
 ```
 
-**已知限制（首版）：**
+**Wechat target 选项：**
 
-- **微信 target 当前仅 `filehelper` 经过验证**。其他联系人定时发送依赖 `context_token` 缓存机制（一期不实现），可能被服务端拒绝。
+- `to: filehelper`（推荐）：bot 自己的会话空间，不依赖 `context_token`，最稳。
+- `to: <联系人的 ilink_user_id>`（如 `oXXX...@im.wechat`）：需要那个联系人**先给 bot 发过至少一条消息**，daemon 会把 `context_token` 持久化到 `.agent-slack/wechat/context-tokens.json`（per-peer），scheduled 起跑时按 `target.to` 查最新 token。缺失则 fallback 空 token，**非 filehelper 联系人可能被服务端拒收**。
+
+**其他已知限制（首版）：**
+
 - **daemon SIGTERM 不 graceful drain**：被打断的任务会在 jsonl 留 `started` 无终态行（便于排查"为什么半截"）。
 - **CLI 与 daemon 同时刻撞同一任务会双发**：跨进程互锁成本高，撞同一时刻概率低，已知接受。
 - 一期不做失败重试 / 多目标 fan-out。需要时复制任务。

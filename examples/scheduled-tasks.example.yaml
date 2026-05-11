@@ -22,7 +22,13 @@ tasks:
 
   - id: weekly-report
     enabled: false   # 启用：改为 true
-    description: 示例：每周五 17 点发到微信文件助手。当前仅 filehelper 经过验证。
+    description: |
+      示例：每周五 17 点发到微信文件助手。target.to 选项：
+      - 'filehelper'（推荐 / 默认）：bot 自己的会话空间，无需 context_token 缓存，最稳。
+      - 你某个微信联系人的 ilink_user_id（形如 'oXXX...@im.wechat'）：
+        需要那个联系人**先给 bot 发过至少一条消息**，daemon 会把 context_token 持久化到
+        .agent-slack/wechat/context-tokens.json，scheduled 起跑时按 to 查最新 token。
+        缺失则 fallback 空 token，服务端可能拒收（仅 filehelper 不敏感）。
     cron: '0 17 * * 5'
     prompt: |
       生成本周工作小结，3 个 highlight + 下周计划。

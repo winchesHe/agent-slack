@@ -469,7 +469,13 @@ CLI 与 daemon 互不感知；同一时刻撞上偶发会发两条，按已确�
 - **强制要求**：实现完成后必须有一次 `filehelper` 实发 E2E 验证（手动），才认为 wechat target 可用；非 filehelper 联系人作为**未支持**写进 README，等真实测过再放开。
 - 若 `sendText` 在空 token 下被服务端拒绝（错误码 / 体），由现有错误处理路径（runner catch + history failed）兜底，不需要新增 fallback。
 
-**长期**：若需要稳定支持非 filehelper 联系人，可考虑在收到对方任意入站消息时把 `contextToken` 持久化到磁盘（per-peer），定时任务起跑时优先读最新缓存。这条**不在本期范围**，仅备忘。
+**长期方案（已在 Slice A-D 提前落地）**：
+
+- 新增 `src/im/wechat/ContextTokenStore.ts`：per-peer userId → token 落盘到 `.agent-slack/wechat/context-tokens.json`（原子 write+rename）。
+- `WechatAdapter.processMessage` 入站时 fire-and-forget `store.save(fromUserId, token)`。
+- `runScheduledWechatSession` 起跑时按 `target.to` 查 store；命中 → 真实 token；未命中 → fallback `''`（filehelper 仍可用）。
+- `createApplication` 在 wechat 启用时 `await createContextTokenStore(paths.wechatContextTokensFile)`，注入 adapter 与 scheduledHook 闭包。
+- 行为契约：那个联系人**至少先给 bot 发过一条入站消息**，scheduled 才能稳定推过去；否则按经验只有 filehelper 能跑通。
 
 ### 6.5 daemon 关停语义
 
