@@ -27,6 +27,7 @@ import {
   type SlackBlock,
   type SlackConfirm,
 } from './SlackConfirm.ts'
+import { runScheduledSlackSession } from './scheduled.ts'
 
 export interface SlackAdapterDeps {
   orchestrator: ConversationOrchestrator
@@ -570,9 +571,21 @@ export function createSlackAdapter(deps: SlackAdapterDeps): SlackAdapterHandle {
   }
 
   const scheduledHook: SlackScheduledHook = {
-    async run(_args) {
-      // 在 Slice 6 接通；这里保留契约以让 createApplication 装配能编译。
-      throw new Error('slack scheduledHook not implemented yet')
+    async run(args) {
+      // 内部 Bolt App 的 web client 已就绪后再被 runner 调用；
+      // 这里捕获 app.client 与本次装配的 deps，调统一的 runScheduledSlackSession 纯函数。
+      await runScheduledSlackSession({
+        taskId: args.taskId,
+        channelId: args.channelId,
+        prompt: args.prompt,
+        web: app.client as unknown as WebClient,
+        deps: {
+          orchestrator: deps.orchestrator,
+          renderer: deps.renderer,
+          logger: deps.logger,
+          ...(deps.workspaceLabel ? { workspaceLabel: deps.workspaceLabel } : {}),
+        },
+      })
     },
   }
 
