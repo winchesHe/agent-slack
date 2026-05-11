@@ -51,6 +51,8 @@ const mocks = vi.hoisted(() => {
     channelTaskTriggersFile: '/mock-workspace/.agent-slack/channel-tasks/triggers.jsonl',
     sessionsDir: '/mock-workspace/.agent-slack/sessions',
     memoryDir: '/mock-workspace/.agent-slack/memory',
+    scheduledTasksFile: '/mock-workspace/.agent-slack/scheduled-tasks.yaml',
+    scheduledTasksLogFile: '/mock-workspace/.agent-slack/logs/scheduled-tasks.jsonl',
     skillsDir: '/mock-workspace/.agent-slack/skills',
     logsDir: '/mock-workspace/.agent-slack/logs',
     daemonDir: '/mock-workspace/.agent-slack/daemon',
@@ -551,6 +553,115 @@ describe('createApplication', () => {
     expect(mocks.createSlackAdapter).not.toHaveBeenCalled()
     // WechatAdapter 被构造一次
     expect(mocks.createWechatAdapter).toHaveBeenCalledTimes(1)
+  })
+
+  it('scheduledTasks.yaml 不存在 → app.scheduledTasks 缺失', async () => {
+    const app = await createApplication({ workspaceDir: '/workspace' })
+    expect(app.scheduledTasks).toBeUndefined()
+  })
+
+  it('scheduledTasks.yaml enabled:true 但目标 IM 未启用 → 抛 ConfigError', async () => {
+    // 写一个临时 yaml：im.enabled=[slack] 但 task target=wechat → 应抛
+    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const path = await import('node:path')
+    const tmpRoot = mkdtempSync(path.default.join(tmpdir(), 'app-st-'))
+    const scheduledTasksFile = path.default.join(tmpRoot, 'scheduled-tasks.yaml')
+    writeFileSync(
+      scheduledTasksFile,
+      [
+        'version: 1',
+        'enabled: true',
+        'tasks:',
+        '  - id: w1',
+        "    cron: '0 9 * * *'",
+        '    prompt: hi',
+        '    target:',
+        '      im: wechat',
+        '      to: filehelper',
+      ].join('\n'),
+    )
+    try {
+      mocks.loadWorkspaceContext.mockResolvedValueOnce({
+        cwd: '/mock-workspace',
+        paths: { ...mocks.paths, scheduledTasksFile },
+        config: {
+          agent: {
+            model: 'test-model',
+            maxSteps: 8,
+            provider: 'litellm' as const,
+            responses: { reasoningEffort: 'medium', reasoningSummary: 'auto' } as const,
+            context: { keepRecentToolResults: 20 } as { keepRecentToolResults: number },
+          },
+          im: {
+            enabled: ['slack'] as Array<'slack' | 'wechat'>,
+            wechat: {
+              baseUrl: 'https://ilinkai.weixin.qq.com',
+              cdnBaseUrl: 'https://novac2c.cdn.weixin.qq.com/c2c',
+            },
+          },
+        },
+        systemPrompt: 'system prompt',
+        skills: [],
+      })
+      await expect(createApplication({ workspaceDir: '/workspace' })).rejects.toThrow(
+        /定时任务.*目标 IM.*未在 config.im.enabled/,
+      )
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('scheduledTasks 启用 + IM 匹配 → 装配 runner+scheduler，app.scheduledTasks 存在', async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const path = await import('node:path')
+    const tmpRoot = mkdtempSync(path.default.join(tmpdir(), 'app-st-'))
+    const scheduledTasksFile = path.default.join(tmpRoot, 'scheduled-tasks.yaml')
+    writeFileSync(
+      scheduledTasksFile,
+      [
+        'version: 1',
+        'enabled: true',
+        'tasks:',
+        '  - id: t1',
+        "    cron: '0 9 * * *'",
+        '    prompt: hi',
+        '    target:',
+        '      im: slack',
+        '      channelId: C0123456789',
+      ].join('\n'),
+    )
+    try {
+      mocks.loadWorkspaceContext.mockResolvedValueOnce({
+        cwd: '/mock-workspace',
+        paths: { ...mocks.paths, scheduledTasksFile },
+        config: {
+          agent: {
+            model: 'test-model',
+            maxSteps: 8,
+            provider: 'litellm' as const,
+            responses: { reasoningEffort: 'medium', reasoningSummary: 'auto' } as const,
+            context: { keepRecentToolResults: 20 } as { keepRecentToolResults: number },
+          },
+          im: {
+            enabled: ['slack'] as Array<'slack' | 'wechat'>,
+            wechat: {
+              baseUrl: 'https://ilinkai.weixin.qq.com',
+              cdnBaseUrl: 'https://novac2c.cdn.weixin.qq.com/c2c',
+            },
+          },
+        },
+        systemPrompt: 'system prompt',
+        skills: [],
+      })
+      const app = await createApplication({ workspaceDir: '/workspace' })
+      expect(app.scheduledTasks).toBeDefined()
+      expect(app.scheduledTasks?.runner).toBeDefined()
+      expect(app.scheduledTasks?.scheduler).toBeDefined()
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true })
+    }
   })
 
   it('双开 [slack, wechat]：两个 adapter id 正确', async () => {

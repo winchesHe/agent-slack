@@ -32,6 +32,14 @@ import { createContextCompactor } from '@/orchestrator/ContextCompactor.ts'
 import { createMentionCommandRouter } from '@/orchestrator/MentionCommandRouter.ts'
 import { loadChannelTasksConfigFile } from '@/channelTasks/config.ts'
 import { createChannelTaskTriggerLedger } from '@/channelTasks/triggerLedger.ts'
+import {
+  appendScheduledTaskRun,
+  createScheduledTaskRunner,
+  createScheduledTaskScheduler,
+  loadScheduledTasksConfigFile,
+  type ScheduledTaskRunner,
+  type ScheduledTaskScheduler,
+} from '@/scheduledTasks/index.ts'
 import { ConfigError } from '@/core/errors.ts'
 import type { Application } from './types.ts'
 import type { IMAdapter } from '@/im/IMAdapter.ts'
@@ -59,6 +67,7 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
 
   const ctx = await loadWorkspaceContext(args.workspaceDir, bootstrapLogger)
   const channelTasksConfig = await loadChannelTasksConfigFile(ctx.paths.channelTasksFile)
+  const scheduledTasksConfig = await loadScheduledTasksConfigFile(ctx.paths.scheduledTasksFile)
 
   const enabled = ctx.config.im.enabled
   // SLACK_* env 仅在 im.enabled 含 'slack' 时加载；仅 wechat 启用时不要求这些 env 存在。
@@ -215,17 +224,53 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
   if (adapters.length === 0) {
     logger.warn('警告：adapters 为空，没有 IM 在线（检查 im.enabled 配置）')
   }
-  // slackHandle / wechatHandle 暂保留在闭包中，Slice 10 接通定时任务装配
-  void slackHandle
-  void wechatHandle
+
+  // ── scheduledTasks 装配 ──────────────────────────────────────────
+  let scheduledTasks: { runner: ScheduledTaskRunner; scheduler?: ScheduledTaskScheduler } | undefined
+  if (scheduledTasksConfig?.enabled) {
+    // IM 启用交叉校验（spec §4.3）：任何 enabled 的 task 目标 IM 必须在 config.im.enabled
+    for (const task of scheduledTasksConfig.tasks) {
+      if (!task.enabled) continue
+      if (!enabled.includes(task.target.im)) {
+        throw new ConfigError(
+          `定时任务 "${task.id}" 的目标 IM "${task.target.im}" 未在 config.im.enabled 中启用`,
+        )
+      }
+    }
+
+    const stHistoryFile = ctx.paths.scheduledTasksLogFile
+    const stRunner = createScheduledTaskRunner({
+      ...(enabled.includes('slack') && slackHandle
+        ? { slackHook: slackHandle.scheduledHook }
+        : {}),
+      ...(enabled.includes('wechat') && wechatHandle
+        ? { wechatHook: wechatHandle.scheduledHook }
+        : {}),
+      history: { append: (record) => appendScheduledTaskRun(stHistoryFile, record) },
+      logger,
+    })
+    const enabledRules = scheduledTasksConfig.tasks.filter((t) => t.enabled)
+    const stScheduler = createScheduledTaskScheduler({
+      rules: enabledRules,
+      runner: stRunner,
+      logger,
+    })
+    scheduledTasks = { runner: stRunner, scheduler: stScheduler }
+    logger.withTag('scheduledTasks').info(
+      `loaded ${enabledRules.length} enabled task(s)`,
+    )
+  }
 
   return {
     adapters,
     abortRegistry,
+    ...(scheduledTasks ? { scheduledTasks } : {}),
     async start() {
       for (const a of adapters) await a.start()
+      scheduledTasks?.scheduler?.start()
     },
     async stop() {
+      scheduledTasks?.scheduler?.stop()
       for (const a of adapters) await a.stop()
     },
   }
