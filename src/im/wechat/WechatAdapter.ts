@@ -16,6 +16,7 @@ import {
   WeixinMessageType,
   type InboundWeixinMessage,
 } from './protocol.ts'
+import { runScheduledWechatSession } from './scheduled.ts'
 
 export interface WechatAdapterDeps {
   api: WechatApi
@@ -103,9 +104,19 @@ export function createWechatAdapter(deps: WechatAdapterDeps): WechatAdapterHandl
   }
 
   const scheduledHook: WechatScheduledHook = {
-    async run(_args) {
-      // 在 Slice 7 接通；这里保留契约以让 createApplication 装配能编译。
-      throw new Error('wechat scheduledHook not implemented yet')
+    async run(args) {
+      // daemon 模式下 api 已在 start() setToken；定时任务调用方仅传 taskId/to/prompt。
+      await runScheduledWechatSession({
+        taskId: args.taskId,
+        to: args.to,
+        prompt: args.prompt,
+        api: deps.api,
+        deps: {
+          orchestrator: deps.orchestrator,
+          rendererFactory: deps.rendererFactory,
+          logger: deps.logger,
+        },
+      })
     },
   }
 
