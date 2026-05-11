@@ -26,6 +26,7 @@ export interface WorkspacePaths {
   globalConfig: string
   wechatDir: string
   wechatCredentialsFile: string
+  wechatContextTokensFile: string
 }
 
 export function resolveWorkspacePaths(cwd: string): WorkspacePaths {
@@ -57,6 +58,7 @@ export function resolveWorkspacePaths(cwd: string): WorkspacePaths {
     globalConfig: path.join(globalRoot, 'global.yaml'),
     wechatDir: path.join(root, 'wechat'),
     wechatCredentialsFile: path.join(root, 'wechat', 'credentials.json'),
+    wechatContextTokensFile: path.join(root, 'wechat', 'context-tokens.json'),
   }
 }
 

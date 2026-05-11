@@ -325,6 +325,53 @@ describe('processMessage', () => {
     expect(orch.handle.mock.calls.length).toBe(1)
   })
 
+  it('注入 contextTokenStore：入站时 store.save 被调用（spec §6.4 长期方案）', async () => {
+    const api = stubApi()
+    const orch = stubOrchestrator()
+    const save = vi.fn(async () => undefined)
+    const store = { get: vi.fn(() => undefined), save }
+    const deps = {
+      ...(baseDeps(api, orch) as unknown as Record<string, unknown>),
+      contextTokenStore: store,
+    } as never
+    await _processMessage(
+      deps,
+      {
+        message_type: 1,
+        message_id: 'm-store',
+        from_user_id: 'uA',
+        to_user_id: 'b',
+        context_token: 'persist-this',
+        item_list: [{ type: 1, text_item: { text: 'hi' } }],
+      } as never,
+      new Map(),
+      new Map(),
+    )
+    await new Promise((r) => setTimeout(r, 10))
+    expect(save).toHaveBeenCalledWith('uA', 'persist-this')
+  })
+
+  it('未注入 contextTokenStore：行为退化为纯内存（不抛、不阻塞）', async () => {
+    const api = stubApi()
+    const orch = stubOrchestrator()
+    const deps = baseDeps(api, orch)
+    await _processMessage(
+      deps,
+      {
+        message_type: 1,
+        message_id: 'm-no-store',
+        from_user_id: 'uA',
+        to_user_id: 'b',
+        context_token: 'ctx',
+        item_list: [{ type: 1, text_item: { text: 'hi' } }],
+      } as never,
+      new Map(),
+      new Map(),
+    )
+    await new Promise((r) => setTimeout(r, 10))
+    expect(orch.handle).toHaveBeenCalledOnce()
+  })
+
   it('contextToken 在解析前更新（媒体消息也能拿到 token 发提示）', async () => {
     const api = stubApi()
     const deps = baseDeps(api)

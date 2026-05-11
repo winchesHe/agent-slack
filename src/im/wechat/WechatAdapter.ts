@@ -8,6 +8,7 @@ import type { SessionRunQueue } from '@/orchestrator/SessionRunQueue.ts'
 import type { AbortRegistry } from '@/orchestrator/AbortRegistry.ts'
 import type { WechatApi, WechatCredentials } from './WechatApi.ts'
 import type { CredentialsStore } from './CredentialsStore.ts'
+import type { ContextTokenStore } from './ContextTokenStore.ts'
 import type { WechatRenderer } from './WechatRenderer.ts'
 import { createWechatEventSink } from './WechatEventSink.ts'
 import {
@@ -28,6 +29,12 @@ export interface WechatAdapterDeps {
   abortRegistry: AbortRegistry<string>
   rendererFactory: () => WechatRenderer
   logger: Logger
+  /**
+   * 可选 per-peer context_token 持久化 store（spec §6.4 长期方案）：
+   * inbound 路径写入；scheduled 路径读取以支持非 filehelper 联系人。
+   * 未注入时退化为旧行为（仅内存缓存当前进程的 token，重启即失）。
+   */
+  contextTokenStore?: ContextTokenStore
 }
 
 const QR_LOGIN_TIMEOUT_MS = 480_000
@@ -330,7 +337,15 @@ async function processMessage(
 
   const fromUserId = raw.from_user_id
   // 1. 先更新 contextToken 缓存（spec §7.3 顺序保证：媒体提示也能拿到 token）
-  if (raw.context_token) contextTokens.set(fromUserId, raw.context_token)
+  //    内存 Map 立即生效；store 异步落盘（fire-and-forget，失败仅 warn，不阻塞消息处理）
+  if (raw.context_token) {
+    contextTokens.set(fromUserId, raw.context_token)
+    if (deps.contextTokenStore) {
+      void deps.contextTokenStore
+        .save(fromUserId, raw.context_token)
+        .catch((err) => log.warn('contextTokenStore.save 失败（忽略）', { err, fromUserId }))
+    }
+  }
   const contextToken = contextTokens.get(fromUserId) ?? ''
 
   // 2. 解析 item_list
