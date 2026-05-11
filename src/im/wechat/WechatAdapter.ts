@@ -25,7 +25,7 @@ export interface WechatAdapterDeps {
   sessionStore: SessionStore
   runQueue: SessionRunQueue
   abortRegistry: AbortRegistry<string>
-  renderer: WechatRenderer
+  rendererFactory: () => WechatRenderer
   logger: Logger
 }
 
@@ -303,7 +303,7 @@ async function processMessage(
 
   const sink = createWechatEventSink({
     api: deps.api,
-    renderer: deps.renderer,
+    renderer: deps.rendererFactory(),
     toUserId: fromUserId,
     contextToken,
     logger: deps.logger,

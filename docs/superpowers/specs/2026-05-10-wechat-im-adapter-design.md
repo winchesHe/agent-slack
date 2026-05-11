@@ -362,6 +362,8 @@ while (!stop.signal.aborted) {
   - final assistant text：单条或多条，超 4000 字符按 `\n\n / \n / 硬切` 三级分段
   - terminal phase = `failed`：追加一条 `"⚠️ 处理失败：<简短错误>"`，不暴露 stack trace
 
+> **生命周期**：`WechatRenderer` 内部用闭包变量累积 per-message 状态（`assistantTexts` / `toolNamesUsed` / `terminalPhase` / `failedError`），且 `flush()` 不重置这些变量。因此 **每条入站消息必须创建独立 renderer 实例**，否则下一轮 `flush()` 会带出上一轮的全部 assistant text 与工具集合，多用户事件还会互串。`WechatAdapter` 因此持有 `rendererFactory: () => WechatRenderer` 而非 renderer 单例，在 `processMessage` 中按消息 new。
+
 ### 8.2 `WechatEventSink`
 
 对照 [SlackEventSink.ts](../../../src/im/slack/SlackEventSink.ts) 但只在 finalize 阶段统一发送。
@@ -471,7 +473,7 @@ if (enabled.includes('wechat')) {
     abortRegistry,
     runQueue,
     sessionStore,
-    renderer: createWechatRenderer({ logger }),
+    rendererFactory: () => createWechatRenderer({ logger }),
     logger,
   }))
 }

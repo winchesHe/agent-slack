@@ -154,7 +154,7 @@ describe('createWechatAdapter.start', () => {
       sessionStore: {} as never,
       runQueue: {} as never,
       abortRegistry: {} as never,
-      renderer: {} as never,
+      rendererFactory: () => ({}) as never,
       logger: stubLogger(),
     })
     await adapter.start()
@@ -180,7 +180,7 @@ describe('createWechatAdapter.start', () => {
       sessionStore: {} as never,
       runQueue: {} as never,
       abortRegistry: {} as never,
-      renderer: {} as never,
+      rendererFactory: () => ({}) as never,
       logger: stubLogger(),
     })
     await expect(adapter.start()).rejects.toThrow(/扫码登录/)
@@ -203,6 +203,7 @@ describe('processMessage', () => {
   const baseDeps = (
     api = stubApi(),
     orch = stubOrchestrator(),
+    rendererFactory = () => ({ onEvent: () => {}, flush: () => [], STARTING_MESSAGE: '...' }),
   ): never =>
     ({
       api,
@@ -212,7 +213,7 @@ describe('processMessage', () => {
       sessionStore: {},
       runQueue: {},
       abortRegistry: {},
-      renderer: { onEvent: () => {}, flush: () => [], STARTING_MESSAGE: '...' },
+      rendererFactory,
       logger: stubLogger(),
     }) as never
 
@@ -343,6 +344,45 @@ describe('processMessage', () => {
     )
     expect(ctxs.get('uB')).toBe('fresh-token')
     expect(api.sendText.mock.calls[0]![2]).toBe('fresh-token')
+  })
+
+  it('每条入站消息独立调用 rendererFactory（renderer 不被多消息共享）', async () => {
+    const api = stubApi()
+    const orch = stubOrchestrator()
+    const rendererFactory = vi.fn(() => ({
+      onEvent: () => {},
+      flush: () => [],
+      STARTING_MESSAGE: '...',
+    }))
+    const deps = baseDeps(api, orch, rendererFactory)
+    await _processMessage(
+      deps,
+      {
+        message_type: 1,
+        message_id: 'm-iso-1',
+        from_user_id: 'uA',
+        to_user_id: 'b',
+        context_token: 'ctx',
+        item_list: [{ type: 1, text_item: { text: 'first' } }],
+      } as never,
+      new Map(),
+      new Map(),
+    )
+    await _processMessage(
+      deps,
+      {
+        message_type: 1,
+        message_id: 'm-iso-2',
+        from_user_id: 'uA',
+        to_user_id: 'b',
+        context_token: 'ctx',
+        item_list: [{ type: 1, text_item: { text: 'second' } }],
+      } as never,
+      new Map(),
+      new Map(),
+    )
+    await new Promise((r) => setTimeout(r, 10))
+    expect(rendererFactory).toHaveBeenCalledTimes(2)
   })
 
   it('message_type !== 1（非用户消息）跳过', async () => {

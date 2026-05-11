@@ -196,7 +196,6 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
       baseUrl: ctx.config.im.wechat.baseUrl,
       cdnBaseUrl: ctx.config.im.wechat.cdnBaseUrl,
     })
-    const wechatRenderer = createWechatRenderer({ logger })
     const wechat = createWechatAdapter({
       api: wechatApi,
       credentialsStore: createCredentialsStore(),
@@ -205,7 +204,7 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
       sessionStore,
       runQueue,
       abortRegistry,
-      renderer: wechatRenderer,
+      rendererFactory: () => createWechatRenderer({ logger }),
       logger,
     })
     adapters.push(wechat)
