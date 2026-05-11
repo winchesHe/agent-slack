@@ -48,6 +48,7 @@
     "ai": "^4.0.0",
     "commander": "^14.0.3",
     "consola": "^3.2.0",
+    "croner": "^10.0.1",
     "dotenv": "^16.4.0",
     "gray-matter": "^4.0.3",
     "markdown-to-slack-blocks": "^1.0.0",
