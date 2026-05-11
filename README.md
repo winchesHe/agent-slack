@@ -227,13 +227,22 @@ tasks:
       生成本周工作小结，3 个 highlight + 下周计划。
     target:
       im: wechat
-      to: filehelper
+      to: oREPLACE_WITH_PEER_MICROID@im.wechat
 ```
 
-**Wechat target 选项：**
+**Wechat target 用法：**
 
-- `to: filehelper`（推荐）：bot 自己的会话空间，不依赖 `context_token`，最稳。
-- `to: <联系人的 ilink_user_id>`（如 `oXXX...@im.wechat`）：需要那个联系人**先给 bot 发过至少一条消息**，daemon 会把 `context_token` 持久化到 `.agent-slack/wechat/context-tokens.json`（per-peer），scheduled 起跑时按 `target.to` 查最新 token。缺失则 fallback 空 token，**非 filehelper 联系人可能被服务端拒收**。
+微信服务端要求 bot 主动发消息必须带 `context_token`，这个 token 由对方上一条入站消息提供。配置流程：
+
+1. **daemon 必须先跑起来**：`agent-slack daemon start`（首次会扫码登录）。
+2. **让那位联系人先给 bot 发过至少一条消息**——daemon 会自动把 `context_token` 落盘到 `.agent-slack/wechat/context-tokens.json`（per-peer）。
+3. **把 target.to 填成那个联系人的 ilink_user_id**（形如 `oXXX...@im.wechat`）。
+
+定位 microid 的方法：
+- 自己微信账号的 ilink_user_id 在 `.agent-slack/wechat/credentials.json` 的 `userId` 字段（用来推到 bot ↔ 自己的私聊）。
+- 其他联系人的 microid 在 daemon 收到 ta 的入站消息后写到 `context-tokens.json`，直接 `cat` 查看。
+
+若 store 未命中 `target.to`，scheduled 路径会抛 `MissingContextTokenError`，jsonl 写 `failed` 行，错误信息会指引你去补入站消息。
 
 **其他已知限制（首版）：**
 

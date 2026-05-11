@@ -3,7 +3,7 @@
 // 行为：
 // - 启动时一次性加载（不存在或损坏 → 空 store，daemon 仍能起）
 // - 入站消息处理时调 save(peerUserId, token) → 内存立即生效 + 异步落盘（原子 write+rename）
-// - scheduled 路径起跑时调 get(peerUserId) → 缺失返回 undefined，调用方 fallback ''（filehelper 仍可用）
+// - scheduled 路径起跑时调 get(peerUserId) → 缺失返回 undefined，调用方应抛 MissingContextTokenError
 // - 同进程内按"全文件锁链"串行化 save，避免半截 JSON
 
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'

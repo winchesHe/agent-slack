@@ -56,7 +56,8 @@ tasks:
       生成本周工作小结，3 个 highlight + 下周计划。
     target:
       im: wechat
-      to: filehelper
+      # 必须是 daemon 已经收过该联系人入站消息、且 token 已落盘到 .agent-slack/wechat/context-tokens.json 的 microid
+      to: oXXX...@im.wechat
 ```
 
 启动 daemon 后到点自动跑；想立刻跑一次：
@@ -214,9 +215,9 @@ tasks:
     target:
       im: slack
       channelId: C0123456789
-      # im=wechat 改为以下两行（删掉 channelId 行）：
+      # im=wechat 改为以下两行（删掉 channelId 行）；to 必须先有入站消息把 token 落盘
       # im: wechat
-      # to: filehelper
+      # to: oREPLACE_WITH_PEER_MICROID@im.wechat
 ```
 
 模板按 AGENTS.md §Env/Config 模板源规则提供"启用最少步骤"引导：顶层 `enabled: false` + 单条 `enabled: false`，注释说明改 true 即启用，并给出 wechat target 切换的注释行。
@@ -457,25 +458,28 @@ CLI 与 daemon 互不感知；同一时刻撞上偶发会发两条，按已确�
 - toolsBuilder 在 `imContext.confirm` 不存在时跳过挂载 confirm tool（`src/application/createApplication.ts:111`）。
 - 因此定时任务不携带 confirmSender 是与现有类型/装配兼容的"自然降级"，无需改类型。
 
-### 6.4 ⚠️ Wechat `context_token` 风险（已知未验证项）
+### 6.4 Wechat `context_token` 持久化（一期落地版）
 
-**问题**：`WechatApi.sendText(to, text, contextToken)` 总是把 `context_token` 字段塞进请求体（`src/im/wechat/WechatApi.ts:90`）。当前实现里 `contextToken` 来自对方上一条入站消息，缓存在 `runLongPollLoop` 的闭包 `contextTokens` Map 中（`WechatAdapter.ts:173`）。
+**问题**：`WechatApi.sendText(to, text, contextToken)` 总是把 `context_token` 字段塞进请求体（`src/im/wechat/WechatApi.ts:90`）。服务端要求 bot 主动发消息必须带新鲜 token，否则拒收（实测：`filehelper` 也不接受空 token，没有任何"兜底联系人"可以省掉这一步）。
 
-定时任务**没有对方入站消息**作上下文锚——`contextToken` 必然为空字符串 `''`。能否成功投递取决于服务端实现，已知信息不足以在 spec 阶段断言。
+**实施决策**：
 
-**一期决策**：
-- 仍以 `contextToken: ''` 调 `sendText`，先发再说。
-- `filehelper`（微信文件助手特殊账号）按经验对 `context_token` 不敏感，预期可用——但 spec 不在此处保证。
-- **强制要求**：实现完成后必须有一次 `filehelper` 实发 E2E 验证（手动），才认为 wechat target 可用；非 filehelper 联系人作为**未支持**写进 README，等真实测过再放开。
-- 若 `sendText` 在空 token 下被服务端拒绝（错误码 / 体），由现有错误处理路径（runner catch + history failed）兜底，不需要新增 fallback。
-
-**长期方案（已在 Slice A-D 提前落地）**：
+contextToken 持久化是 wechat scheduled 路径的**唯一支持模式**：
 
 - 新增 `src/im/wechat/ContextTokenStore.ts`：per-peer userId → token 落盘到 `.agent-slack/wechat/context-tokens.json`（原子 write+rename）。
 - `WechatAdapter.processMessage` 入站时 fire-and-forget `store.save(fromUserId, token)`。
-- `runScheduledWechatSession` 起跑时按 `target.to` 查 store；命中 → 真实 token；未命中 → fallback `''`（filehelper 仍可用）。
+- `runScheduledWechatSession` 起跑时按 `target.to` 查 store；
+  - 命中 → 真实 token，正常 sendText；
+  - **未命中 → 抛 `MissingContextTokenError`**（runner catch 写 history failed，错误信息提示用户去补入站消息）。
 - `createApplication` 在 wechat 启用时 `await createContextTokenStore(paths.wechatContextTokensFile)`，注入 adapter 与 scheduledHook 闭包。
-- 行为契约：那个联系人**至少先给 bot 发过一条入站消息**，scheduled 才能稳定推过去；否则按经验只有 filehelper 能跑通。
+
+**行为契约（写入 README）**：
+
+那个联系人**至少先给 bot 发过一条入站消息**，scheduled 才能稳定推过去。否则 schedule 命中时 history failed，错误信息指引用户去做"让对方先发一条消息"这件事。
+
+`target.to` 也可以填**bot 自己绑定微信账号的 ilink_user_id**（在 `credentials.json` 的 `userId` 字段，用于推到 bot ↔ 管理员私聊）——同样需要先用那个账号给 bot 发过一条消息让 store 落盘。
+
+**v1 spec 里曾考虑过的 `filehelper` 兜底路径已删除**（实测同样需要 contextToken，没有特殊性）。
 
 ### 6.5 daemon 关停语义
 
@@ -517,7 +521,7 @@ CLI 与 daemon 互不感知；同一时刻撞上偶发会发两条，按已确�
 ### 7.6 Live E2E
 
 - **Slack**：建议加 `src/e2e/live/run-scheduled-task-slack.ts`，发到指定测试频道，肉眼验消息发出。非强制（按 AGENTS.md 仅 Slack 交互/UI 变更必须）。
-- **Wechat（必做）**：加 `src/e2e/live/run-scheduled-task-wechat.ts`，target 设为 `filehelper`，验证空 contextToken 发送链路真的通——这是 §6.4 标识的未验证风险点，spec 强制要求一期上线前手动跑一次。
+- **Wechat（必做）**：加 `src/e2e/live/run-scheduled-task-wechat.ts`。验证流程：daemon 起 → 那位联系人给 bot 发一条入站消息（store 落盘 token）→ 配 yaml `target.to = 那位 microid` → CLI run → 看私聊里收到消息。spec §6.4 一期落地后已实测通过。
 
 ## 8. 依赖与库选择
 
@@ -530,7 +534,7 @@ CLI 与 daemon 互不感知；同一时刻撞上偶发会发两条，按已确�
 ## 9. 文档与上游联动
 
 - 本 spec：`docs/superpowers/specs/2026-05-10-scheduled-tasks-design.md`
-- README 加一节 "Scheduled Tasks"，给最简启用步骤；同节明确 wechat 目标当前仅 `filehelper` 验证过。
+- README 加一节 "Scheduled Tasks"，给最简启用步骤；同节明确 wechat 目标必须先建立 contextToken 缓存（让对方先给 bot 发过一条消息）。
 - `docs/superpowers/specs/2026-04-17-agent-slack-architecture-design.md` 在"模块组成"段落补一条 `scheduledTasks` 模块引用。
 
 ## 10. 已知风险与权衡
@@ -543,5 +547,5 @@ CLI 与 daemon 互不感知；同一时刻撞上偶发会发两条，按已确�
 | 单目标而非 fan-out | schema 干净，复杂度低；多处需要复制任务 |
 | 各 IM 各自的 `runScheduled<IM>Session` 纯函数 | 形参/依赖各异，强行统一一个 IMAdapter 方法会让形参变 union 或 unknown；保持各自具名类型 |
 | daemon SIGTERM 不 graceful drain | LLM 调用可长达数十秒；阻塞退出更糟。已在 history 中以"started 无终态"显式可观察 |
-| `contextToken: ''` 走 wechat sendText | spec 阶段无法断言，强制 E2E filehelper 验证；非 filehelper 暂列未支持 |
+| wechat scheduled 强制 contextToken（未命中即 failed） | 服务端不接受空 token，没有兜底联系人；明确报错比静默失败更好。代价：用户首次配置需要先建立入站消息 |
 | jsonl 单文件不滚动 | 体积可控（每天最多几十次跑）；按天滚是后续可加的优化 |

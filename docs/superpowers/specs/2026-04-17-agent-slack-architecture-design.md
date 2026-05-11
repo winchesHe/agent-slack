@@ -799,7 +799,7 @@ src/agents/
 - 复用 inbound 路径的 sink 构造与 `orchestrator.handle()`；定时任务不参与 `runQueue`。
 - daemon 模式由 `scheduler`（croner-based）触发；CLI `agent-slack scheduled-tasks run <id>` 走同一个 runner（独立进程，trigger='manual'）。
 - jsonl 历史落到 `.agent-slack/logs/scheduled-tasks.jsonl`，与 daemon 共享。
-- 一期 wechat 仅支持 `filehelper`（`context_token` 风险，spec §6.4）。
+- wechat scheduled 路径要求 `target.to` 必须在 `.agent-slack/wechat/context-tokens.json` 命中（per-peer token 由 daemon 入站时自动落盘）；未命中即 history failed（spec §6.4）。
 
 ---
 

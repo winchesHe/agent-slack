@@ -31,7 +31,7 @@ function wechatRule(overrides: Partial<ScheduledTaskRule> = {}): ScheduledTaskRu
     enabled: true,
     cron: '0 9 * * *',
     prompt: 'hi',
-    target: { im: 'wechat', to: 'filehelper' },
+    target: { im: 'wechat', to: 'oABC@im.wechat' },
     ...overrides,
   } as ScheduledTaskRule
 }
@@ -79,7 +79,7 @@ describe('runner.runOnce', () => {
     await runner.runOnce(wechatRule(), 'cron')
     expect(wechatHook.run).toHaveBeenCalledWith({
       taskId: 'w1',
-      to: 'filehelper',
+      to: 'oABC@im.wechat',
       prompt: 'hi',
     })
     expect(slackHook.run).not.toHaveBeenCalled()
@@ -177,6 +177,6 @@ describe('runner.runOnce', () => {
     expect(history.records[0]!.target).toEqual({ im: 'slack', channelId: 'C0123456789' })
     history.records.length = 0
     await runner.runOnce(wechatRule(), 'cron')
-    expect(history.records[0]!.target).toEqual({ im: 'wechat', to: 'filehelper' })
+    expect(history.records[0]!.target).toEqual({ im: 'wechat', to: 'oABC@im.wechat' })
   })
 })

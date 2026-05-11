@@ -156,6 +156,7 @@ describe('createWechatAdapter.start', () => {
       abortRegistry: {} as never,
       rendererFactory: () => ({}) as never,
       logger: stubLogger(),
+      contextTokenStore: { get: () => undefined, save: async () => {} },
     })
     await adapter.start()
     expect(api.setToken).toHaveBeenCalledWith('tok-saved')
@@ -182,6 +183,7 @@ describe('createWechatAdapter.start', () => {
       abortRegistry: {} as never,
       rendererFactory: () => ({}) as never,
       logger: stubLogger(),
+      contextTokenStore: { get: () => undefined, save: async () => {} },
     })
     await expect(adapter.start()).rejects.toThrow(/扫码登录/)
   }, 30000)
@@ -200,10 +202,16 @@ describe('processMessage', () => {
     getConfig: vi.fn(),
   })
 
+  const stubContextTokenStore = () => ({
+    get: vi.fn(() => undefined),
+    save: vi.fn(async () => {}),
+  })
+
   const baseDeps = (
     api = stubApi(),
     orch = stubOrchestrator(),
     rendererFactory = () => ({ onEvent: () => {}, flush: () => [], STARTING_MESSAGE: '...' }),
+    contextTokenStore = stubContextTokenStore(),
   ): never =>
     ({
       api,
@@ -215,6 +223,7 @@ describe('processMessage', () => {
       abortRegistry: {},
       rendererFactory,
       logger: stubLogger(),
+      contextTokenStore,
     }) as never
 
   it('文本消息 → 调 orchestrator.handle，sendText 不被调（除非 sink finalize）', async () => {
@@ -325,15 +334,12 @@ describe('processMessage', () => {
     expect(orch.handle.mock.calls.length).toBe(1)
   })
 
-  it('注入 contextTokenStore：入站时 store.save 被调用（spec §6.4 长期方案）', async () => {
+  it('入站时 contextTokenStore.save 被调用（per-peer 持久化，spec §6.4）', async () => {
     const api = stubApi()
     const orch = stubOrchestrator()
     const save = vi.fn(async () => undefined)
     const store = { get: vi.fn(() => undefined), save }
-    const deps = {
-      ...(baseDeps(api, orch) as unknown as Record<string, unknown>),
-      contextTokenStore: store,
-    } as never
+    const deps = baseDeps(api, orch, undefined, store)
     await _processMessage(
       deps,
       {
@@ -349,27 +355,6 @@ describe('processMessage', () => {
     )
     await new Promise((r) => setTimeout(r, 10))
     expect(save).toHaveBeenCalledWith('uA', 'persist-this')
-  })
-
-  it('未注入 contextTokenStore：行为退化为纯内存（不抛、不阻塞）', async () => {
-    const api = stubApi()
-    const orch = stubOrchestrator()
-    const deps = baseDeps(api, orch)
-    await _processMessage(
-      deps,
-      {
-        message_type: 1,
-        message_id: 'm-no-store',
-        from_user_id: 'uA',
-        to_user_id: 'b',
-        context_token: 'ctx',
-        item_list: [{ type: 1, text_item: { text: 'hi' } }],
-      } as never,
-      new Map(),
-      new Map(),
-    )
-    await new Promise((r) => setTimeout(r, 10))
-    expect(orch.handle).toHaveBeenCalledOnce()
   })
 
   it('contextToken 在解析前更新（媒体消息也能拿到 token 发提示）', async () => {

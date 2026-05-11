@@ -209,7 +209,9 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
       cdnBaseUrl: ctx.config.im.wechat.cdnBaseUrl,
     })
     // spec §6.4：per-peer context_token 持久化 store。
-    // 入站路径写入；scheduled 路径起跑时按 target.to 查最新 token，让非 filehelper 联系人也能被定时推送。
+    // 入站路径写入；scheduled 路径起跑时按 target.to 查最新 token——
+    // 拿不到就抛 MissingContextTokenError（runner 写 history failed），
+    // 让用户知道"该联系人需要先给 bot 发过一条入站消息"才能被定时推送。
     const contextTokenStore = await createContextTokenStore(ctx.paths.wechatContextTokensFile)
     wechatHandle = createWechatAdapter({
       api: wechatApi,

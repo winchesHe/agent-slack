@@ -30,11 +30,10 @@ export interface WechatAdapterDeps {
   rendererFactory: () => WechatRenderer
   logger: Logger
   /**
-   * 可选 per-peer context_token 持久化 store（spec §6.4 长期方案）：
-   * inbound 路径写入；scheduled 路径读取以支持非 filehelper 联系人。
-   * 未注入时退化为旧行为（仅内存缓存当前进程的 token，重启即失）。
+   * per-peer context_token 持久化 store。
+   * inbound 路径写入；scheduled 路径读取——拿不到 token 就不能给对方发消息（spec §6.4）。
    */
-  contextTokenStore?: ContextTokenStore
+  contextTokenStore: ContextTokenStore
 }
 
 const QR_LOGIN_TIMEOUT_MS = 480_000
@@ -128,7 +127,7 @@ export function createWechatAdapter(deps: WechatAdapterDeps): WechatAdapterHandl
           orchestrator: deps.orchestrator,
           rendererFactory: deps.rendererFactory,
           logger: deps.logger,
-          ...(deps.contextTokenStore ? { contextTokenStore: deps.contextTokenStore } : {}),
+          contextTokenStore: deps.contextTokenStore,
         },
       })
     },
@@ -341,11 +340,9 @@ async function processMessage(
   //    内存 Map 立即生效；store 异步落盘（fire-and-forget，失败仅 warn，不阻塞消息处理）
   if (raw.context_token) {
     contextTokens.set(fromUserId, raw.context_token)
-    if (deps.contextTokenStore) {
-      void deps.contextTokenStore
-        .save(fromUserId, raw.context_token)
-        .catch((err) => log.warn('contextTokenStore.save 失败（忽略）', { err, fromUserId }))
-    }
+    void deps.contextTokenStore
+      .save(fromUserId, raw.context_token)
+      .catch((err) => log.warn('contextTokenStore.save 失败（忽略）', { err, fromUserId }))
   }
   const contextToken = contextTokens.get(fromUserId) ?? ''
 
@@ -410,7 +407,7 @@ export interface RunWechatSessionArgs {
   rendererFactory: () => WechatRenderer
   orchestrator: ConversationOrchestrator
   logger: Logger
-  /** scheduled 模式无对方入站消息可锚，传 ''（spec §6.4 风险条目，filehelper 可用） */
+  /** sendText 的 context_token：inbound 路径从对方入站消息取；scheduled 路径从 ContextTokenStore 查（spec §6.4） */
   contextToken: string
 }
 

@@ -159,7 +159,7 @@ describe('runScheduledTaskCli', () => {
         '    prompt: hi',
         '    target:',
         '      im: wechat',
-        '      to: filehelper',
+        '      to: oABC@im.wechat',
       ].join('\n'),
     )
     try {
@@ -213,7 +213,7 @@ describe('runScheduledTaskCli', () => {
         '    prompt: hi',
         '    target:',
         '      im: wechat',
-        '      to: filehelper',
+        '      to: oABC@im.wechat',
       ].join('\n'),
     )
     const { MissingWechatCredentialsError } = await import('@/im/wechat/WechatAdapter.ts')
@@ -241,7 +241,7 @@ describe('runScheduledTaskCli', () => {
         '    prompt: hi',
         '    target:',
         '      im: wechat',
-        '      to: filehelper',
+        '      to: oABC@im.wechat',
       ].join('\n'),
     )
     try {

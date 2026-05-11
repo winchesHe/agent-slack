@@ -579,7 +579,7 @@ describe('createApplication', () => {
         '    prompt: hi',
         '    target:',
         '      im: wechat',
-        '      to: filehelper',
+        '      to: oABC@im.wechat',
       ].join('\n'),
     )
     try {

@@ -40,11 +40,11 @@ describe('parseScheduledTasksConfig: 合法解析', () => {
           id: 'weekly-report',
           cron: '0 17 * * 5',
           prompt: '本周小结。',
-          target: { im: 'wechat', to: 'filehelper' },
+          target: { im: 'wechat', to: 'oABC@im.wechat' },
         },
       ],
     })
-    expect(cfg.tasks[0]!.target).toEqual({ im: 'wechat', to: 'filehelper' })
+    expect(cfg.tasks[0]!.target).toEqual({ im: 'wechat', to: 'oABC@im.wechat' })
   })
 
   it('defaults: version=1 / enabled=false / tasks=[]', () => {
@@ -234,7 +234,7 @@ describe('IM 启用交叉校验（spec §4.3）', () => {
             id: 'a',
             cron: '0 9 * * *',
             prompt: 'p',
-            target: { im: 'wechat', to: 'filehelper' },
+            target: { im: 'wechat', to: 'oABC@im.wechat' },
           },
         ],
       }),

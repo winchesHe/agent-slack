@@ -2,12 +2,16 @@
 //
 // daemon 模式 / CLI 模式都调它：
 // - daemon 通过 WechatAdapterHandle.scheduledHook.run 绑定已 setToken 的 WechatApi；
-// - CLI 自己 loadCredentialsOnly + setToken + 直接调本函数。
+// - CLI 自己 prepareForManualRun（loadCredentialsOnly + setToken）后直接调本函数。
 //
-// 流程（spec §5.2 Wechat 路径 + §6.4 风险条目）：
+// 流程（spec §5.2 / §6.4）：
 // 1. 构造 InboundMessage：channelId/channelName/threadTs/userId/userName 全 = to（单聊语义）；userName='scheduler'；
 //    messageTs 由 nowMs 生成（默认 Date.now()），确定性可注入。
-// 2. contextToken: '' —— 定时任务无对方入站消息可锚（filehelper 验证可用，非 filehelper 暂不支持）。
+// 2. 从 ContextTokenStore 按 to 查 context_token——
+//    **微信服务端要求 bot 主动发消息必须带 context_token，由对方上一条入站消息提供**。
+//    未命中 → 抛 MissingContextTokenError（runner catch 写 history failed）。
+//    解决办法：让那位联系人先给 bot 发一条入站消息，daemon 会自动把 token 落盘到
+//    .agent-slack/wechat/context-tokens.json，再跑定时任务即可命中。
 // 3. 调 runWechatSession（与 inbound 共享 sink 构造）。
 
 import type { Logger } from '@/logger/logger.ts'
@@ -16,6 +20,16 @@ import type { WechatApi } from './WechatApi.ts'
 import type { WechatRenderer } from './WechatRenderer.ts'
 import type { ContextTokenStore } from './ContextTokenStore.ts'
 import { runWechatSession } from './WechatAdapter.ts'
+
+export class MissingContextTokenError extends Error {
+  constructor(peerUserId: string) {
+    super(
+      `没有找到 ${peerUserId} 的 context_token；` +
+        `先让该联系人给 bot 发一条入站消息（daemon 会自动落盘 token），再跑定时任务。`,
+    )
+    this.name = 'MissingContextTokenError'
+  }
+}
 
 export interface RunScheduledWechatArgs {
   taskId: string
@@ -27,11 +41,10 @@ export interface RunScheduledWechatArgs {
     rendererFactory: () => WechatRenderer
     logger: Logger
     /**
-     * 可选 contextToken 持久化 store（spec §6.4 长期方案）：
-     * 入站路径写入；scheduled 起跑时按 target.to 查最新 token，
-     * 让非 filehelper 联系人也能被定时推送。缺失则 fallback ''（filehelper 仍可用）。
+     * per-peer context_token store。必填——拿不到 token 就直接 throw，
+     * 由 runner catch 后写 history failed（spec §6.4：微信服务端要求 bot 主动发消息必须带 token）。
      */
-    contextTokenStore?: ContextTokenStore
+    contextTokenStore: ContextTokenStore
     /** 注入用以保证 messageTs 确定性（默认 Date.now） */
     nowMs?: () => number
   }
@@ -40,7 +53,10 @@ export interface RunScheduledWechatArgs {
 export async function runScheduledWechatSession(args: RunScheduledWechatArgs): Promise<void> {
   const now = args.deps.nowMs?.() ?? Date.now()
   const messageTs = `scheduled-${args.taskId}-${now}`
-  const contextToken = args.deps.contextTokenStore?.get(args.to) ?? ''
+  const contextToken = args.deps.contextTokenStore.get(args.to)
+  if (!contextToken) {
+    throw new MissingContextTokenError(args.to)
+  }
 
   await runWechatSession({
     inbound: {
@@ -58,7 +74,6 @@ export async function runScheduledWechatSession(args: RunScheduledWechatArgs): P
     rendererFactory: args.deps.rendererFactory,
     orchestrator: args.deps.orchestrator,
     logger: args.deps.logger,
-    // spec §6.4：filehelper 对 contextToken 不敏感；其他联系人需要 store 命中的真实 token
     contextToken,
   })
 }
