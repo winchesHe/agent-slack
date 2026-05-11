@@ -128,6 +128,7 @@ export function createWechatAdapter(deps: WechatAdapterDeps): WechatAdapterHandl
           orchestrator: deps.orchestrator,
           rendererFactory: deps.rendererFactory,
           logger: deps.logger,
+          ...(deps.contextTokenStore ? { contextTokenStore: deps.contextTokenStore } : {}),
         },
       })
     },

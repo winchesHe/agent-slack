@@ -14,6 +14,7 @@ import type { Logger } from '@/logger/logger.ts'
 import type { ConversationOrchestrator } from '@/orchestrator/ConversationOrchestrator.ts'
 import type { WechatApi } from './WechatApi.ts'
 import type { WechatRenderer } from './WechatRenderer.ts'
+import type { ContextTokenStore } from './ContextTokenStore.ts'
 import { runWechatSession } from './WechatAdapter.ts'
 
 export interface RunScheduledWechatArgs {
@@ -25,6 +26,12 @@ export interface RunScheduledWechatArgs {
     orchestrator: ConversationOrchestrator
     rendererFactory: () => WechatRenderer
     logger: Logger
+    /**
+     * 可选 contextToken 持久化 store（spec §6.4 长期方案）：
+     * 入站路径写入；scheduled 起跑时按 target.to 查最新 token，
+     * 让非 filehelper 联系人也能被定时推送。缺失则 fallback ''（filehelper 仍可用）。
+     */
+    contextTokenStore?: ContextTokenStore
     /** 注入用以保证 messageTs 确定性（默认 Date.now） */
     nowMs?: () => number
   }
@@ -33,6 +40,7 @@ export interface RunScheduledWechatArgs {
 export async function runScheduledWechatSession(args: RunScheduledWechatArgs): Promise<void> {
   const now = args.deps.nowMs?.() ?? Date.now()
   const messageTs = `scheduled-${args.taskId}-${now}`
+  const contextToken = args.deps.contextTokenStore?.get(args.to) ?? ''
 
   await runWechatSession({
     inbound: {
@@ -50,7 +58,7 @@ export async function runScheduledWechatSession(args: RunScheduledWechatArgs): P
     rendererFactory: args.deps.rendererFactory,
     orchestrator: args.deps.orchestrator,
     logger: args.deps.logger,
-    // spec §6.4：定时任务无入站消息上下文，contextToken 必然为空；filehelper 经验可用。
-    contextToken: '',
+    // spec §6.4：filehelper 对 contextToken 不敏感；其他联系人需要 store 命中的真实 token
+    contextToken,
   })
 }

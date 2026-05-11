@@ -22,6 +22,7 @@ import { createSlackConfirm } from '@/im/slack/SlackConfirm.ts'
 import { createConfirmBridge } from '@/im/slack/ConfirmBridge.ts'
 import { WechatApi } from '@/im/wechat/WechatApi.ts'
 import { createCredentialsStore } from '@/im/wechat/CredentialsStore.ts'
+import { createContextTokenStore } from '@/im/wechat/ContextTokenStore.ts'
 import { createWechatRenderer } from '@/im/wechat/WechatRenderer.ts'
 import { createWechatAdapter } from '@/im/wechat/WechatAdapter.ts'
 import { createSelfImproveCollector } from '@/agents/selfImprove/collectorAgent.ts'
@@ -207,6 +208,9 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
       baseUrl: ctx.config.im.wechat.baseUrl,
       cdnBaseUrl: ctx.config.im.wechat.cdnBaseUrl,
     })
+    // spec §6.4：per-peer context_token 持久化 store。
+    // 入站路径写入；scheduled 路径起跑时按 target.to 查最新 token，让非 filehelper 联系人也能被定时推送。
+    const contextTokenStore = await createContextTokenStore(ctx.paths.wechatContextTokensFile)
     wechatHandle = createWechatAdapter({
       api: wechatApi,
       credentialsStore: createCredentialsStore(),
@@ -217,6 +221,7 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
       abortRegistry,
       rendererFactory: () => createWechatRenderer({ logger }),
       logger,
+      contextTokenStore,
     })
     adapters.push(wechatHandle.adapter)
   }

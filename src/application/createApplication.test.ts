@@ -65,6 +65,7 @@ const mocks = vi.hoisted(() => {
     globalConfig: '/mock-home/.agent-slack/global.yaml',
     wechatDir: '/mock-workspace/.agent-slack/wechat',
     wechatCredentialsFile: '/mock-workspace/.agent-slack/wechat/credentials.json',
+    wechatContextTokensFile: '/mock-workspace/.agent-slack/wechat/context-tokens.json',
     cwd: '/mock-workspace',
   }
 
