@@ -11,7 +11,7 @@ agent-slack 已有两个 IM 适配器：
 - **Slack**：双向，承载 inbound（@bot / DM）+ scheduled tasks + channelTasks。
 - **Wechat**：双向，但 [scheduled tasks 设计 §6.4](2026-05-10-wechat-im-adapter-design.md) 决定的 contextToken 长期方案要求**对端先发入站消息**才能拿到 fresh token；服务端 token TTL 实测 ~17 小时即失效，导致**纯无人值守的定时任务不可持续**。
 
-用户的 4 条 scheduled tasks（self-chat / twitter-stock-dyn / aihot-virxact-3x / repo-pull-daily）都是定时主动推送。本期通过引入 Telegram 适配（outbound-only）解决 wechat 的不可持续问题。
+用户的 4 条 scheduled tasks（self-chat / twitter-stock-dyn / aihot / repo-pull-daily）都是定时主动推送。本期通过引入 Telegram 适配（outbound-only）解决 wechat 的不可持续问题。
 
 ### 目标
 

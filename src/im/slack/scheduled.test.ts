@@ -42,7 +42,7 @@ describe('runScheduledSlackSession', () => {
     expect(web.chat.postMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         channel: 'C0123456789',
-        text: expect.stringContaining('daily-standup'),
+        text: expect.stringContaining('战略级抓手 · aihot-咨询'),
       }),
     )
 

@@ -31,7 +31,7 @@ export interface RunScheduledSlackArgs {
 export async function runScheduledSlackSession(args: RunScheduledSlackArgs): Promise<void> {
   const root = (await args.web.chat.postMessage({
     channel: args.channelId,
-    text: `[定时任务: ${args.taskId}] 启动…`,
+    text: `🎯 【战略级抓手 · aihot-咨询】对齐中，赋能即将下发...`,
   })) as { ok?: boolean; ts?: string }
 
   if (!root.ok || !root.ts) {
