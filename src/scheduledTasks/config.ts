@@ -22,7 +22,17 @@ const WechatTargetSchema = z.object({
   to: z.string().min(1),
 })
 
-const TargetSchema = z.discriminatedUnion('im', [SlackTargetSchema, WechatTargetSchema])
+const TelegramTargetSchema = z.object({
+  im: z.literal('telegram'),
+  // chat_id 字符串形式（私聊为正整数；group/channel 为负整数；channel 也可用 @username 但本期只测过私聊）
+  to: z.string().min(1),
+})
+
+const TargetSchema = z.discriminatedUnion('im', [
+  SlackTargetSchema,
+  WechatTargetSchema,
+  TelegramTargetSchema,
+])
 
 export const ScheduledTaskRuleSchema = z.object({
   id: idSchema,

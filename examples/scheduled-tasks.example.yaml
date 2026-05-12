@@ -38,3 +38,26 @@ tasks:
     target:
       im: wechat
       to: oREPLACE_WITH_PEER_MICROID@im.wechat
+
+  - id: telegram-daily
+    enabled: false   # 启用：改为 true
+    description: |
+      示例：每日 9 点发到 Telegram 私聊（outbound-only，bot 不接收消息）。
+      启用前请按以下 5 步：
+        1. 找 @BotFather /newbot 创建 bot，拿到 token
+        2. **打开你创建的 bot 私聊，发一条 /start**
+           （bot API 不允许给从未交互的用户发消息；group/channel 则需把 bot 加为成员，
+           channel 还需 administrator + post messages 权限）
+        3. 浏览器开 https://api.telegram.org/bot<TOKEN>/getUpdates
+           从 result[0].message.chat.id 拿 chat_id
+           （私聊为正整数；group/channel 为负数；本期只测过私聊）
+           - 如果 result 是 [] 回去补做第 2 步并稍等几秒
+           - 如果返回 409，说明你给同 bot 设过 webhook，先 deleteWebhook 再来
+        4. .env.local 加 TELEGRAM_BOT_TOKEN=...；config.yaml im.enabled 加 telegram
+        5. 把下面 target.to 改成你的 chat_id，重启 daemon
+    cron: '0 9 * * *'
+    prompt: |
+      用一句话提醒今日重点工作。
+    target:
+      im: telegram
+      to: '123456789'   # 数字 chat_id 字符串形式

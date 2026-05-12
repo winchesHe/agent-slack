@@ -47,7 +47,7 @@ export const ConfigSchema = z.object({
   skills: z.object({ enabled: z.array(z.string()).default(['*']) }).default({}),
   im: z
     .object({
-      enabled: z.array(z.enum(['slack', 'wechat'])).min(1).default(['slack']),
+      enabled: z.array(z.enum(['slack', 'wechat', 'telegram'])).min(1).default(['slack']),
       slack: z.object({ resolveChannelName: z.boolean().default(true) }).default({}),
       wechat: z
         .object({

@@ -1,4 +1,4 @@
-export type ImProvider = 'slack' | 'wechat'
+export type ImProvider = 'slack' | 'wechat' | 'telegram'
 
 export interface IMAdapter {
   readonly id: ImProvider

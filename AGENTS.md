@@ -17,6 +17,16 @@
 - 任务执行默认按 chunk 执行，执行完后给出测试建议让用户 review，不要直接提交代码，等用户确认后，再提交代码和执行下一步。
 - 生成的代码需要中文注释。
 
+## Telegram 出站约束（含 scheduled tasks）
+
+- Telegram 适配是 **outbound-only**：bot 不接收用户消息、不实现 ConfirmSender、不响应 commands。承载 scheduled tasks 是它的唯一定位。
+- `target.to` 必须是**数字 chat_id 字符串形式**（私聊正整数；group/channel 负整数；本期只测过私聊）。不支持 `@username` 形式。
+- 推送前对端必须**先给 bot 发过 /start**（Telegram bot API 限制：不能给从未交互的用户发消息）；group / channel 需把 bot 加为成员，channel 还需 administrator + post messages 权限。
+- 长报告按 4000 字符自动分片，5-10 条连发是预期行为；段间 800ms sleep（per-chat 限流 1 msg/sec + 200ms buffer）。
+- HTML parse_mode 失败（如 `can't parse entities`）会自动降级 plain text 重发同一段；plain text 再失败才 history failed。
+- bot token 走 `.env.local` 的 `TELEGRAM_BOT_TOKEN`，不要 commit；token 长期有效，无需 refresh / TTL 概念。
+- daemon 启动期 `getMe` 仅探活，失败 warn 不阻塞 slack/wechat。
+
 ## Code Standards
 
 - 包管理 `pnpm`；禁用 `npm` / `yarn`。

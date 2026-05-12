@@ -14,7 +14,10 @@ export interface WechatRenderer {
   readonly STARTING_MESSAGE: string
 }
 
-const TEXT_CHUNK_LIMIT = 4000
+// 腾讯 ilink 服务端单条 sendText 实测上限远小于 4000：
+// 2026-05-12 实测 2901 字符的 markdown 表格被服务端静默丢弃（HTTP 200 + errcode）。
+// 1500 是保守值，给 markdown 表格 + 中文混排留余量；如未来仍命中限制可再降。
+const TEXT_CHUNK_LIMIT = 1500
 const STARTING_MESSAGE = '开始处理...'
 
 export function createWechatRenderer(deps: WechatRendererDeps): WechatRenderer {

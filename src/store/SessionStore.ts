@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import type { CoreMessage } from 'ai'
 import type { WorkspacePaths } from '@/workspace/paths.ts'
-import { slackSessionDir, wechatSessionDir } from '@/workspace/paths.ts'
+import { slackSessionDir, telegramSessionDir, wechatSessionDir } from '@/workspace/paths.ts'
 import type { ImProvider } from '@/im/IMAdapter.ts'
 
 // 原 core/usage.ts 的 StepUsage 已内联至此，作为 accumulateUsage 的参数类型。
@@ -274,6 +274,9 @@ export function createSessionStore(paths: WorkspacePaths): SessionStore {
         }
         // wechat: 单聊语义，channelName=userName, imUserId=userId
         return wechatSessionDir(paths, args.channelName, args.imUserId)
+      case 'telegram':
+        // telegram outbound-only：channelId 即 chat_id，per-chat 单会话
+        return telegramSessionDir(paths, args.channelId)
       default: {
         const _exhaustive: never = imProvider
         throw new Error(`未知 imProvider: ${String(_exhaustive)}`)

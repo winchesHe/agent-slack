@@ -93,3 +93,11 @@ export function wechatSessionDir(
   const safe = sanitizeFsSegment(userName)
   return path.join(paths.sessionsDir, 'wechat', `${safe}.${userId}`)
 }
+
+/**
+ * Telegram per-chat 会话目录。outbound-only 场景下 channelId/threadTs/channelName 都等同 chatId。
+ */
+export function telegramSessionDir(paths: WorkspacePaths, chatId: string): string {
+  const safe = sanitizeFsSegment(chatId)
+  return path.join(paths.sessionsDir, 'telegram', safe)
+}

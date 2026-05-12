@@ -1,6 +1,7 @@
 import type { IMAdapter } from '@/im/IMAdapter.ts'
 import type { AbortRegistry } from '@/orchestrator/AbortRegistry.ts'
 import type { WechatAdapterHandle } from '@/im/wechat/WechatAdapter.ts'
+import type { TelegramAdapterHandle } from '@/im/telegram/TelegramAdapter.ts'
 import type {
   ScheduledTaskRunner,
   ScheduledTaskScheduler,
@@ -25,4 +26,9 @@ export interface Application {
    * （loadCredentialsOnly + setToken），daemon 模式下 scheduler 走 adapter.start() 自动完成 setToken。
    */
   wechatHandle?: WechatAdapterHandle
+  /**
+   * 仅 im.enabled 含 'telegram' 时构造；outbound-only，无 preflight 需求。
+   * 暴露 handle 主要给测试 / 调试用；CLI 与 daemon 都走 runner.runOnce 路径。
+   */
+  telegramHandle?: TelegramAdapterHandle
 }

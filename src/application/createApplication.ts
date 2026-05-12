@@ -25,6 +25,9 @@ import { createCredentialsStore } from '@/im/wechat/CredentialsStore.ts'
 import { createContextTokenStore } from '@/im/wechat/ContextTokenStore.ts'
 import { createWechatRenderer } from '@/im/wechat/WechatRenderer.ts'
 import { createWechatAdapter } from '@/im/wechat/WechatAdapter.ts'
+import { TelegramApi } from '@/im/telegram/TelegramApi.ts'
+import { createTelegramRenderer } from '@/im/telegram/TelegramRenderer.ts'
+import { createTelegramAdapter } from '@/im/telegram/TelegramAdapter.ts'
 import { createSelfImproveCollector } from '@/agents/selfImprove/collectorAgent.ts'
 import { createSelfImproveGenerator } from '@/agents/selfImprove/generatorAgent.ts'
 import { createSemanticDedup } from '@/agents/selfImprove/semanticDedupAgent.ts'
@@ -180,6 +183,7 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
   const adapters: IMAdapter[] = []
   let slackHandle: ReturnType<typeof createSlackAdapter> | undefined
   let wechatHandle: ReturnType<typeof createWechatAdapter> | undefined
+  let telegramHandle: ReturnType<typeof createTelegramAdapter> | undefined
 
   if (slackEnv) {
     const renderer = createSlackRenderer({ logger })
@@ -228,6 +232,19 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
     adapters.push(wechatHandle.adapter)
   }
 
+  if (enabled.includes('telegram')) {
+    // Telegram outbound-only：仅需 bot token；构造时一次性注入，无 setToken / 无 contextToken / 无凭证文件
+    const telegramToken = requireEnv('TELEGRAM_BOT_TOKEN')
+    const telegramApi = new TelegramApi({ token: telegramToken, logger })
+    telegramHandle = createTelegramAdapter({
+      api: telegramApi,
+      orchestrator,
+      rendererFactory: () => createTelegramRenderer({ logger }),
+      logger,
+    })
+    adapters.push(telegramHandle.adapter)
+  }
+
   if (adapters.length === 0) {
     logger.warn('警告：adapters 为空，没有 IM 在线（检查 im.enabled 配置）')
   }
@@ -253,6 +270,9 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
       ...(enabled.includes('wechat') && wechatHandle
         ? { wechatHook: wechatHandle.scheduledHook }
         : {}),
+      ...(enabled.includes('telegram') && telegramHandle
+        ? { telegramHook: telegramHandle.scheduledHook }
+        : {}),
       history: { append: (record) => appendScheduledTaskRun(stHistoryFile, record) },
       logger,
     })
@@ -273,6 +293,7 @@ export async function createApplication(args: CreateApplicationArgs): Promise<Ap
     abortRegistry,
     ...(scheduledTasks ? { scheduledTasks } : {}),
     ...(wechatHandle ? { wechatHandle } : {}),
+    ...(telegramHandle ? { telegramHandle } : {}),
     async start() {
       for (const a of adapters) await a.start()
       scheduledTasks?.scheduler?.start()

@@ -1,6 +1,7 @@
 export type ScheduledTaskTarget =
   | { im: 'slack'; channelId: string }
   | { im: 'wechat'; to: string }
+  | { im: 'telegram'; to: string }
 
 export type ScheduledTaskTrigger = 'cron' | 'manual'
 export type ScheduledTaskStatus = 'started' | 'success' | 'failed' | 'skipped'

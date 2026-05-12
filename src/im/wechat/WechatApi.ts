@@ -79,17 +79,28 @@ export class WechatApi {
   }
 
   async sendText(to: string, text: string, contextToken: string): Promise<void> {
-    await this._post('ilink/bot/sendmessage', {
-      msg: {
-        from_user_id: '',
-        to_user_id: to,
-        client_id: randomUUID().replace(/-/g, '').slice(0, 16),
-        message_type: WeixinMessageType.BOT,
-        message_state: WeixinMessageState.FINISH,
-        item_list: [{ type: WeixinItemType.TEXT, text_item: { text } }],
-        context_token: contextToken,
+    // 腾讯 ilink 服务端约定：HTTP 200 + body errcode/ret != 0 表示应用层失败（被静默拒收）。
+    // _post 只检查 HTTP 状态码，所以这里要主动检查 body 字段，否则失败会被吞掉、runner 误报 success。
+    const resp = await this._post<{ errcode?: number; ret?: number; errmsg?: string }>(
+      'ilink/bot/sendmessage',
+      {
+        msg: {
+          from_user_id: '',
+          to_user_id: to,
+          client_id: randomUUID().replace(/-/g, '').slice(0, 16),
+          message_type: WeixinMessageType.BOT,
+          message_state: WeixinMessageState.FINISH,
+          item_list: [{ type: WeixinItemType.TEXT, text_item: { text } }],
+          context_token: contextToken,
+        },
       },
-    })
+    )
+    const code = resp?.errcode ?? resp?.ret
+    if (typeof code === 'number' && code !== 0) {
+      throw new Error(
+        `sendText 服务端拒收 errcode=${code} errmsg=${resp?.errmsg ?? ''} text_len=${text.length}`,
+      )
+    }
   }
 
   /**

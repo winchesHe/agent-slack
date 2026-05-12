@@ -67,12 +67,15 @@ skills:
   enabled: ['*']
 
 im:
-  # 启用的 IM 列表（可多选）：'slack' | 'wechat'。
+  # 启用的 IM 列表（可多选）：'slack' | 'wechat' | 'telegram'。
   # 启用 wechat 后首次启动会在终端打印二维码，扫码后凭证写入
   # .agent-slack/wechat/credentials.json，重启免登。
+  # 启用 telegram 前需先在 .env.local export TELEGRAM_BOT_TOKEN=xxxxx；
+  # outbound-only（仅承载 scheduled tasks 推送，bot 不接收消息）。
   enabled:
     - slack
     # - wechat
+    # - telegram
 
   slack:
     # true 时会通过 Slack API 解析 channel name；失败时回退 unknown。

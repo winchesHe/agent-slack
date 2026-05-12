@@ -1,4 +1,4 @@
-// 定时任务运行器：按 rule.target.im 路由到 slackHook / wechatHook，
+// 定时任务运行器：按 rule.target.im 路由到 slackHook / wechatHook / telegramHook，
 // 包裹 try/catch + history 写入（started → success/failed），不二次外发错误（已渲染到目标会话）。
 //
 // 调用方：scheduler（cron 触发）或 CLI（manual 触发）。
@@ -24,9 +24,14 @@ export interface WechatScheduledHookLike {
   run: (args: { taskId: string; to: string; prompt: string }) => Promise<void>
 }
 
+export interface TelegramScheduledHookLike {
+  run: (args: { taskId: string; to: string; prompt: string }) => Promise<void>
+}
+
 export interface CreateScheduledTaskRunnerDeps {
   slackHook?: SlackScheduledHookLike
   wechatHook?: WechatScheduledHookLike
+  telegramHook?: TelegramScheduledHookLike
   history: ScheduledTaskHistory
   logger: Logger
 }
@@ -41,7 +46,10 @@ function buildTarget(rule: ScheduledTaskRule): ScheduledTaskTarget {
   if (rule.target.im === 'slack') {
     return { im: 'slack', channelId: rule.target.channelId }
   }
-  return { im: 'wechat', to: rule.target.to }
+  if (rule.target.im === 'wechat') {
+    return { im: 'wechat', to: rule.target.to }
+  }
+  return { im: 'telegram', to: rule.target.to }
 }
 
 function makeRunId(taskId: string, startedAt: string, trigger: ScheduledTaskTrigger): string {
@@ -135,6 +143,27 @@ export function createScheduledTaskRunner(
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err)
           log.error('wechat scheduled hook 执行失败', { taskId: rule.id, err })
+          await finishWith('failed', { error: msg })
+        }
+        return
+      }
+
+      if (rule.target.im === 'telegram') {
+        if (!deps.telegramHook) {
+          log.warn('telegram adapter 未启用，跳过', { taskId: rule.id })
+          await finishWith('failed', { error: 'adapter-not-enabled' })
+          return
+        }
+        try {
+          await deps.telegramHook.run({
+            taskId: rule.id,
+            to: rule.target.to,
+            prompt: rule.prompt,
+          })
+          await finishWith('success')
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          log.error('telegram scheduled hook 执行失败', { taskId: rule.id, err })
           await finishWith('failed', { error: msg })
         }
       }
