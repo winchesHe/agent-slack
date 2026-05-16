@@ -2,6 +2,15 @@
 
 当前无进行中的 process 事项。
 
+**最近完成（2026-05-16）：**
+
+- agent-slack upgrade 命令补强 v0.1.9 schema 迁移漏洞（branch `feat/upgrade-im-migration`，plan：[docs/superpowers/plans/2026-05-16-upgrade-im-schema-migration.md](../docs/superpowers/plans/2026-05-16-upgrade-im-schema-migration.md)）
+  - P0-1: `im.provider` → `im.enabled` 持久化字段改名迁移（用 yaml Document AST 保留注释/格式；运行时 `migrateLegacyImProvider` 不变，仍作没跑 upgrade 用户的兜底）
+  - P0-2: scheduled-tasks `target.im` 跨文件校验 vs `config.im.enabled`，输出 warning + 修复建议（不自动改 enabled）
+  - P1: 嵌套缺失警告附 generator 模板片段（agent.responses / agent.context.* / im.slack 等），剥离公共缩进供用户复制
+- 触发场景：用户跑 `daemon start` 报"未在 config.im.enabled 中启用"，根因是 config.yaml 旧 `provider` 字段未持久化迁移 + scheduled-tasks 用 telegram 但 enabled=[slack]
+- 端到端 dry-run 在用户实际 workspace 上一次复现两个根因
+
 **最近完成（2026-05-11）：**
 
 - scheduledTasks 主线 12 切片（归档：[memory/archive/process-2026-05-10-scheduled-tasks.md](archive/process-2026-05-10-scheduled-tasks.md)）
