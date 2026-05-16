@@ -108,3 +108,32 @@ tasks:
     expect(collectImMismatch('not: yaml: at: all:', ['slack'])).toEqual([])
   })
 })
+
+describe('planUpgradeYaml — nestedSnippets', () => {
+  it('agent.responses 嵌套缺失时返回 generator 片段供用户复制', () => {
+    const userYaml = `
+agent:
+  name: default
+  model: gpt-5.5
+  maxSteps: 50
+  provider: openai-responses
+  context:
+    maxApproxChars: 900000
+im:
+  enabled: ['slack']
+`.trimStart()
+
+    const plan = planUpgradeYaml(userYaml, template)
+
+    expect(plan.missingNested).toEqual(expect.arrayContaining(['agent.responses']))
+    expect(plan.nestedSnippets['agent.responses']).toMatch(/reasoningEffort/)
+    expect(plan.nestedSnippets['agent.responses']).toMatch(/reasoningSummary/)
+    // 片段应包含 generator 里的中文注释（这是 P1 的核心价值）
+    expect(plan.nestedSnippets['agent.responses']).toMatch(/OpenAI 推理预算档位/)
+  })
+
+  it('没有嵌套缺失时 nestedSnippets 为空对象', () => {
+    const plan = planUpgradeYaml(template, template)
+    expect(plan.nestedSnippets).toEqual({})
+  })
+})

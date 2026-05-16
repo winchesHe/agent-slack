@@ -147,6 +147,103 @@ function extractTopLevelBlock(templateYaml: string, key: string): string | undef
   return lines.slice(startIdx, endIdx + 1).join('\n')
 }
 
+// 从 generator yaml 文本里抽出指定嵌套 key path 的子节点（含上方紧贴注释）。
+// 返回去公共缩进后的纯净片段，便于用户复制到自己的父节点下手动缩进对齐。
+// 路径示例 ['agent', 'responses'] → 抽 agent.responses 整个子块。
+// 顶层路径（length===1）走 extractTopLevelBlock，这里仅服务嵌套场景。
+function extractNestedSnippet(templateYaml: string, keyPath: string[]): string | undefined {
+  if (keyPath.length < 2) return undefined
+  const lines = templateYaml.split('\n')
+
+  let currentIndent = 0
+  let scanFrom = 0
+  let scanTo = lines.length
+  let targetStart = -1
+  let targetIndent = -1
+
+  for (let depth = 0; depth < keyPath.length; depth++) {
+    const key = keyPath[depth]
+    const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const indentRe = new RegExp(`^${' '.repeat(currentIndent)}${escaped}:`)
+    let found = -1
+    for (let i = scanFrom; i < scanTo; i++) {
+      if (indentRe.test(lines[i] ?? '')) {
+        found = i
+        break
+      }
+    }
+    if (found === -1) return undefined
+
+    if (depth === keyPath.length - 1) {
+      targetStart = found
+      targetIndent = currentIndent
+    } else {
+      // 限定接下来的搜索范围在 found 的子树内（直到同级或更浅缩进的下一个非注释行）
+      scanFrom = found + 1
+      let newScanTo = scanTo
+      for (let j = found + 1; j < scanTo; j++) {
+        const line = lines[j] ?? ''
+        if (line.trim() === '' || line.trimStart().startsWith('#')) continue
+        const lineIndent = line.match(/^(\s*)/)?.[1].length ?? 0
+        if (lineIndent <= currentIndent) {
+          newScanTo = j
+          break
+        }
+      }
+      scanTo = newScanTo
+      currentIndent += 2 // 模板按 2 空格缩进
+    }
+  }
+  if (targetStart === -1) return undefined
+
+  // 上吞紧贴注释：只吞同缩进的 # 行；遇到空行 / 不同缩进 / 非注释就停。
+  let startIdx = targetStart
+  while (startIdx > 0) {
+    const prev = lines[startIdx - 1] ?? ''
+    if (prev.trim() === '') break
+    const prevIndent = prev.match(/^(\s*)/)?.[1].length ?? 0
+    if (prev.trimStart().startsWith('#') && prevIndent === targetIndent) {
+      startIdx -= 1
+      continue
+    }
+    break
+  }
+
+  // 下扩到同级或更浅缩进的非注释行（或文件末）。
+  let endIdx = targetStart
+  for (let i = targetStart + 1; i < lines.length; i++) {
+    const line = lines[i] ?? ''
+    if (line.trim() === '') {
+      endIdx = i
+      continue
+    }
+    const lineIndent = line.match(/^(\s*)/)?.[1].length ?? 0
+    if (lineIndent <= targetIndent && !line.trimStart().startsWith('#')) {
+      break
+    }
+    endIdx = i
+  }
+
+  // 去公共缩进，让片段成为可独立粘贴的最小块
+  const slice = lines.slice(startIdx, endIdx + 1)
+  const stripped = slice.map((l) => (l.length >= targetIndent ? l.slice(targetIndent) : l))
+  return stripped.join('\n')
+}
+
+function buildNestedSnippets(
+  templateYaml: string,
+  nestedKeys: string[],
+): Record<string, string> {
+  const result: Record<string, string> = {}
+  for (const key of nestedKeys) {
+    const snippet = extractNestedSnippet(templateYaml, key.split('.'))
+    if (snippet) {
+      result[key] = snippet
+    }
+  }
+  return result
+}
+
 // 计算 user object 中相对 template object 缺失的 key path。
 function diffMissingKeys(
   user: unknown,
@@ -216,7 +313,7 @@ export function planUpgradeYaml(userYaml: string, templateYaml: string): Upgrade
     return {
       missingTopLevel: out.topLevel,
       missingNested: out.nested,
-      nestedSnippets: {},
+      nestedSnippets: buildNestedSnippets(templateYaml, out.nested),
       plannedAppend: '',
       appliedRenames,
       upgraded: effectiveYaml,
@@ -231,7 +328,7 @@ export function planUpgradeYaml(userYaml: string, templateYaml: string): Upgrade
   return {
     missingTopLevel: out.topLevel,
     missingNested: out.nested,
-    nestedSnippets: {},
+    nestedSnippets: buildNestedSnippets(templateYaml, out.nested),
     plannedAppend: appendText,
     appliedRenames,
     upgraded: `${userTrim}${appendText}`,
