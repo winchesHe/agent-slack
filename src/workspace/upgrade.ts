@@ -9,7 +9,7 @@
 // - dry-run：返回 { plannedAppend, missingNested }，不写文件。
 // - apply：先备份 → 写入；备份路径 `<file>.bak.<ISO>`。
 
-import YAML from 'yaml'
+import YAML, { isScalar, parseDocument, YAMLSeq } from 'yaml'
 
 export interface UpgradeYamlPlan {
   // 顶层缺失 key 列表（直接追加到文件末尾）
@@ -51,6 +51,54 @@ export const RENAME_MIGRATIONS: RenameMigration[] = [
     reason: 'v0.1.9: im.provider (single) → im.enabled (array)',
   },
 ]
+
+// 用 yaml Document AST 就地改写源文本，保留注释和原始格式。
+// 只处理 oldPath 存在且 newPath 不存在的情况；newPath 已存在视为用户已手动迁移，跳过。
+function applyRenameMigrations(
+  userYaml: string,
+  migrations: RenameMigration[],
+): { yaml: string; applied: RenameRecord[] } {
+  const doc = parseDocument(userYaml)
+  if (doc.errors.length > 0) {
+    // 源文件 yaml 解析失败时跳过迁移；planUpgradeYaml 后续阶段会按"整体缺失"处理。
+    return { yaml: userYaml, applied: [] }
+  }
+
+  const applied: RenameRecord[] = []
+  for (const mig of migrations) {
+    const oldNode = doc.getIn(mig.oldPath, true)
+    if (oldNode === undefined) continue
+    if (doc.getIn(mig.newPath, true) !== undefined) continue
+
+    let value: unknown
+    if (isScalar(oldNode)) {
+      value = oldNode.value
+    } else {
+      // 非 scalar 暂不支持（当前清单只用到 scalar 改名），跳过
+      continue
+    }
+
+    if (mig.scalarToArray) {
+      const seq = new YAMLSeq()
+      seq.add(value)
+      doc.setIn(mig.newPath, seq)
+    } else {
+      doc.setIn(mig.newPath, value)
+    }
+
+    doc.deleteIn(mig.oldPath)
+    applied.push({
+      from: mig.oldPath.join('.'),
+      to: mig.newPath.join('.'),
+      reason: mig.reason,
+    })
+  }
+
+  if (applied.length === 0) {
+    return { yaml: userYaml, applied: [] }
+  }
+  return { yaml: String(doc), applied }
+}
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -126,9 +174,16 @@ function diffMissingKeys(
 }
 
 export function planUpgradeYaml(userYaml: string, templateYaml: string): UpgradeYamlPlan {
+  // Phase 0: rename migrations（用 yaml Document AST 改写源文本，保留注释/格式）。
+  // 之后所有阶段都用 effectiveYaml，否则刚迁移完的字段会再被当作"缺失"重新追加。
+  const { yaml: effectiveYaml, applied: appliedRenames } = applyRenameMigrations(
+    userYaml,
+    RENAME_MIGRATIONS,
+  )
+
   let userObj: unknown = {}
   try {
-    userObj = YAML.parse(userYaml) ?? {}
+    userObj = YAML.parse(effectiveYaml) ?? {}
   } catch {
     // yaml 损坏时按"整体缺失"处理：所有顶级 key 都缺失，便于用户立刻看到完整 generator 输出
     userObj = {}
@@ -144,8 +199,8 @@ export function planUpgradeYaml(userYaml: string, templateYaml: string): Upgrade
       missingNested: [],
       nestedSnippets: {},
       plannedAppend: '',
-      appliedRenames: [],
-      upgraded: userYaml,
+      appliedRenames,
+      upgraded: effectiveYaml,
     }
   }
 
@@ -163,22 +218,22 @@ export function planUpgradeYaml(userYaml: string, templateYaml: string): Upgrade
       missingNested: out.nested,
       nestedSnippets: {},
       plannedAppend: '',
-      appliedRenames: [],
-      upgraded: userYaml,
+      appliedRenames,
+      upgraded: effectiveYaml,
     }
   }
 
   const iso = new Date().toISOString()
   const sep = `# === agent-slack upgrade ${iso} 追加缺失字段：${out.topLevel.join(', ')} ===`
   // 用户原文若不以换行结尾，先补一个；再插入分隔行 + 各块（块之间空一行）。
-  const userTrim = userYaml.endsWith('\n') ? userYaml : `${userYaml}\n`
+  const userTrim = effectiveYaml.endsWith('\n') ? effectiveYaml : `${effectiveYaml}\n`
   const appendText = `\n${sep}\n${blocks.join('\n\n')}\n`
   return {
     missingTopLevel: out.topLevel,
     missingNested: out.nested,
     nestedSnippets: {},
     plannedAppend: appendText,
-    appliedRenames: [],
+    appliedRenames,
     upgraded: `${userTrim}${appendText}`,
   }
 }
