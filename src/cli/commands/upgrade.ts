@@ -68,9 +68,18 @@ export async function upgradeCommand(opts: UpgradeOpts): Promise<void> {
     }
     const userYaml = await readFile(target.filePath, 'utf8')
     const plan = planUpgradeYaml(userYaml, target.template)
-    if (plan.missingTopLevel.length === 0 && plan.missingNested.length === 0) {
+    if (
+      plan.missingTopLevel.length === 0 &&
+      plan.missingNested.length === 0 &&
+      plan.appliedRenames.length === 0
+    ) {
       consola.success(`${target.label}: 无缺失字段`)
       continue
+    }
+
+    // rename 先报告（即便没有缺失字段也必须报）
+    for (const r of plan.appliedRenames) {
+      consola.info(`${target.label}: ${r.from} → ${r.to}（${r.reason}）`)
     }
 
     reportPlan(target.label, plan)
@@ -79,11 +88,15 @@ export async function upgradeCommand(opts: UpgradeOpts): Promise<void> {
       continue
     }
 
-    if (plan.plannedAppend) {
+    const hasChanges = plan.plannedAppend.length > 0 || plan.appliedRenames.length > 0
+    if (hasChanges) {
       const backupPath = `${target.filePath}.bak.${backupSuffix()}`
       await copyFile(target.filePath, backupPath)
       await writeFile(target.filePath, plan.upgraded, 'utf8')
-      consola.success(`${target.label}: 已备份 ${path.basename(backupPath)} 并追加缺失顶层字段`)
+      const parts: string[] = []
+      if (plan.appliedRenames.length > 0) parts.push(`迁移 ${plan.appliedRenames.length} 个字段改名`)
+      if (plan.plannedAppend) parts.push('追加缺失顶层字段')
+      consola.success(`${target.label}: 已备份 ${path.basename(backupPath)} 并 ${parts.join('、')}`)
       touched += 1
     }
   }
