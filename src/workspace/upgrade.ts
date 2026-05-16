@@ -16,11 +16,41 @@ export interface UpgradeYamlPlan {
   missingTopLevel: string[]
   // 嵌套缺失（"agent.responses" 等）：父存在但子缺失，第一版仅列出
   missingNested: string[]
+  // 每个嵌套缺失附带的 generator 片段；key=点分路径，value=可直接粘贴的 yaml 片段（含上方紧贴的注释）。Chunk 3 才填充。
+  nestedSnippets: Record<string, string>
   // 计划追加到用户文件末尾的文本片段（包含分隔注释 + 各顶层缺失块）；无追加时为空字符串。
   plannedAppend: string
-  // 升级后的完整文件文本（用户原文 + plannedAppend）；无追加时与 userYaml 一致。
+  // 已应用的字段改名（from → to）。每项含改名前后 path 和说明，便于上层输出"已迁移"日志。
+  appliedRenames: RenameRecord[]
+  // 升级后的完整文件文本（rename 改写 + 顶层缺失追加）；无变更时与 userYaml 一致。
   upgraded: string
 }
+
+export interface RenameRecord {
+  from: string
+  to: string
+  reason: string
+}
+
+// 已知的 yaml 字段 rename 迁移清单（写盘改写）。
+// 每项描述："oldPath 在、newPath 不在" 的条件下，把 oldPath 重命名为 newPath；
+// scalarToArray=true 时把 scalar 值包成单元素数组（用于 provider:'slack' → enabled:['slack']）。
+// 新增 rename 时在这里追加，不要散布在多个 if-else。
+export interface RenameMigration {
+  oldPath: string[]
+  newPath: string[]
+  scalarToArray?: boolean
+  reason: string
+}
+
+export const RENAME_MIGRATIONS: RenameMigration[] = [
+  {
+    oldPath: ['im', 'provider'],
+    newPath: ['im', 'enabled'],
+    scalarToArray: true,
+    reason: 'v0.1.9: im.provider (single) → im.enabled (array)',
+  },
+]
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -112,7 +142,9 @@ export function planUpgradeYaml(userYaml: string, templateYaml: string): Upgrade
     return {
       missingTopLevel: [],
       missingNested: [],
+      nestedSnippets: {},
       plannedAppend: '',
+      appliedRenames: [],
       upgraded: userYaml,
     }
   }
@@ -129,7 +161,9 @@ export function planUpgradeYaml(userYaml: string, templateYaml: string): Upgrade
     return {
       missingTopLevel: out.topLevel,
       missingNested: out.nested,
+      nestedSnippets: {},
       plannedAppend: '',
+      appliedRenames: [],
       upgraded: userYaml,
     }
   }
@@ -142,7 +176,9 @@ export function planUpgradeYaml(userYaml: string, templateYaml: string): Upgrade
   return {
     missingTopLevel: out.topLevel,
     missingNested: out.nested,
+    nestedSnippets: {},
     plannedAppend: appendText,
+    appliedRenames: [],
     upgraded: `${userTrim}${appendText}`,
   }
 }
