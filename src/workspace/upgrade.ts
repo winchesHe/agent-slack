@@ -242,3 +242,45 @@ export function planUpgradeYaml(userYaml: string, templateYaml: string): Upgrade
 export function backupSuffix(now: Date = new Date()): string {
   return now.toISOString().replace(/[:.]/g, '-')
 }
+
+export interface ImMismatch {
+  taskId: string
+  targetIm: string
+  enabledIms: string[]
+}
+
+/**
+ * 扫 scheduled-tasks.yaml 中所有 enabled:true 任务的 target.im，
+ * 列出不在 config.im.enabled 集合里的（mismatch）。
+ *
+ * 设计：故意不重用 ScheduledTasksConfigSchema.parse —— upgrade 阶段的 yaml 可能因为
+ * 历史 schema / 未补字段而 zod parse 不过，但我们仍希望尽量给出 IM 校验提示。
+ * 用 YAML.parse 拿松散对象，按字段名访问；类型不对就跳过这一项（不抛错）。
+ */
+export function collectImMismatch(scheduledYaml: string, enabledIms: string[]): ImMismatch[] {
+  let parsed: unknown
+  try {
+    parsed = YAML.parse(scheduledYaml)
+  } catch {
+    return []
+  }
+  if (!isPlainObject(parsed)) return []
+  if (parsed.enabled === false) return []
+  const tasks = parsed.tasks
+  if (!Array.isArray(tasks)) return []
+
+  const enabledSet = new Set(enabledIms)
+  const out: ImMismatch[] = []
+  for (const task of tasks) {
+    if (!isPlainObject(task)) continue
+    if (task.enabled === false) continue
+    const target = task.target
+    if (!isPlainObject(target)) continue
+    const taskId = typeof task.id === 'string' ? task.id : '(no-id)'
+    const targetIm = target.im
+    if (typeof targetIm !== 'string') continue
+    if (enabledSet.has(targetIm)) continue
+    out.push({ taskId, targetIm, enabledIms: [...enabledIms] })
+  }
+  return out
+}
