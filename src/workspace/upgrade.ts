@@ -162,7 +162,8 @@ function extractNestedSnippet(templateYaml: string, keyPath: string[]): string |
   let targetIndent = -1
 
   for (let depth = 0; depth < keyPath.length; depth++) {
-    const key = keyPath[depth]
+    const key = keyPath[depth] ?? ''
+    if (!key) return undefined
     const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     const indentRe = new RegExp(`^${' '.repeat(currentIndent)}${escaped}:`)
     let found = -1
@@ -184,7 +185,7 @@ function extractNestedSnippet(templateYaml: string, keyPath: string[]): string |
       for (let j = found + 1; j < scanTo; j++) {
         const line = lines[j] ?? ''
         if (line.trim() === '' || line.trimStart().startsWith('#')) continue
-        const lineIndent = line.match(/^(\s*)/)?.[1].length ?? 0
+        const lineIndent = line.match(/^(\s*)/)?.[1]?.length ?? 0
         if (lineIndent <= currentIndent) {
           newScanTo = j
           break
@@ -201,7 +202,7 @@ function extractNestedSnippet(templateYaml: string, keyPath: string[]): string |
   while (startIdx > 0) {
     const prev = lines[startIdx - 1] ?? ''
     if (prev.trim() === '') break
-    const prevIndent = prev.match(/^(\s*)/)?.[1].length ?? 0
+    const prevIndent = prev.match(/^(\s*)/)?.[1]?.length ?? 0
     if (prev.trimStart().startsWith('#') && prevIndent === targetIndent) {
       startIdx -= 1
       continue
@@ -209,7 +210,10 @@ function extractNestedSnippet(templateYaml: string, keyPath: string[]): string |
     break
   }
 
-  // 下扩到同级或更浅缩进的非注释行（或文件末）。
+  // 下扩到同级或更浅缩进就停（不论是注释还是非注释）。
+  // 这样 snippet 末尾就不会带上属于下一个兄弟 key 的注释段（典型例子：
+  // im.slack 子块后面紧跟的"# wechat: ..."注释属于 im 段的备选说明，不该吞进 slack 子块）。
+  // 紧贴当前 key 的注释在上吞阶段已经处理过了，所以这里不需要再"往后看"。
   let endIdx = targetStart
   for (let i = targetStart + 1; i < lines.length; i++) {
     const line = lines[i] ?? ''
@@ -217,15 +221,26 @@ function extractNestedSnippet(templateYaml: string, keyPath: string[]): string |
       endIdx = i
       continue
     }
-    const lineIndent = line.match(/^(\s*)/)?.[1].length ?? 0
-    if (lineIndent <= targetIndent && !line.trimStart().startsWith('#')) {
+    const lineIndent = line.match(/^(\s*)/)?.[1]?.length ?? 0
+    if (lineIndent <= targetIndent) {
       break
     }
     endIdx = i
   }
+  return finishSnippet(lines, startIdx, endIdx, targetIndent)
+}
 
-  // 去公共缩进，让片段成为可独立粘贴的最小块
+function finishSnippet(
+  lines: string[],
+  startIdx: number,
+  endIdx: number,
+  targetIndent: number,
+): string {
   const slice = lines.slice(startIdx, endIdx + 1)
+  // 末尾再去掉纯空行，避免 snippet 多一段空尾巴
+  while (slice.length > 0 && (slice[slice.length - 1] ?? '').trim() === '') {
+    slice.pop()
+  }
   const stripped = slice.map((l) => (l.length >= targetIndent ? l.slice(targetIndent) : l))
   return stripped.join('\n')
 }

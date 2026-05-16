@@ -162,9 +162,14 @@ function reportPlan(label: string, plan: UpgradeYamlPlan): void {
   }
   if (plan.missingNested.length > 0) {
     consola.warn(
-      `${label} 缺失嵌套字段（不自动追加，请手动补到对应父节点下，参考 generator 输出）：\n  ${plan.missingNested.join(
-        '\n  ',
-      )}`,
+      `${label} 缺失嵌套字段（不自动追加，请手动补到对应父节点下）：${plan.missingNested.join(', ')}`,
     )
+    for (const key of plan.missingNested) {
+      const snippet = plan.nestedSnippets[key]
+      if (!snippet) continue
+      consola.log(`--- ${key} 模板片段（复制到对应父节点下，注意缩进）---`)
+      consola.log(snippet.trim())
+      consola.log('---')
+    }
   }
 }
