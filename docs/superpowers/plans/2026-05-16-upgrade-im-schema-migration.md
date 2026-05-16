@@ -1045,7 +1045,22 @@ git commit -m "docs(process): 同步 upgrade 命令迁移补强"
 
 ## 实测记录
 
-（Task 11 完成后填）
+**在用户真实 workspace 上的 dry-run（2026-05-16）：**
+
+```
+$ pnpm cli upgrade --cwd /Users/moego-winches/Desktop/Company/person/agent-workspace --dry-run
+
+ℹ config.yaml: im.provider → im.enabled（v0.1.9: im.provider (single) → im.enabled (array)）
+✔ channel-tasks.yaml: 无缺失字段
+✔ scheduled-tasks.yaml: 无缺失字段
+
+ WARN  scheduled-tasks "repo-pull-daily" 的 target.im="telegram" 不在 config.im.enabled=[slack] 中
+
+ℹ 修复办法：在 config.yaml 的 im.enabled 数组里加入缺失的 IM（telegram），或把对应任务的 enabled 改为 false。upgrade 不会自动修改 enabled 列表（避免擅自启用 IM 适配器）。
+ℹ --dry-run 模式：未写任何文件
+```
+
+结论：完整复现并自动提示了用户最初 `daemon start` 启动失败的两个根因 —— im 旧字段未迁移 + telegram 任务未在 enabled 列表中。
 
 ---
 

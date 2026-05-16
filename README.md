@@ -55,6 +55,7 @@ agent-slack start           # 启动（前台阻塞）
 | --- | --- |
 | `agent-slack onboard` | 交互式初始化当前目录（询问 Slack 三件套 + LiteLLM 并当场校验） |
 | `agent-slack start` | 启动服务（前台阻塞，Ctrl+C 优雅退出） |
+| `agent-slack upgrade` | 对照最新模板补齐缺失顶层字段、持久化字段改名迁移（如 `im.provider` → `im.enabled`）、检查 scheduled-tasks `target.im` 是否在 `config.im.enabled` 中、嵌套缺失警告附 generator 模板片段。`--dry-run` 只看不写。 |
 | `agent-slack status` | 打印 workspace 配置 + skills + 最近 session 摘要 |
 | `agent-slack doctor` | 环境自检（Node / 目录 / 凭证 / Slack auth / LiteLLM /models / 模型可用 / skills） |
 | `pnpm e2e:list` / `pnpm e2e <id>` | 手动运行 Slack live E2E（真实发送 Slack 消息） |
