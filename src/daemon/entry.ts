@@ -79,6 +79,11 @@ export async function runDaemonEntry(opts: { cwd: string; headless?: boolean }):
     process.on('SIGTERM', () => {
       void shutdown('SIGTERM')
     })
+    // SIGHUP: 终端关闭等场景透传过来的信号，Node 默认行为是直接退出，
+    // 会导致 daemon.json 残留为 stale；显式走优雅退出清理 meta。
+    process.on('SIGHUP', () => {
+      void shutdown('SIGHUP')
+    })
     process.on('uncaughtException', async (err) => {
       consola.error('daemon uncaughtException:', err)
       await clearDaemonMeta(paths).catch(() => {})
@@ -150,6 +155,9 @@ export async function runDaemonEntry(opts: { cwd: string; headless?: boolean }):
   })
   process.on('SIGTERM', () => {
     void shutdown('SIGTERM')
+  })
+  process.on('SIGHUP', () => {
+    void shutdown('SIGHUP')
   })
   process.on('uncaughtException', async (err) => {
     consola.error('daemon uncaughtException:', err)

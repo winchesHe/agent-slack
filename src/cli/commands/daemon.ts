@@ -182,13 +182,33 @@ export async function daemonStatusCommand(opts: DaemonCommandOpts): Promise<void
     return
   }
   if (status.state === 'stale') {
-    consola.box(
-      [
-        'Daemon: stale (meta 存在但进程已死)',
-        `PID:    ${status.meta.pid}`,
-        `Meta:   ${paths.daemonFile}`,
-      ].join('\n'),
-    )
+    // 优先看"今天"的 daemon 日志（进程多半死在今天），若不存在再 fallback 到 startedAt 当天
+    const todayLog = daemonDailyLogFile(paths)
+    const startedLog = daemonDailyLogFile(paths, new Date(status.meta.startedAt))
+    const logFile = existsSync(todayLog) ? todayLog : existsSync(startedLog) ? startedLog : null
+
+    let tail = ''
+    if (logFile) {
+      try {
+        tail = (await readLastLines(logFile, 5)).trim()
+      } catch {
+        // ignore
+      }
+    }
+
+    const lines = [
+      'Daemon: stale (meta 存在但进程已死)',
+      `PID:    ${status.meta.pid}`,
+      `Meta:   ${paths.daemonFile}`,
+      `Log:    ${logFile ?? '(无日志文件)'}`,
+    ]
+    if (tail) {
+      lines.push('', '日志末尾 5 行（推断上次死因）:', tail)
+    } else if (logFile) {
+      lines.push('', '（日志文件存在但为空或读取失败）')
+    }
+
+    consola.box(lines.join('\n'))
     return
   }
 

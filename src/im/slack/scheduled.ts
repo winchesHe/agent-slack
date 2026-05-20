@@ -19,6 +19,8 @@ export interface RunScheduledSlackArgs {
   taskId: string
   channelId: string
   prompt: string
+  /** task.description（来自 yaml），用于非 aihot 任务的 thread root 文案；缺省时回退到 taskId */
+  description?: string
   web: WebClient
   deps: {
     orchestrator: ConversationOrchestrator
@@ -28,10 +30,21 @@ export interface RunScheduledSlackArgs {
   }
 }
 
+/**
+ * aihot 任务的 prompt 依赖 thread root 以 "🎯 【战略级抓手" 开头来挑根帖（用于后续图片上传），
+ * 保留原文案；其它任务用 description 让用户知道 thread 是谁起的。
+ */
+function buildRootText(taskId: string, description: string | undefined): string {
+  if (taskId === 'aihot') {
+    return `🎯 【战略级抓手 · aihot-咨询】对齐中，赋能即将下发...`
+  }
+  return description?.trim() || taskId
+}
+
 export async function runScheduledSlackSession(args: RunScheduledSlackArgs): Promise<void> {
   const root = (await args.web.chat.postMessage({
     channel: args.channelId,
-    text: `🎯 【战略级抓手 · aihot-咨询】对齐中，赋能即将下发...`,
+    text: buildRootText(args.taskId, args.description),
   })) as { ok?: boolean; ts?: string }
 
   if (!root.ok || !root.ts) {

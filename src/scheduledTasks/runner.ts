@@ -17,7 +17,12 @@ export interface ScheduledTaskHistory {
 }
 
 export interface SlackScheduledHookLike {
-  run: (args: { taskId: string; channelId: string; prompt: string }) => Promise<void>
+  run: (args: {
+    taskId: string
+    channelId: string
+    prompt: string
+    description?: string
+  }) => Promise<void>
 }
 
 export interface WechatScheduledHookLike {
@@ -117,6 +122,7 @@ export function createScheduledTaskRunner(
             taskId: rule.id,
             channelId: rule.target.channelId,
             prompt: rule.prompt,
+            ...(rule.description ? { description: rule.description } : {}),
           })
           await finishWith('success')
         } catch (err) {

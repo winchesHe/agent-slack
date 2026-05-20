@@ -23,11 +23,12 @@ function stubWebClient(rootTs = '1717000000.000001'): WebClient {
 }
 
 describe('runScheduledSlackSession', () => {
-  it('先 postMessage 起根帖，再用 root ts 作为 threadTs/messageTs 调 orchestrator.handle', async () => {
+  it('先 postMessage 起根帖（非 aihot 任务用 description），再用 root ts 作为 threadTs/messageTs 调 orchestrator.handle', async () => {
     const web = stubWebClient('1717000000.000001')
     const orchestrator = { handle: vi.fn(async (_inbound: unknown, _sink: unknown) => undefined) }
     await runScheduledSlackSession({
       taskId: 'daily-standup',
+      description: '每日早会总结',
       channelId: 'C0123456789',
       prompt: '请总结昨日变更',
       web,
@@ -42,7 +43,7 @@ describe('runScheduledSlackSession', () => {
     expect(web.chat.postMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         channel: 'C0123456789',
-        text: expect.stringContaining('战略级抓手 · aihot-咨询'),
+        text: '每日早会总结',
       }),
     )
 
@@ -139,5 +140,46 @@ describe('runScheduledSlackSession', () => {
         },
       }),
     ).rejects.toThrow(/agent failed/)
+  })
+
+  it('taskId=aihot 时根帖文案保留旧前缀（aihot prompt 依赖此前缀挑 thread root）', async () => {
+    const web = stubWebClient()
+    const orchestrator = { handle: vi.fn(async (_inbound: unknown, _sink: unknown) => undefined) }
+    await runScheduledSlackSession({
+      taskId: 'aihot',
+      description: '每日 09:30 抓取 aihot.virxact.com 热门榜',
+      channelId: 'C1',
+      prompt: 'p',
+      web,
+      deps: {
+        orchestrator: orchestrator as never,
+        renderer: stubRenderer(),
+        logger: stubLogger(),
+      },
+    })
+    expect(web.chat.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: '🎯 【战略级抓手 · aihot-咨询】对齐中，赋能即将下发...',
+      }),
+    )
+  })
+
+  it('非 aihot 任务无 description 时根帖文案回退到 taskId', async () => {
+    const web = stubWebClient()
+    const orchestrator = { handle: vi.fn(async (_inbound: unknown, _sink: unknown) => undefined) }
+    await runScheduledSlackSession({
+      taskId: 'repo-pull-daily',
+      channelId: 'C1',
+      prompt: 'p',
+      web,
+      deps: {
+        orchestrator: orchestrator as never,
+        renderer: stubRenderer(),
+        logger: stubLogger(),
+      },
+    })
+    expect(web.chat.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'repo-pull-daily' }),
+    )
   })
 })

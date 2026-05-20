@@ -164,6 +164,7 @@ export interface SlackScheduledHookArgs {
   taskId: string
   channelId: string
   prompt: string
+  description?: string
 }
 
 export interface SlackScheduledHook {
@@ -578,6 +579,7 @@ export function createSlackAdapter(deps: SlackAdapterDeps): SlackAdapterHandle {
         taskId: args.taskId,
         channelId: args.channelId,
         prompt: args.prompt,
+        ...(args.description ? { description: args.description } : {}),
         web: app.client as unknown as WebClient,
         deps: {
           orchestrator: deps.orchestrator,
