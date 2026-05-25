@@ -165,6 +165,7 @@ export interface SlackScheduledHookArgs {
   channelId: string
   prompt: string
   description?: string
+  rootBehavior?: 'text-placeholder' | 'image-first'
 }
 
 export interface SlackScheduledHook {
@@ -580,6 +581,7 @@ export function createSlackAdapter(deps: SlackAdapterDeps): SlackAdapterHandle {
         channelId: args.channelId,
         prompt: args.prompt,
         ...(args.description ? { description: args.description } : {}),
+        ...(args.rootBehavior ? { rootBehavior: args.rootBehavior } : {}),
         web: app.client as unknown as WebClient,
         deps: {
           orchestrator: deps.orchestrator,

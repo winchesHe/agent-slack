@@ -165,6 +165,39 @@ describe('runner.runOnce', () => {
     expect(history.records[0]!.trigger).toBe('cron')
   })
 
+  it('slack target.rootBehavior 透传到 slackHook.run（缺省时不带）', async () => {
+    const slackHook = { run: vi.fn(async () => undefined) }
+    const history = makeHistory()
+    const runner = createScheduledTaskRunner({
+      slackHook,
+      history,
+      logger: stubLogger(),
+    })
+
+    // 缺省：不带 rootBehavior key
+    await runner.runOnce(slackRule(), 'cron')
+    expect(slackHook.run).toHaveBeenLastCalledWith({
+      taskId: 't1',
+      channelId: 'C0123456789',
+      prompt: 'hi',
+    })
+
+    // 显式设置 image-first：透传
+    slackHook.run.mockClear()
+    await runner.runOnce(
+      slackRule({
+        target: { im: 'slack', channelId: 'C0123456789', rootBehavior: 'image-first' },
+      }),
+      'cron',
+    )
+    expect(slackHook.run).toHaveBeenLastCalledWith({
+      taskId: 't1',
+      channelId: 'C0123456789',
+      prompt: 'hi',
+      rootBehavior: 'image-first',
+    })
+  })
+
   it('target 字段透传到 history record（slack 和 wechat 都验证）', async () => {
     const history = makeHistory()
     const runner = createScheduledTaskRunner({

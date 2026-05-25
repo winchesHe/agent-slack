@@ -54,6 +54,46 @@ describe('parseScheduledTasksConfig: 合法解析', () => {
     expect(cfg.tasks).toEqual([])
   })
 
+  it('slack target.rootBehavior：缺省时未设置；显式 image-first / text-placeholder 可解析', () => {
+    const cfgDefault = parseScheduledTasksConfig({
+      tasks: [
+        {
+          id: 'a',
+          cron: '0 9 * * *',
+          prompt: 'p',
+          target: { im: 'slack', channelId: 'C0000000001' },
+        },
+      ],
+    })
+    // 缺省不强制默认值（runner / scheduled.ts 端解释为 'text-placeholder'）
+    expect((cfgDefault.tasks[0]!.target as { rootBehavior?: string }).rootBehavior).toBeUndefined()
+
+    const cfgImage = parseScheduledTasksConfig({
+      tasks: [
+        {
+          id: 'b',
+          cron: '0 9 * * *',
+          prompt: 'p',
+          target: { im: 'slack', channelId: 'C0000000001', rootBehavior: 'image-first' },
+        },
+      ],
+    })
+    expect((cfgImage.tasks[0]!.target as { rootBehavior?: string }).rootBehavior).toBe('image-first')
+
+    expect(() =>
+      parseScheduledTasksConfig({
+        tasks: [
+          {
+            id: 'c',
+            cron: '0 9 * * *',
+            prompt: 'p',
+            target: { im: 'slack', channelId: 'C0000000001', rootBehavior: 'invalid-mode' },
+          },
+        ],
+      }),
+    ).toThrow()
+  })
+
   it('accepts optional timezone & description', () => {
     const cfg = parseScheduledTasksConfig({
       tasks: [

@@ -578,3 +578,38 @@ export function createSlackEventSink(deps: SlackEventSinkDeps): SlackEventSink {
     },
   }
 }
+
+/**
+ * Silent sink：用于 scheduledTasks 的 image-first 模式。
+ *
+ * 该模式下 runner 不发占位根帖，agent 必须在 prompt 里自己显式调用 Slack API（files_upload / chat.postMessage）
+ * 把图片作为 channel 顶层根帖、后续资讯发到 thread。sink 此时**不能**自动渲染 LLM streaming text /
+ * progress / status / ack，否则会污染 channel 顶层（没有 threadTs 可挂）。
+ *
+ * 行为：onEvent 全部丢弃但跟踪 terminalPhase（orchestrator 仍需要 sink 走完生命周期）；finalize 不发任何 Slack 消息。
+ */
+export function createSilentSlackEventSink(deps: { logger: Logger }): SlackEventSink {
+  const log = deps.logger.withTag('slack:sink:silent')
+  let terminalPhase: 'completed' | 'stopped' | 'failed' | undefined
+
+  return {
+    async onEvent(event) {
+      if (event.type === 'lifecycle' && event.phase !== 'started') {
+        if (terminalPhase) {
+          // 与正常 sink 一致：first-write-wins
+          return
+        }
+        terminalPhase = event.phase
+      }
+    },
+    async finalize() {
+      // silent sink 不发任何 Slack 消息；image-first 模式下消息由 agent prompt 内 bash 显式发送。
+      if (!terminalPhase) {
+        log.warn('finalize 时无 terminalPhase（agent 未走到任何终态）')
+      }
+    },
+    get terminalPhase() {
+      return terminalPhase
+    },
+  }
+}
