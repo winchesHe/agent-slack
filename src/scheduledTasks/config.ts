@@ -15,6 +15,10 @@ const SlackTargetSchema = z.object({
   channelId: z
     .string()
     .regex(/^[CG][A-Z0-9]+$/, 'channelId 须以 C/G 开头（大写）'),
+  // 'text-placeholder'（默认）：runner 先发占位文字根帖，agent 在该 thread 内输出。
+  // 'image-first'：runner 不发任何根帖，sink 进 silent 模式不自动渲染；agent 自己在 prompt 里
+  //   用 files_upload 把图片作为 channel 顶层根帖发出，再用 thread_ts 把后续资讯发到 thread。
+  rootBehavior: z.enum(['text-placeholder', 'image-first']).optional(),
 })
 
 const WechatTargetSchema = z.object({

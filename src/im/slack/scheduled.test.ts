@@ -164,6 +164,70 @@ describe('runScheduledSlackSession', () => {
     )
   })
 
+  it('rootBehavior=image-first：不发任何 chat.postMessage 根帖，直接 orchestrator.handle 并用 silent sink', async () => {
+    const postMessage = vi.fn(async () => ({ ok: true, ts: 'should-not-be-used' }) as never)
+    const web = { chat: { postMessage } } as never as WebClient
+    const orchestrator = { handle: vi.fn(async (_inbound: unknown, _sink: unknown) => undefined) }
+    await runScheduledSlackSession({
+      taskId: 'aihot',
+      channelId: 'C05KXD0ME0Y',
+      prompt: '请生图并发到 channel',
+      rootBehavior: 'image-first',
+      web,
+      deps: {
+        orchestrator: orchestrator as never,
+        renderer: stubRenderer(),
+        logger: stubLogger(),
+      },
+    })
+
+    // 关键：runner 不发根帖
+    expect(postMessage).not.toHaveBeenCalled()
+
+    // orchestrator 仍被调用，sink 是 silent 版本（terminalPhase 初值 undefined）
+    expect(orchestrator.handle).toHaveBeenCalledTimes(1)
+    const [inbound, sink] = orchestrator.handle.mock.calls[0]!
+    const inboundRec = inbound as Record<string, unknown>
+    expect(inboundRec).toMatchObject({
+      imProvider: 'slack',
+      channelId: 'C05KXD0ME0Y',
+      userId: 'scheduler',
+      userName: 'scheduler',
+    })
+    // threadTs 是 placeholder，不是真实 Slack ts；用于 sessionStore key 隔离
+    expect(inboundRec.threadTs as string).toMatch(/^scheduled-image-first:aihot:/)
+    expect(inboundRec.messageTs as string).toMatch(/^scheduled-image-first:aihot:/)
+    expect(inboundRec.threadTs).toBe(inboundRec.messageTs)
+
+    // prompt 注入 channel_id 上下文 + 原 user prompt
+    expect(inboundRec.text as string).toContain('channel_id: C05KXD0ME0Y')
+    expect(inboundRec.text as string).toContain('root_behavior: image-first')
+    expect(inboundRec.text as string).toContain('请生图并发到 channel')
+
+    // sink 是 silent 版本：terminalPhase 字段存在且初值 undefined
+    expect(sink).toBeDefined()
+    expect((sink as { terminalPhase?: unknown }).terminalPhase).toBeUndefined()
+  })
+
+  it('rootBehavior 缺省时按 text-placeholder 走（兼容历史行为）', async () => {
+    const web = stubWebClient('1717000000.000001')
+    const orchestrator = { handle: vi.fn(async (_inbound: unknown, _sink: unknown) => undefined) }
+    await runScheduledSlackSession({
+      taskId: 'aihot',
+      channelId: 'C1',
+      prompt: 'p',
+      // rootBehavior 不传
+      web,
+      deps: {
+        orchestrator: orchestrator as never,
+        renderer: stubRenderer(),
+        logger: stubLogger(),
+      },
+    })
+    // 兼容：仍发根帖
+    expect(web.chat.postMessage).toHaveBeenCalledTimes(1)
+  })
+
   it('非 aihot 任务无 description 时根帖文案回退到 taskId', async () => {
     const web = stubWebClient()
     const orchestrator = { handle: vi.fn(async (_inbound: unknown, _sink: unknown) => undefined) }

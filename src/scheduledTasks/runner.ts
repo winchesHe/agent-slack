@@ -22,6 +22,7 @@ export interface SlackScheduledHookLike {
     channelId: string
     prompt: string
     description?: string
+    rootBehavior?: 'text-placeholder' | 'image-first'
   }) => Promise<void>
 }
 
@@ -123,6 +124,7 @@ export function createScheduledTaskRunner(
             channelId: rule.target.channelId,
             prompt: rule.prompt,
             ...(rule.description ? { description: rule.description } : {}),
+            ...(rule.target.rootBehavior ? { rootBehavior: rule.target.rootBehavior } : {}),
           })
           await finishWith('success')
         } catch (err) {

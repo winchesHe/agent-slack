@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { WebClient } from '@slack/web-api'
 import type { ActivityState, SessionUsageInfo } from '@/core/events.ts'
 import type { Logger } from '@/logger/logger.ts'
-import { createSlackEventSink } from './SlackEventSink.ts'
+import { createSilentSlackEventSink, createSlackEventSink } from './SlackEventSink.ts'
 import type { SlackRenderer } from './SlackRenderer.ts'
 
 interface LogSink {
@@ -726,4 +726,85 @@ describe('SlackEventSink: isMeaningful pin 行为', () => {
       }
     })
   }
+})
+
+describe('createSilentSlackEventSink (image-first 模式专用)', () => {
+  it('terminalPhase 初值 undefined；activity / assistant-message / usage 全部 no-op', async () => {
+    const sink = createSilentSlackEventSink({ logger: stubLogger() })
+    expect(sink.terminalPhase).toBeUndefined()
+
+    // 不应该抛 / 不应该改 terminalPhase
+    await sink.onEvent({ type: 'activity-state', state: { status: '思考中…', activities: ['x'] } })
+    await sink.onEvent({ type: 'assistant-message', text: 'hello world' })
+    await sink.onEvent({
+      type: 'usage-info',
+      usage: {
+        durationMs: 100,
+        totalCostUSD: 0,
+        modelUsage: [],
+      } as SessionUsageInfo,
+    })
+    expect(sink.terminalPhase).toBeUndefined()
+  })
+
+  it('lifecycle.started 不改 terminalPhase；completed / failed / stopped 写入 terminalPhase', async () => {
+    const sink1 = createSilentSlackEventSink({ logger: stubLogger() })
+    await sink1.onEvent({ type: 'lifecycle', phase: 'started' })
+    expect(sink1.terminalPhase).toBeUndefined()
+    await sink1.onEvent({
+      type: 'lifecycle',
+      phase: 'completed',
+      finalMessages: [],
+    })
+    expect(sink1.terminalPhase).toBe('completed')
+
+    const sink2 = createSilentSlackEventSink({ logger: stubLogger() })
+    await sink2.onEvent({
+      type: 'lifecycle',
+      phase: 'failed',
+      error: { message: 'boom' },
+    })
+    expect(sink2.terminalPhase).toBe('failed')
+
+    const sink3 = createSilentSlackEventSink({ logger: stubLogger() })
+    await sink3.onEvent({
+      type: 'lifecycle',
+      phase: 'stopped',
+      reason: 'user',
+    })
+    expect(sink3.terminalPhase).toBe('stopped')
+  })
+
+  it('first-write-wins：第二条终态事件被忽略', async () => {
+    const sink = createSilentSlackEventSink({ logger: stubLogger() })
+    await sink.onEvent({
+      type: 'lifecycle',
+      phase: 'completed',
+      finalMessages: [],
+    })
+    await sink.onEvent({
+      type: 'lifecycle',
+      phase: 'failed',
+      error: { message: 'late failure' },
+    })
+    expect(sink.terminalPhase).toBe('completed')
+  })
+
+  it('finalize 不调用任何 Slack API；无 terminalPhase 时打一行 warn 但不抛', async () => {
+    const logs: LogSink = { warns: [], infos: [] }
+    const sink = createSilentSlackEventSink({ logger: stubLogger(logs) })
+
+    await expect(sink.finalize()).resolves.toBeUndefined()
+    expect(logs.warns.length).toBeGreaterThanOrEqual(1)
+    // 一旦有 terminalPhase 就不再 warn
+    logs.warns.length = 0
+    const sink2 = createSilentSlackEventSink({ logger: stubLogger(logs) })
+    await sink2.onEvent({
+      type: 'lifecycle',
+      phase: 'completed',
+      finalMessages: [],
+    })
+    await sink2.finalize()
+    expect(logs.warns).toHaveLength(0)
+  })
 })
