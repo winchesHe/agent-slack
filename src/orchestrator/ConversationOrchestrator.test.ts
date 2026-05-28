@@ -13,7 +13,7 @@ import type { AgentExecutor, AgentExecutionRequest } from '@/agent/AgentExecutor
 import type { AgentExecutionEvent } from '@/core/events.ts'
 import type { EventSink, InboundMessage } from '@/im/types.ts'
 import type { Logger } from '@/logger/logger.ts'
-import type { CoreMessage } from 'ai'
+import type { CoreMessage, ToolSet } from 'ai'
 import type { MentionCommandRouter } from './MentionCommandRouter.ts'
 import type { ContextCompactor } from './ContextCompactor.ts'
 
@@ -207,6 +207,47 @@ describe('ConversationOrchestrator 粗事件消费', () => {
     cwd = mkdtempSync(path.join(tmpdir(), 'orch-'))
   })
 
+  it('把 adapterTools 合并后交给 executorFactory', async () => {
+    const paths = resolveWorkspacePaths(cwd)
+    const store = createSessionStore(paths)
+    const memoryStore = createMemoryStore(paths)
+    const executor = makeExecutor([{ type: 'lifecycle', phase: 'completed', finalMessages: [] }])
+    const toolsBuilder = vi.fn(() => ({ bash: 'builtin-tool' }) as unknown as ToolSet)
+    const executorFactory = vi.fn((_tools: ToolSet) => executor)
+    const adapterTools = {
+      current_thread_context: 'adapter-tool',
+    } as unknown as ToolSet
+    const orch = createConversationOrchestrator({
+      toolsBuilder,
+      executorFactory,
+      sessionStore: store,
+      memoryStore,
+      runQueue: new SessionRunQueue(),
+      abortRegistry: new AbortRegistry<string>(),
+      systemPrompt: '',
+      logger: stubLogger(),
+    })
+
+    await orch.handle(
+      makeInput({
+        channelId: 'C1',
+        channelName: 'general',
+        threadTs: '1000.000001',
+        messageTs: '1000.000002',
+        adapterTools,
+      }),
+      mockSink().sink,
+    )
+
+    expect(toolsBuilder).toHaveBeenCalledWith({ userName: 'alice', userId: 'U' }, {})
+    expect(executorFactory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bash: 'builtin-tool',
+        current_thread_context: 'adapter-tool',
+      }),
+    )
+  })
+
   it('completed + finalMessages → 整批 appendMessage + idle 状态 + finalize 被调', async () => {
     const paths = resolveWorkspacePaths(cwd)
     const store = createSessionStore(paths)
@@ -383,9 +424,8 @@ describe('ConversationOrchestrator 粗事件消费', () => {
 
     // toMatchObject：messages 元素被 SessionStore 自动补 id，仅断言 role/content。
     expect(contextCompactor.autoCompact).toHaveBeenCalledOnce()
-    const autoCompactArg = (
-      contextCompactor.autoCompact as unknown as ReturnType<typeof vi.fn>
-    ).mock.calls[0]?.[0] as { session: { id: string }; messages: CoreMessage[]; trigger: string }
+    const autoCompactArg = (contextCompactor.autoCompact as unknown as ReturnType<typeof vi.fn>)
+      .mock.calls[0]?.[0] as { session: { id: string }; messages: CoreMessage[]; trigger: string }
     expect(autoCompactArg).toMatchObject({
       session: { id: session.id },
       messages: [...history, { role: 'user', content: 'current' }],
@@ -704,10 +744,7 @@ describe('ConversationOrchestrator 粗事件消费', () => {
       logger: stubLogger(),
     })
 
-    await orch.handle(
-      makeInput({ text: 'short', threadTs: 't-token-priority' }),
-      mockSink().sink,
-    )
+    await orch.handle(makeInput({ text: 'short', threadTs: 't-token-priority' }), mockSink().sink)
 
     expect(contextCompactor.autoCompact).not.toHaveBeenCalled()
   })

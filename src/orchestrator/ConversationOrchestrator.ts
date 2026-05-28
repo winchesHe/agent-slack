@@ -428,10 +428,7 @@ export function createConversationOrchestrator(
                     autoCompactState,
                     error,
                   )
-                  await emitCompactEvent(
-                    session,
-                    buildFailedEvent('auto', error, failureState),
-                  )
+                  await emitCompactEvent(session, buildFailedEvent('auto', error, failureState))
                 } finally {
                   if (autoCompactActivitySent) {
                     await sink.onEvent({ type: 'activity-state', state: { clear: true } })
@@ -463,7 +460,7 @@ export function createConversationOrchestrator(
             const imContext: IMContext = {
               ...(input.confirmSender ? { confirm: input.confirmSender } : {}),
             }
-            const tools = deps.toolsBuilder(currentUser, imContext)
+            const tools = { ...deps.toolsBuilder(currentUser, imContext), ...input.adapterTools }
             const executor = deps.executorFactory(tools)
             const ctrl = deps.abortRegistry.create(input.messageTs)
 
