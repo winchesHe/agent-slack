@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { tool } from 'ai'
 import { z } from 'zod'
-import type { ConfirmSender } from '@/im/types.ts'
+import type { ConfirmSender, CurrentThreadContext } from '@/im/types.ts'
 
 export interface ToolContext {
   cwd: string
@@ -16,6 +16,8 @@ export interface ToolContext {
   currentUser?: { userName: string; userId: string }
   /** 当前会话的确认发送器，由 IM Adapter 绑定 channel/thread 后注入；无 IM 时为 undefined。 */
   confirm?: ConfirmSender
+  /** 当前触发消息所在 thread 的精确定位信息；用于 current_thread_context 等工具。 */
+  currentThread?: CurrentThreadContext
 }
 
 const MAX_BYTES = 30_000

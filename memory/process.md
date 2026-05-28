@@ -2,6 +2,12 @@
 
 当前无进行中的 process 事项。
 
+**最近完成（2026-05-28）：**
+
+- `feature-current-thread-context` 分支冲突修复完成：保留当前 `runSlackSession` / queue usage 抑制逻辑，移除 `buildBuiltinTools` 中的全局 `current_thread_context` 注入。
+- `current_thread_context` 改为 Slack adapter 入站路径（app mention / channel task）通过 `adapterTools` 注入；Wechat / Telegram / scheduled 非真实 Slack thread 路径不注入该工具。
+- 验证：`pnpm vitest run src/agent/tools/tools.test.ts src/im/slack/SlackAdapter.test.ts src/orchestrator/ConversationOrchestrator.test.ts`、`pnpm typecheck`、变更文件 targeted ESLint/Prettier 均通过。完整 `pnpm lint` 仍受仓库既有非本次改动问题阻塞（`external-references/` JSX 解析、既有 `console.*`、`tests/upgrade.test.ts` 的 `any`）。
+
 **最近完成（2026-05-16）：**
 
 - agent-slack upgrade 命令补强 v0.1.9 schema 迁移漏洞（branch `feat/upgrade-im-migration`，plan：[docs/superpowers/plans/2026-05-16-upgrade-im-schema-migration.md](../docs/superpowers/plans/2026-05-16-upgrade-im-schema-migration.md)）

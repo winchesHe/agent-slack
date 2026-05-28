@@ -281,7 +281,7 @@ describe('SlackAdapter', () => {
     expect(abortSpy).not.toHaveBeenCalled()
   })
 
-  it('app_mention 且同 session 已有任务时，对原消息加 hourglass_flowing_sand reaction', async () => {
+  it('app_mention 且同 session 已有任务时，对原消息加 hourglass_flowing_sand reaction，并透传 permalink', async () => {
     const client = createClient()
     const runQueue = new SessionRunQueue()
     vi.spyOn(runQueue, 'queueDepth').mockReturnValue(1)
@@ -309,7 +309,20 @@ describe('SlackAdapter', () => {
       timestamp: 'm1',
       name: 'hourglass_flowing_sand',
     })
+    expect(client.chat.getPermalink).toHaveBeenCalledWith({
+      channel: 'C1',
+      message_ts: 'm1',
+    })
     expect(orchestrator.handle).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(orchestrator.handle).mock.calls[0]?.[0]).toMatchObject({
+      channelId: 'C1',
+      threadTs: 't1',
+      messageTs: 'm1',
+      messagePermalink: 'https://example.slack.com/archives/C1/p1000000001',
+    })
+    expect(vi.mocked(orchestrator.handle).mock.calls[0]?.[0].adapterTools).toHaveProperty(
+      'current_thread_context',
+    )
   })
 
   it('app_mention 来自当前 agent 自身时跳过，避免关闭 Bolt ignoreSelf 后自触发', async () => {
@@ -388,6 +401,7 @@ describe('SlackAdapter', () => {
     expect(inbound?.text).toContain('[频道任务触发: rule-1]')
     expect(inbound?.text).toContain('请处理触发消息')
     expect(inbound?.text).toContain('原始 Slack 消息：\n请看这条消息')
+    expect(inbound?.adapterTools).toHaveProperty('current_thread_context')
     expect(client.chat.getPermalink).toHaveBeenCalledWith({
       channel: 'C1',
       message_ts: '1000.0001',

@@ -6,6 +6,7 @@ import { bashTool, type ToolContext } from './bash.ts'
 import { editFileTool } from './editFile.ts'
 import { buildBuiltinTools, type BuiltinToolDeps } from './index.ts'
 import type { Logger } from '@/logger/logger.ts'
+import { currentThreadContextTool } from './currentThreadContext.ts'
 
 let cwd: string
 beforeEach(() => {
@@ -35,6 +36,37 @@ const invoke = async (tool: Invokable, input: unknown): Promise<unknown> => {
 }
 
 type BashOut = { stdout: string; stderr: string; exitCode: number; timedOut: boolean }
+
+describe('current_thread_context', () => {
+  it('返回当前 IM 注入的 thread 定位信息和 replies 命令', async () => {
+    const ctx = stubCtx()
+    ctx.currentThread = {
+      imProvider: 'slack',
+      channelId: 'C1',
+      channelName: 'general',
+      threadTs: '1000.000001',
+      messageTs: '1000.000002',
+      messagePermalink: 'https://example.slack.com/archives/C1/p1000000002?thread_ts=1000.000001',
+    }
+
+    const result = (await invoke(asInvokable(currentThreadContextTool(ctx)), {})) as {
+      channelId: string
+      threadTs: string
+      messageTs: string
+      threadPermalink: string
+      repliesCommand: string
+    }
+
+    expect(result).toMatchObject({
+      channelId: 'C1',
+      threadTs: '1000.000001',
+      messageTs: '1000.000002',
+      threadPermalink: 'https://example.slack.com/archives/C1/p1000000001',
+    })
+    expect(result.repliesCommand).toContain('slack.py replies')
+    expect(result.repliesCommand).toContain('p1000000001')
+  })
+})
 
 describe('bash', () => {
   it('执行简单命令', async () => {
@@ -157,9 +189,25 @@ describe('buildBuiltinTools 条件注入', () => {
     const tools = buildBuiltinTools(ctx, stubDeps())
     expect(Object.keys(tools)).not.toContain('ask_confirm')
     expect(Object.keys(tools)).not.toContain('self_improve_confirm')
+    expect(Object.keys(tools)).not.toContain('current_thread_context')
     expect(Object.keys(tools)).toEqual(
       expect.arrayContaining(['bash', 'edit_file', 'save_memory', 'self_improve_collect']),
     )
+  })
+
+  it('currentThread 存在也不从通用 builtin 注入 current_thread_context', () => {
+    const ctx: ToolContext = {
+      ...stubCtx(),
+      currentThread: {
+        imProvider: 'slack',
+        channelId: 'C1',
+        channelName: 'general',
+        threadTs: '1000.000001',
+        messageTs: '1000.000002',
+      },
+    }
+    const tools = buildBuiltinTools(ctx, stubDeps())
+    expect(Object.keys(tools)).not.toContain('current_thread_context')
   })
 
   it('两种 ctx 工具数差为 2', () => {

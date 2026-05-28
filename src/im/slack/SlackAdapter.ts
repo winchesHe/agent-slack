@@ -8,6 +8,7 @@ import type { SessionRunQueue } from '@/orchestrator/SessionRunQueue.ts'
 import type { ConfirmSender, InboundMessage } from '@/im/types.ts'
 import type { ConfirmBridge } from '@/im/slack/ConfirmBridge.ts'
 import type { SessionStore } from '@/store/SessionStore.ts'
+import { currentThreadContextTool } from '@/agent/tools/currentThreadContext.ts'
 import type { ChannelTasksConfig } from '@/channelTasks/config.ts'
 import {
   matchChannelTaskRules,
@@ -207,6 +208,11 @@ export function createSlackAdapter(deps: SlackAdapterDeps): SlackAdapterHandle {
       const sessionId = `slack:${channelId}:${threadTs}`
 
       const channelName = await resolveChannelName(client as unknown as WebClient, channelId)
+      const messagePermalink = await resolvePermalink(
+        client as unknown as WebClient,
+        channelId,
+        messageTs,
+      )
 
       // 解析 userName（优先 real_name，回落 name，再回落 userId）
       const userId = event.user ?? 'unknown'
@@ -248,7 +254,15 @@ export function createSlackAdapter(deps: SlackAdapterDeps): SlackAdapterHandle {
           userName,
           text: cleanText,
           messageTs,
+          ...(messagePermalink ? { messagePermalink } : {}),
           confirmSender,
+          adapterTools: createCurrentThreadContextAdapterTools({
+            channelId,
+            channelName,
+            threadTs,
+            messageTs,
+            ...(messagePermalink ? { messagePermalink } : {}),
+          }),
         },
         web: client as unknown as WebClient,
         renderer: deps.renderer,
@@ -445,7 +459,15 @@ export function createSlackAdapter(deps: SlackAdapterDeps): SlackAdapterHandle {
         userName,
         text,
         messageTs: args.match.messageTs,
+        ...(permalink ? { messagePermalink: permalink } : {}),
         confirmSender,
+        adapterTools: createCurrentThreadContextAdapterTools({
+          channelId: args.match.channelId,
+          channelName: args.channelName,
+          threadTs: args.match.threadTs,
+          messageTs: args.match.messageTs,
+          ...(permalink ? { messagePermalink: permalink } : {}),
+        }),
       },
       web: args.client,
       renderer: deps.renderer,
@@ -555,7 +577,7 @@ export function createSlackAdapter(deps: SlackAdapterDeps): SlackAdapterHandle {
       const result = await client.chat.getPermalink({ channel: channelId, message_ts: messageTs })
       return typeof result.permalink === 'string' ? result.permalink : undefined
     } catch (err) {
-      log.warn('chat.getPermalink failed for channel task', err)
+      log.warn('chat.getPermalink failed', err)
       return undefined
     }
   }
@@ -624,6 +646,27 @@ function toChannelTaskMessageEvent(event: unknown): SlackChannelTaskMessageEvent
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
+}
+
+function createCurrentThreadContextAdapterTools(args: {
+  channelId: string
+  channelName: string
+  threadTs: string
+  messageTs: string
+  messagePermalink?: string
+}): NonNullable<InboundMessage['adapterTools']> {
+  return {
+    current_thread_context: currentThreadContextTool({
+      currentThread: {
+        imProvider: 'slack',
+        channelId: args.channelId,
+        channelName: args.channelName,
+        threadTs: args.threadTs,
+        messageTs: args.messageTs,
+        ...(args.messagePermalink ? { messagePermalink: args.messagePermalink } : {}),
+      },
+    }),
+  }
 }
 
 // 共享会话执行 helper：构造 sink + 调 orchestrator.handle。

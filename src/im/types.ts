@@ -1,5 +1,6 @@
 import type { AgentExecutionEvent } from '@/core/events.ts'
 import type { ImProvider } from './IMAdapter.ts'
+import type { ToolSet } from 'ai'
 
 // ── 通用确认交互（IM-agnostic） ────────────────────────
 // ConfirmSender 由 IM Adapter 实现并在每次 handle 时注入 ToolContext。
@@ -47,6 +48,15 @@ export interface ConfirmSender {
   }): Promise<void>
 }
 
+export interface CurrentThreadContext {
+  imProvider: 'slack'
+  channelId: string
+  channelName: string
+  threadTs: string
+  messageTs: string
+  messagePermalink?: string
+}
+
 export interface InboundMessage {
   imProvider: ImProvider
   /**
@@ -78,8 +88,12 @@ export interface InboundMessage {
    *   Wechat: message_id
    */
   messageTs: string
+  /** 当前触发消息的 Slack permalink；可选，缺失时仍可用 channelId/threadTs 精确定位 */
+  messagePermalink?: string
   /** 由 IM Adapter 绑定当前会话上下文构造的确认发送器；tool 层按需调用 */
   confirmSender?: ConfirmSender
+  /** IM Adapter 按当前会话额外注入的工具；通用工具仍由应用层统一构造。 */
+  adapterTools?: ToolSet
 }
 
 export interface EventSink {
