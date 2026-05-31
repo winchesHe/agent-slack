@@ -1,6 +1,17 @@
 # 当前执行进度
 
-当前无进行中的 process 事项。
+当前进行中：
+
+- `pi-slack-agent-foundation` 新基座技术方案已起草：spec 位于 [docs/superpowers/specs/2026-05-31-pi-slack-agent-foundation.md](../docs/superpowers/specs/2026-05-31-pi-slack-agent-foundation.md)；飞书架构设计文档已生成并重排为富文本版，总体架构已拆成 `启动装载` / `运行时请求流` 两张飞书画板，核心运行链路也已改为飞书画板渲染，且已明确 `Workspace Runtime -> RuntimeContext -> RunCoordinator -> SessionResolver -> Pi Runtime Adapter` 的职责和调用边界：[Moego Pi Slack Agent 基座架构设计](https://mengshikeji.feishu.cn/wiki/XIJYwjVf7inxwYkXRgEcIheznbf)。
+- 已对齐关键决策：
+  - 新项目不是 `agent-slack` 原地重构，也不是 `moego-sherlock` 产品化 fork，而是吸收两者优势的新 agent foundation。
+  - workspace 目录名：`.moego-agent`。
+  - 底层 runtime：`pi-agent-core` / `pi-ai` / `pi-coding-agent`。
+  - session 模式：MVP 每轮 run open/resume pi transcript，结束 dispose；不做 warm session cache / idle sweep。
+  - extension：单层，仅暴露 pi native extension / hook；不定义 `MoegoExtension` 包装层。
+  - 事件：对 renderer 封装 `AgentRuntimeEvent`，不直接暴露 pi event。
+  - 持久化：pi `transcript.jsonl` 是模型上下文恢复权威；产品侧只存 `meta.json` / `runs.jsonl` / logs，默认不存完整 `events.jsonl`；audit / artifacts 仅保留扩展位，MVP 不实现。
+- 下一步：等待用户 review 飞书架构设计文档；确认后按 flow-spec 判定需要单独生成 plan（当前预计命中跨仓/SDK + schema，建议需要 plan）。
 
 **最近完成（2026-05-28）：**
 
